@@ -18,7 +18,7 @@ pub mod db {
 
         let tables = sqlx::query!(
             "SELECT tablename FROM pg_catalog.pg_tables \
-            WHERE schemaname != 'pg_catalog' AND schemaname != 'information_schema'; ")
+            WHERE schemaname != 'pg_catalog' AND schemaname != 'information_schema';")
             .fetch_all(pool)
             .await?
             .into_iter()
