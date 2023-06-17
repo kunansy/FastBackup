@@ -1,4 +1,5 @@
 pub mod db {
+    use std::collections::HashMap;
     use std::time;
     use sqlx::{PgPool, postgres::PgPoolOptions};
 
@@ -26,5 +27,29 @@ pub mod db {
 
         log::info!("{} tables got", tables.len());
         Ok(tables)
+    }
+
+    pub async fn get_table_refs(pool: &PgPool) -> SqlxRes<HashMap<String, String>> {
+        log::info!("Getting table refs");
+
+        let refs = sqlx::query!(
+            "SELECT
+                tc.table_name,
+                ccu.table_name AS foreign_table_name
+            FROM
+                information_schema.table_constraints tc
+                JOIN information_schema.constraint_column_usage ccu
+                  ON ccu.constraint_name = tc.constraint_name
+                  AND ccu.table_schema = tc.table_schema
+            WHERE tc.table_schema != 'pg_catalog' and tc.table_name != ccu.table_name;")
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .map(|r| (r.table_name.unwrap(), r.foreign_table_name.unwrap()))
+            .collect::<HashMap<String, String>>();
+
+        log::info!("{} table refs got", refs.len());
+
+        Ok(refs)
     }
 }
