@@ -1,5 +1,6 @@
 pub mod settings {
     use std::{fs, time};
+    use crate::errors::Errors;
 
     #[derive(Debug)]
     pub struct Settings {
@@ -8,7 +9,7 @@ pub mod settings {
     }
 
     impl Settings {
-        pub fn parse() -> Result<Self, std::env::VarError> {
+        pub fn parse() -> Result<Self, Errors> {
             log::debug!("Parse settings");
 
             let db_uri = std::env::var("DATABASE_URL")?;
