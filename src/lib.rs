@@ -8,18 +8,17 @@ pub mod settings {
     }
 
     impl Settings {
-        pub fn parse() -> Self {
+        pub fn parse() -> Result<Self, std::env::VarError> {
             log::debug!("Parse settings");
 
-            let db_uri = std::env::var("DATABASE_URL")
-                .expect("DATABASE_URL not found");
+            let db_uri = std::env::var("DATABASE_URL")?;
             let timeout = std::env::var("DB_TIMEOUT")
                 .unwrap_or("10".to_string())
                 .parse().expect("DATABASE_TIMEOUT should be int");
             let db_timeout = time::Duration::from_secs(timeout);
 
             log::debug!("Settings parsed");
-            Self { db_uri, db_timeout }
+            Ok(Self { db_uri, db_timeout })
         }
 
         /// load .env file to env.
