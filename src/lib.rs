@@ -12,7 +12,7 @@ pub mod settings {
             log::debug!("Parse settings");
 
             let db_uri = std::env::var("DATABASE_URL")?;
-            let timeout = std::env::var("DB_TIMEOUT")
+            let timeout = std::env::var("DATABASE_TIMEOUT")
                 .unwrap_or("10".to_string())
                 .parse().expect("DATABASE_TIMEOUT should be int");
             let db_timeout = time::Duration::from_secs(timeout);
