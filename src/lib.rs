@@ -1,5 +1,6 @@
 pub mod settings {
     use std::{fs, time};
+    use std::num::ParseIntError;
     use crate::errors::Errors;
 
     #[derive(Debug)]
@@ -13,9 +14,10 @@ pub mod settings {
             log::debug!("Parse settings");
 
             let db_uri = std::env::var("DATABASE_URL")?;
-            let timeout = std::env::var("DATABASE_TIMEOUT")
-                .unwrap_or("10".to_string())
-                .parse().expect("DATABASE_TIMEOUT should be int");
+            let timeout = std::env::var("DATABASE_TIMEOUT")?
+                .parse()
+                .map_err(|e: ParseIntError|
+                    Errors::EnvError(format!("DATABASE_TIMEOUT must be int: {}", e.to_string())))?;
             let db_timeout = time::Duration::from_secs(timeout);
 
             log::debug!("Settings parsed");
