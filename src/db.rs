@@ -52,4 +52,26 @@ pub mod db {
 
         Ok(refs)
     }
+
+    pub fn define_tables_order<'a>(tables: &'a Vec<String>,
+                                   table_refs: &'a HashMap<String, String>) -> Vec<&'a String> {
+        let mut weights = HashMap::new();
+        for table_name in table_refs.values() {
+            *weights.entry(table_name).or_insert(0) += 1;
+        }
+        for table_name in tables {
+            weights.entry(table_name).or_insert(0);
+        }
+
+        let mut order = weights
+            .into_iter()
+            .map(|(k, v)| (k, v))
+            .collect::<Vec<(&String, i32)>>();
+
+        order.sort_by(|(_, v), (_, v2)| v.cmp(v2).reverse());
+
+        order.into_iter()
+            .map(|(k, _)| k)
+            .collect::<Vec<&String>>()
+    }
 }
