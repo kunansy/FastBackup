@@ -12,3 +12,4 @@ env_logger = "0.10.0"
 chrono = "0.4"
 sqlx = { version = "0.6", features = [ "runtime-tokio-native-tls", "postgres", "chrono" ] }
 tokio = { version = "1.28", features = ["full"] }
+thiserror = "1.0"
