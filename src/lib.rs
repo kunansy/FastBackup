@@ -1,27 +1,32 @@
 pub mod settings {
-    use std::{fs, time};
+    use std::fs;
     use std::num::ParseIntError;
     use crate::errors::Errors;
 
     #[derive(Debug)]
     pub struct Settings {
-        pub db_uri: String,
-        pub db_timeout: time::Duration
+        pub db_host: String,
+        pub db_port: String,
+        pub db_username: String,
+        pub db_password: String,
+        pub db_name: String,
     }
 
     impl Settings {
         pub fn parse() -> Result<Self, Errors> {
             log::debug!("Parse settings");
 
-            let db_uri = std::env::var("DATABASE_URL")?;
-            let timeout = std::env::var("DATABASE_TIMEOUT")?
-                .parse()
+            let db_host = std::env::var("DB_HOST")?;
+            let db_username = std::env::var("DB_USERNAME")?;
+            let db_password = std::env::var("DB_PASSWORD")?;
+            let db_name = std::env::var("DB_NAME")?;
+            let db_port = std::env::var("DB_PORT")?
+                .parse::<u32>()
                 .map_err(|e: ParseIntError|
-                    Errors::EnvError(format!("DATABASE_TIMEOUT must be int: {}", e.to_string())))?;
-            let db_timeout = time::Duration::from_secs(timeout);
+                    Errors::EnvError(format!("DB_PORT must be int: {}", e.to_string())))?;
 
             log::debug!("Settings parsed");
-            Ok(Self { db_uri, db_timeout })
+            Ok(Self { db_host, db_port: db_port.to_string(), db_username, db_password, db_name })
         }
 
         /// load .env file to env.
