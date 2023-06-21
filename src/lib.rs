@@ -192,11 +192,16 @@ pub mod sender {
 }
 
 pub mod google_drive {
-    use std::{io};
+    use std::path::Path;
+    use std::{fs, io, time};
     use google_drive3::{DriveHub, hyper::client::HttpConnector, hyper_rustls};
     use google_drive3::oauth2::{ServiceAccountKey, self, authenticator::Authenticator};
+    use async_trait::async_trait;
+    use google_drive3::api::File;
     use google_drive3::hyper;
     use google_drive3::hyper_rustls::HttpsConnector;
+    use crate::errors::Errors;
+    use crate::sender::Storage;
 
     type Hub = DriveHub<HttpsConnector<HttpConnector>>;
 
@@ -269,6 +274,46 @@ pub mod google_drive {
                     Err(Errors::StorageError(msg))
                 }
             }
+        }
+    }
+
+    #[async_trait]
+    impl Storage for GoogleDrive {
+        async fn send(&self, path: &Path) -> Result<String, Errors> {
+            assert!(path.exists(), "File '{:?}' not found", path);
+
+            log::info!("Sending file '{:?}'", path);
+            let start = time::Instant::now();
+
+            let hub = self.build_hub().await?;
+
+            let req = {
+                let mut file = File::default();
+                let folder_id = GoogleDrive::get_file_id(&hub, "tracker").await?;
+
+                file.name = Some(path.to_str().unwrap().to_string());
+                file.parents = Some(vec![folder_id]);
+                file
+            };
+
+            let (resp, file) = hub.files().create(req)
+                .upload(fs::File::open(path).unwrap(),
+                        "application/octet-stream".parse().unwrap())
+                .await
+                .map_err(|e| {
+                    let msg = format!("Upload failed: {:?}", e);
+                    Errors::StorageError(msg)
+                })?;
+
+            if !resp.status().is_success() {
+                let msg = format!("Error uploading file: {}, {:?}",
+                                  resp.status(), resp.body());
+                return Err(Errors::StorageError(msg));
+            }
+
+            let file_id = file.id.unwrap_or("undefined".to_string());
+            log::info!("File id '{}' sent for {:?}", file_id, start.elapsed());
+            Ok(file_id)
         }
     }
 }
