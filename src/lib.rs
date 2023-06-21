@@ -87,6 +87,65 @@ pub mod logger {
     }
 }
 
+pub mod db {
+    use std::process::{Command, Stdio};
+    use std::time;
+    use crate::errors::Errors;
+    use crate::settings::Settings;
+
+    fn create_filename(db_name: &str) -> String {
+        format!("backup_{}_{}.enc", db_name,
+                chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S"))
+    }
+
+    pub fn dump(cfg: &Settings) -> Result<(), Errors>{
+        log::info!("Start backupping");
+        let start = time::Instant::now();
+        let filename = create_filename(&cfg.db_name);
+
+        let pg_dump = Command::new("pg_dump")
+            .env("PGPASSWORD", &cfg.db_password)
+            .args(["-h", &cfg.db_host])
+            .args(["-p", &cfg.db_port])
+            .args(["-U", &cfg.db_username])
+            .arg("--data-only")
+            .arg("--verbose")
+            .arg("--inserts")
+            .arg("--column-inserts")
+            .arg(&cfg.db_name)
+            .stdout(Stdio::piped())
+            .spawn()?;
+        let gzip = Command::new("gzip")
+            .args(["-c", "--best"])
+            .stdin(Stdio::from(pg_dump.stdout.unwrap()))
+            .stdout(Stdio::piped())
+            .spawn()?;
+        // TODO: let encryption switched off
+        let mut openssl = Command::new("openssl")
+            .arg("smime")
+            .arg("-encrypt")
+            .arg("-aes256")
+            .arg("-binary")
+            .args(["-outform", "DEM"])
+            .args(["-out", &filename])
+            .arg(&cfg.encrypt_pub_key_file)
+            .stdin(Stdio::from(gzip.stdout.unwrap()))
+            .spawn()?;
+
+        match openssl.wait() {
+            Ok(_) => {
+                log::info!("Backup completed for {:?}", start.elapsed());
+                Ok(())
+            },
+            Err(e) => {
+                let msg = format!("Backup error: {}", e);
+                log::error!("{}", msg);
+                Err(Errors::DumpError(msg))
+            }
+        }
+    }
+}
+
 pub mod errors {
     #[derive(thiserror::Error, Debug, Clone)]
     pub enum Errors {
