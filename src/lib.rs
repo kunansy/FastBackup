@@ -87,7 +87,7 @@ pub mod logger {
     }
 }
 
-pub mod db {
+pub mod backup {
     use std::path::{Path, PathBuf};
     use std::process::{Command, Stdio};
     use std::time;
