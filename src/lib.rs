@@ -94,11 +94,6 @@ pub mod db {
     use crate::errors::Errors;
     use crate::settings::Settings;
 
-    fn create_filename(db_name: &str) -> String {
-        format!("backup_{}_{}.enc", db_name,
-                chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S"))
-    }
-
     pub fn dump(cfg: &Settings) -> Result<(), Errors>{
         log::info!("Start backupping");
         let start = time::Instant::now();
@@ -144,6 +139,11 @@ pub mod db {
                 Err(Errors::DumpError(msg))
             }
         }
+    }
+
+    fn create_filename(db_name: &str) -> String {
+        format!("backup_{}_{}.enc", db_name,
+                chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S"))
     }
 
     /// All required programs must exist.
