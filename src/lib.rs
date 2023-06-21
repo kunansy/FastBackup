@@ -92,6 +92,8 @@ pub mod errors {
     pub enum Errors {
         #[error("Could not init with env: {0}")]
         EnvError(String),
+        #[error("Could not dump the database")]
+        DumpError(String)
     }
 
     impl From<std::env::VarError> for Errors {
