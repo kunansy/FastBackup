@@ -177,6 +177,17 @@ pub mod backup {
             }).next()
         })
     }
+
+    pub fn assert_db_is_ready(cfg: &Settings) {
+        let c = Command::new("pg_isready")
+            .args(["--host", &cfg.db_host])
+            .args(["--port", &cfg.db_port])
+            .args(["--timeout", "10"])
+            .args(["--username", &cfg.db_username])
+            .status().unwrap()
+            .success();
+        assert!(c, "DB is not ready");
+    }
 }
 
 pub mod sender {
