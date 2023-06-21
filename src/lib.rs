@@ -134,9 +134,9 @@ pub mod backup {
             .stdin(Stdio::from(gzip.stdout.unwrap()))
             .spawn()?;
 
-        match openssl.wait() {
-            Ok(_) => {
-                log::info!("Backup completed for {:?}", start.elapsed());
+        match openssl.wait_with_output() {
+            Ok(s) => {
+                log::info!("Backup completed for {:?}, {:?}", start.elapsed(), s);
                 Ok(filename)
             },
             Err(e) => {
