@@ -1,10 +1,12 @@
 use std::path::Path;
+use std::time;
 use backuper::{settings::Settings, logger, errors::Errors, backup, google_drive::GoogleDrive};
 use backuper::sender::Storage;
 
 #[tokio::main]
 async fn main() -> Result<(), Errors> {
     backup::assert_programs_exist();
+    let start = time::Instant::now();
 
     Settings::load_env();
     logger::init();
@@ -17,5 +19,6 @@ async fn main() -> Result<(), Errors> {
     let drive = GoogleDrive::new(&cfg.drive_creds);
     drive.send(&filename).await?;
 
+    log::info!("Backup completed for {:?}", start.elapsed());
     Ok(())
 }
