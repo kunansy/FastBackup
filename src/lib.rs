@@ -102,7 +102,7 @@ pub mod backup {
         let start = time::Instant::now();
         let filename = create_filename(&cfg.db_name);
 
-        let pg_dump = Command::new("pg_dump")
+        let mut pg_dump = Command::new("pg_dump")
             .env("PGPASSWORD", &cfg.db_password)
             .args(["-h", &cfg.db_host])
             .args(["-p", &cfg.db_port])
@@ -114,11 +114,19 @@ pub mod backup {
             .arg(&cfg.db_name)
             .stdout(Stdio::piped())
             .spawn()?;
-        let gzip = Command::new("gzip")
+        if !pg_dump.wait().expect("Could not wait for pg_dump").success() {
+            return Err(Errors::DumpError("pg_dump failed".to_string()));
+        }
+
+        let mut gzip = Command::new("gzip")
             .args(["-c", "--best"])
             .stdin(Stdio::from(pg_dump.stdout.unwrap()))
             .stdout(Stdio::piped())
             .spawn()?;
+        if !gzip.wait().expect("Could not wait for gzip").success() {
+            return Err(Errors::DumpError("gzip failed".to_string()));
+        }
+
         // TODO: let encryption switched off
         let mut openssl = Command::new("openssl")
             .arg("smime")
