@@ -76,16 +76,8 @@ pub mod logger {
 pub mod errors {
     #[derive(thiserror::Error, Debug, Clone)]
     pub enum Errors {
-        #[error("Database error")]
-        DatabaseError(String),
         #[error("Could not init with env: {0}")]
         EnvError(String),
-    }
-
-    impl From<sqlx::Error> for Errors {
-        fn from(value: sqlx::Error) -> Self {
-            Self::DatabaseError(value.to_string())
-        }
     }
 
     impl From<std::env::VarError> for Errors {
