@@ -97,7 +97,7 @@ pub mod backup {
     use crate::errors::Errors;
     use crate::settings::Settings;
 
-    pub fn dump(cfg: &Settings) -> Result<String, Errors>{
+    pub fn dump(cfg: &Settings) -> Result<String, Errors> {
         log::info!("Start backupping");
         let start = time::Instant::now();
         let filename = create_filename(&cfg.db_name);
