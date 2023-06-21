@@ -157,7 +157,7 @@ pub mod backup {
     /// # Panics
     /// Panic if a program not found
     pub fn assert_programs_exist() {
-        for p in vec!["openssl", "pg_dump", "gzip"] {
+        for p in vec!["openssl", "pg_dump", "gzip", "pg_isready"] {
             if find_it(p).is_none() {
                 panic!("'{}' not found", p);
             }
