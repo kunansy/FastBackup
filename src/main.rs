@@ -4,7 +4,7 @@ use backuper::sender::Storage;
 
 #[tokio::main]
 async fn main() -> Result<(), Errors> {
-    // backup::assert_programs_exist();
+    backup::assert_programs_exist();
 
     Settings::load_env();
     logger::init();
