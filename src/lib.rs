@@ -226,6 +226,49 @@ pub mod google_drive {
 
             Ok(DriveHub::new(hyper::Client::builder().build(connector), auth))
         }
+
+        pub async fn get_file_id(hub: &Hub, file_name: &str) -> Result<String, Errors> {
+            log::debug!("Getting file id: '{}'", file_name);
+            let q = format!("name = '{}'", file_name);
+
+            let (resp, files) = hub.files().list()
+                .param("fields", "files(id)")
+                .q(&q)
+                .doit().await
+                .map_err(|e| {
+                    let msg = format!("Error requesting to Google Drive: {}", e.to_string());
+                    Errors::StorageError(msg)
+                })?;
+
+            if !resp.status().is_success() {
+                let msg = format!("Request error: {:?}, {:?}", resp.status(), resp.body());
+                return Err(Errors::StorageError(msg));
+            }
+            if files.files.is_none() {
+                let msg = "Could not get files, response body is empty".to_string();
+                return Err(Errors::StorageError(msg));
+            }
+
+            let mut files = files.files.unwrap();
+            match files.len() {
+                0 => {
+                    let msg = format!("File '{}' not found", file_name);
+                    Err(Errors::StorageError(msg))
+                },
+                1 => {
+                    if let Some(file_id) = files[0].id.take() {
+                        log::info!("File id = '{}'", &file_id);
+                        Ok(file_id)
+                    } else {
+                        Err(Errors::StorageError("Field 'id' not found".to_string()))
+                    }
+                },
+                len @ _ => {
+                    let msg = format!("There are {} items found for '{}'", len, file_name);
+                    Err(Errors::StorageError(msg))
+                }
+            }
+        }
     }
 }
 
