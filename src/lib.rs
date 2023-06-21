@@ -190,6 +190,45 @@ pub mod sender {
     }
 }
 
+pub mod google_drive {
+    use std::{io};
+    use google_drive3::{DriveHub, hyper::client::HttpConnector, hyper_rustls};
+    use google_drive3::oauth2::{ServiceAccountKey, self, authenticator::Authenticator};
+    use google_drive3::hyper;
+    use google_drive3::hyper_rustls::HttpsConnector;
+
+    type Hub = DriveHub<HttpsConnector<HttpConnector>>;
+
+    pub struct GoogleDrive {
+        secret: ServiceAccountKey,
+    }
+
+    impl GoogleDrive {
+        pub fn new(creds: &String) -> Self {
+            let secret = oauth2::parse_service_account_key(creds)
+                .expect("Could not parse creds");
+            GoogleDrive { secret }
+        }
+
+        async fn build_auth(&self) -> io::Result<Authenticator<HttpsConnector<HttpConnector>>> {
+            oauth2::ServiceAccountAuthenticator::builder(
+                self.secret.clone()).build().await
+        }
+
+        pub async fn build_hub(&self) -> io::Result<Hub> {
+            let auth = self.build_auth().await?;
+            let connector = hyper_rustls::HttpsConnectorBuilder::new()
+                .with_native_roots()
+                .https_or_http()
+                .enable_http1()
+                .enable_http2()
+                .build();
+
+            Ok(DriveHub::new(hyper::Client::builder().build(connector), auth))
+        }
+    }
+}
+
 pub mod errors {
     #[derive(thiserror::Error, Debug, Clone)]
     pub enum Errors {
