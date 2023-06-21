@@ -88,6 +88,7 @@ pub mod logger {
 }
 
 pub mod db {
+    use std::path::{Path, PathBuf};
     use std::process::{Command, Stdio};
     use std::time;
     use crate::errors::Errors;
@@ -143,6 +144,32 @@ pub mod db {
                 Err(Errors::DumpError(msg))
             }
         }
+    }
+
+    /// All required programs must exist.
+    ///
+    /// # Panics
+    /// Panic if a program not found
+    pub fn assert_programs_exist() {
+        for p in vec!["openssl", "pg_dump", "gzip"] {
+            if find_it(p).is_none() {
+                panic!("'{}' not found", p);
+            }
+        }
+    }
+
+    fn find_it<P>(exe_name: P) -> Option<PathBuf>
+        where P: AsRef<Path>
+    {
+        std::env::var_os("PATH").and_then(|paths| {
+            std::env::split_paths(&paths).filter_map(|dir| {
+                let full_path = dir.join(&exe_name);
+                match full_path.is_file() {
+                    true => Some(full_path),
+                    false => None
+                }
+            }).next()
+        })
     }
 }
 
