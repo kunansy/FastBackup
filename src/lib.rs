@@ -10,6 +10,7 @@ pub mod settings {
         pub db_username: String,
         pub db_password: String,
         pub db_name: String,
+        pub encrypt_pub_key_file: String
     }
 
     impl Settings {
@@ -20,13 +21,21 @@ pub mod settings {
             let db_username = std::env::var("DB_USERNAME")?;
             let db_password = std::env::var("DB_PASSWORD")?;
             let db_name = std::env::var("DB_NAME")?;
+            let encrypt_pub_key_file = std::env::var("ENCRYPT_PUB_KEY_FILE")?;
             let db_port = std::env::var("DB_PORT")?
                 .parse::<u32>()
                 .map_err(|e: ParseIntError|
                     Errors::EnvError(format!("DB_PORT must be int: {}", e.to_string())))?;
 
             log::debug!("Settings parsed");
-            Ok(Self { db_host, db_port: db_port.to_string(), db_username, db_password, db_name })
+            Ok(Self {
+                db_host,
+                db_port: db_port.to_string(),
+                db_username,
+                db_password,
+                db_name,
+                encrypt_pub_key_file
+            })
         }
 
         /// load .env file to env.
