@@ -10,6 +10,7 @@ async fn main() -> Result<(), Errors> {
     logger::init();
 
     let cfg = Settings::parse()?;
+    backup::assert_db_is_ready(&cfg);
 
     let filename = backup::dump(&cfg)?;
     let filename = Path::new(&filename);
