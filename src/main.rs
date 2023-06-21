@@ -1,6 +1,6 @@
 use std::path::Path;
-use backupper::{settings::Settings, logger, errors::Errors, backup, google_drive::GoogleDrive};
-use backupper::sender::Storage;
+use backuper::{settings::Settings, logger, errors::Errors, backup, google_drive::GoogleDrive};
+use backuper::sender::Storage;
 
 #[tokio::main]
 async fn main() -> Result<(), Errors> {

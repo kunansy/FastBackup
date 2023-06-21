@@ -1,5 +1,5 @@
 [package]
-name = "backupper"
+name = "backuper"
 version = "0.1.0"
 edition = "2021"
 authors = ["Kirill <k@kunansy.ru>"]
