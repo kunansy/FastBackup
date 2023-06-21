@@ -101,4 +101,10 @@ pub mod errors {
             Self::EnvError(value.to_string())
         }
     }
+
+    impl From<std::io::Error> for Errors {
+        fn from(value: std::io::Error) -> Self {
+            Self::DumpError(value.to_string())
+        }
+    }
 }
