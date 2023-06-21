@@ -97,7 +97,7 @@ pub mod backup {
     use crate::errors::Errors;
     use crate::settings::Settings;
 
-    pub fn dump(cfg: &Settings) -> Result<(), Errors>{
+    pub fn dump(cfg: &Settings) -> Result<String, Errors>{
         log::info!("Start backupping");
         let start = time::Instant::now();
         let filename = create_filename(&cfg.db_name);
@@ -134,7 +134,7 @@ pub mod backup {
         match openssl.wait() {
             Ok(_) => {
                 log::info!("Backup completed for {:?}", start.elapsed());
-                Ok(())
+                Ok(filename)
             },
             Err(e) => {
                 let msg = format!("Backup error: {}", e);
