@@ -146,7 +146,7 @@ pub mod backup {
 
     fn create_filename(db_name: &str) -> String {
         format!("backup_{}_{}.enc", db_name,
-                chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S"))
+                chrono::Utc::now().format("%Y-%m-%d_%H:%M:%S"))
     }
 
     /// All required programs must exist.
