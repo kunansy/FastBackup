@@ -176,6 +176,20 @@ pub mod backup {
     }
 }
 
+pub mod sender {
+    use std::path::Path;
+    use async_trait::async_trait;
+
+    #[async_trait]
+    pub trait Storage {
+        async fn send(&self, path: &Path);
+    }
+
+    pub fn send(_store: &impl Storage, _path: &Path) {
+        todo!()
+    }
+}
+
 pub mod errors {
     #[derive(thiserror::Error, Debug, Clone)]
     pub enum Errors {
