@@ -179,10 +179,11 @@ pub mod backup {
 pub mod sender {
     use std::path::Path;
     use async_trait::async_trait;
+    use crate::errors::Errors;
 
     #[async_trait]
     pub trait Storage {
-        async fn send(&self, path: &Path);
+        async fn send(&self, path: &Path) -> Result<String, Errors>;
     }
 
     pub fn send(_store: &impl Storage, _path: &Path) {
