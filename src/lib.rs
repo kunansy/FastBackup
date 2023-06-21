@@ -110,6 +110,7 @@ pub mod backup {
             .arg("--data-only")
             .arg("--verbose")
             .arg("--inserts")
+            .arg("--blobs")
             .arg("--column-inserts")
             .arg(&cfg.db_name)
             .stdout(Stdio::piped())
