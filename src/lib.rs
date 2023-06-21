@@ -179,6 +179,8 @@ pub mod backup {
     }
 
     pub fn assert_db_is_ready(cfg: &Settings) {
+        log::debug!("Check the database is alive");
+
         let c = Command::new("pg_isready")
             .args(["--host", &cfg.db_host])
             .args(["--port", &cfg.db_port])
@@ -187,6 +189,8 @@ pub mod backup {
             .status().unwrap()
             .success();
         assert!(c, "DB is not ready");
+
+        log::debug!("Db is alive");
     }
 }
 
