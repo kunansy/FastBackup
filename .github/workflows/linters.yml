@@ -1,0 +1,29 @@
+name: Linters
+
+on:
+  push:
+    branches: ['*']
+  pull_request:
+    branches: ['*']
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - name: Set up Rust
+      run: |
+        rustup update
+
+    - name: Toolchain info
+      run: |
+        cargo --version --verbose
+        rustc --version
+
+    - name: Lint
+      run: |
+        cargo check
+
+    - name: Build
+      run: |
+        cargo build --bins --release -j $(nproc)
