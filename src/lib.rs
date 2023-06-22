@@ -206,8 +206,8 @@ pub mod sender {
         async fn send(&self, path: &Path) -> Res;
     }
 
-    pub fn send(_store: &impl Storage, _path: &Path) {
-        todo!()
+    pub async fn send(store: &impl Storage, path: &Path) -> Res {
+        store.send(path).await
     }
 }
 
