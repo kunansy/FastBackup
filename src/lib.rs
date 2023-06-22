@@ -300,9 +300,9 @@ pub mod google_drive {
     #[async_trait]
     impl Storage for GoogleDrive {
         async fn send(&self, path: &Path) -> Result<String, Errors> {
-            assert!(path.exists(), "File '{:?}' not found", path);
+            assert!(path.exists(), "File {:?} not found", path);
 
-            log::info!("Sending file '{:?}'", path);
+            log::info!("Sending file {:?}", path);
             let start = time::Instant::now();
 
             let hub = self.build_hub().await?;
