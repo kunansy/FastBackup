@@ -199,9 +199,11 @@ pub mod sender {
     use async_trait::async_trait;
     use crate::errors::Errors;
 
+    type Res = Result<String, Errors>;
+
     #[async_trait]
     pub trait Storage {
-        async fn send(&self, path: &Path) -> Result<String, Errors>;
+        async fn send(&self, path: &Path) -> Res;
     }
 
     pub fn send(_store: &impl Storage, _path: &Path) {
