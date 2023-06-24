@@ -278,6 +278,7 @@ pub mod google_drive {
                 return Err(Errors::StorageError(msg));
             }
 
+            // here unwrap is save according to the last if statement
             let mut files = files.files.unwrap();
             match files.len() {
                 0 => {
@@ -314,6 +315,7 @@ pub mod google_drive {
                 let mut file = File::default();
                 let folder_id = GoogleDrive::get_file_id(&hub, "tracker").await?;
 
+                // path must be convertable to str
                 file.name = Some(path.to_str().unwrap().to_string());
                 file.parents = Some(vec![folder_id]);
                 file
