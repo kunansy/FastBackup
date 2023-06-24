@@ -59,7 +59,10 @@ pub mod settings {
                 if line.is_empty() {
                     continue;
                 }
-                let (name, value) = line.split_once("=").unwrap();
+                let (name, value) = match line.split_once("=") {
+                    Some(pair) => pair,
+                    None => continue
+                };
                 // there might be spaces around the '=', so trim the strings
                 std::env::set_var(name.trim(), value.trim());
             }
