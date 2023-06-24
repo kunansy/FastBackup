@@ -321,8 +321,13 @@ pub mod google_drive {
                 file
             };
 
+            // the func ensures that the file exists
+            let src_file = fs::File::open(path).map_err(|e| {
+                Errors::StorageError(format!("Error opening file '{:?}': {}", path, e))
+            })?;
+
             let (resp, file) = hub.files().create(req)
-                .upload(fs::File::open(path).unwrap(),
+                .upload(src_file,
                         "application/octet-stream".parse().unwrap())
                 .await
                 .map_err(|e| {
