@@ -36,4 +36,4 @@ RUN apt-get upgrade -y \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR app
-COPY --from=builder /build/target/release/app /app/app
+COPY --from=builder /build/target/release/app ./
