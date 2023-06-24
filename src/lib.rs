@@ -326,13 +326,12 @@ pub mod google_drive {
                         "application/octet-stream".parse().unwrap())
                 .await
                 .map_err(|e| {
-                    let msg = format!("Upload failed: {:?}", e);
+                    let msg = format!("Sending failed: {:?}", e);
                     Errors::StorageError(msg)
                 })?;
 
             if !resp.status().is_success() {
-                let msg = format!("Error uploading file: {}, {:?}",
-                                  resp.status(), resp.body());
+                let msg = format!("Sending failed: {}, {:?}", resp.status(), resp.body());
                 return Err(Errors::StorageError(msg));
             }
 
