@@ -5,9 +5,9 @@ RUN apt-get update  \
 
 WORKDIR build
 
-COPY Cargo.toml Cargo.lock /build/
-COPY src /build/src
-COPY vendor /build/vendor
+COPY Cargo.toml Cargo.lock ./
+COPY src src/
+COPY vendor vendor/
 COPY .cargo/config.toml .cargo/config.toml
 
 RUN cargo build --release --bins --offline -vv -j $(nproc)
@@ -22,17 +22,16 @@ LABEL maintainer="Kirill <k@kunansy.ru>"
 
 RUN apt-get update \
     && apt-get upgrade -y \
-    && apt-get install apt-utils wget lsb-release -y \
+    && apt-get install apt-utils wget lsb-release -y
 # install Postgresql 15
 RUN sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list' \
     && wget -qO- https://www.postgresql.org/media/keys/ACCC4CF8.asc | tee /etc/apt/trusted.gpg.d/pgdg.asc &>/dev/null \
     && apt-get update
 
-RUN apt-get update \
-    && apt-get upgrade -y \
+RUN apt-get upgrade -y \
     && apt-get install -y openssl gzip postgresql-client ca-certificates \
-    && apt-get remove wget lsb-release apt-utils -y  \
-    && apt-get autoremove -y  \
+    && apt-get remove wget lsb-release apt-utils -y \
+    && apt-get autoremove -y \
     && apt-get clean && apt-get autoclean \
     && rm -rf /var/lib/apt/lists/*
 
