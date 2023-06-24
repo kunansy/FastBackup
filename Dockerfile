@@ -12,7 +12,7 @@ COPY .cargo/config.toml .cargo/config.toml
 
 RUN cargo build --release --bins --offline -vv -j $(nproc)
 
-FROM ubuntu:20.04
+FROM ubuntu:22.04
 
 ENV RUST_BACKTRACE full
 ENV DEBIAN_FRONTEND noninteractive
