@@ -220,6 +220,7 @@ pub mod google_drive {
     use async_trait::async_trait;
     use google_drive3::api::File;
     use google_drive3::hyper;
+    use google_drive3::hyper::{Body, Response};
     use google_drive3::hyper_rustls::HttpsConnector;
     use crate::errors::Errors;
     use crate::{Res, Storage};
@@ -333,6 +334,23 @@ pub mod google_drive {
             file.parents = parents;
             file
         }
+
+        pub async fn upload_file(&self, req: File, src_file: fs::File) -> Res<(Response<Body>, File)> {
+            let hub = match &self.hub {
+                Some(hub) => hub,
+                None => return Err(Errors::StorageError("Dump not init".to_string()))
+            };
+
+            hub.files()
+                .create(req)
+                .upload(src_file,
+                        "application/octet-stream".parse().unwrap())
+                .await
+                .map_err(|e| {
+                    let msg = format!("Sending failed: {:?}", e);
+                    Errors::StorageError(msg)
+                })
+        }
     }
 
     #[async_trait]
@@ -348,25 +366,13 @@ pub mod google_drive {
                 Errors::StorageError(format!("Error opening file '{:?}': {}", path, e))
             })?;
 
-            let hub = match &self.hub {
-                Some(hub) => hub,
-                None => return Err(Errors::StorageError("Hub not init".to_string()))
-            };
-
             let req = {
                 let folder_id = self.get_file_id("tracker").await?;
                 // path must be convertable to str
                 GoogleDrive::build_file(path.to_str().unwrap(), Some(vec![folder_id]))
             };
 
-            let (resp, file) = hub.files().create(req)
-                .upload(src_file,
-                        "application/octet-stream".parse().unwrap())
-                .await
-                .map_err(|e| {
-                    let msg = format!("Sending failed: {:?}", e);
-                    Errors::StorageError(msg)
-                })?;
+            let (resp, file) = self.upload_file(req, src_file).await?;
 
             if !resp.status().is_success() {
                 let msg = format!("Sending failed: {}, {:?}", resp.status(), resp.body());
