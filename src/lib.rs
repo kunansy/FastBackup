@@ -4,13 +4,13 @@ type Res<T> = Result<T, Errors>;
 
 #[async_trait::async_trait]
 pub trait Storage {
-    async fn send(&self, path: &std::path::Path) -> Res<String>;
+    async fn upload(&self, path: &std::path::Path) -> Res<String>;
 
     async fn download(&self, file_id: &str, path: &std::path::Path) -> Res<()>;
 }
 
 pub async fn send(store: &impl Storage, path: &std::path::Path) -> Res<String> {
-    store.send(path).await
+    store.upload(path).await
 }
 
 pub mod settings {
@@ -379,7 +379,7 @@ pub mod google_drive {
 
     #[async_trait]
     impl Storage for GoogleDrive {
-        async fn send(&self, path: &Path) -> Res<String> {
+        async fn upload(&self, path: &Path) -> Res<String> {
             log::info!("Sending file {:?}", path);
             let start = time::Instant::now();
 
