@@ -342,7 +342,8 @@ pub mod google_drive {
             let start = time::Instant::now();
 
             assert!(path.exists(), "File {:?} not found", path);
-            // the func ensures that the file exists
+            // here we know that the file exists,
+            // there might be permission error
             let src_file = fs::File::open(path).map_err(|e| {
                 Errors::StorageError(format!("Error opening file '{:?}': {}", path, e))
             })?;
