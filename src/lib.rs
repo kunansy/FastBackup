@@ -27,6 +27,8 @@ pub mod settings {
         pub db_name: String,
         pub encrypt_pub_key_file: String,
         pub drive_creds: String,
+        // dump backups to this folder
+        pub data_folder: Option<String>,
     }
 
     impl Settings {
@@ -39,6 +41,11 @@ pub mod settings {
             let db_name = std::env::var("DB_NAME")?;
             let encrypt_pub_key_file = std::env::var("ENCRYPT_PUB_KEY_FILE")?;
             let drive_creds = std::env::var("DRIVE_CREDS")?;
+            let data_folder = std::env::var("DATA_FOLDER")
+                .map_or(None, |v| {
+                    assert!(!v.ends_with('/'), "DATA_FOLDER could not ends with '/'");
+                    Some(v)
+                });
             let db_port = std::env::var("DB_PORT")?
                 .parse::<u32>()
                 .map_err(|e: ParseIntError|
@@ -52,7 +59,8 @@ pub mod settings {
                 db_password,
                 db_name,
                 encrypt_pub_key_file,
-                drive_creds
+                drive_creds,
+                data_folder,
             })
         }
 
