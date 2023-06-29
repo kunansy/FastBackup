@@ -276,8 +276,13 @@ pub mod google_drive {
             self.hub = Some(hub);
         }
 
-        pub async fn get_file_id(hub: &Hub, file_name: &str) -> Res<String> {
+        pub async fn get_file_id(&self, file_name: &str) -> Res<String> {
             log::debug!("Getting file id: '{}'", file_name);
+
+            let hub = match &self.hub {
+                Some(hub) => hub,
+                None => return Err(Errors::StorageError("Dump not init".to_string()))
+            };
             let q = format!("name = '{}'", file_name);
 
             let (resp, files) = hub.files().list()
@@ -336,7 +341,7 @@ pub mod google_drive {
 
             let req = {
                 let mut file = File::default();
-                let folder_id = GoogleDrive::get_file_id(&hub, "tracker").await?;
+                let folder_id = self.get_file_id("tracker").await?;
 
                 // path must be convertable to str
                 file.name = Some(path.to_str().unwrap().to_string());
