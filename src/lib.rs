@@ -220,7 +220,7 @@ pub mod google_drive {
     use async_trait::async_trait;
     use google_drive3::api::File;
     use google_drive3::hyper;
-    use google_drive3::hyper::{Body, Response};
+    use google_drive3::hyper::{Body, body, Response};
     use google_drive3::hyper_rustls::HttpsConnector;
     use crate::errors::Errors;
     use crate::{Res, Storage};
@@ -340,6 +340,39 @@ pub mod google_drive {
                     let msg = format!("Sending failed: {:?}", e);
                     Errors::StorageError(msg)
                 })
+        }
+
+        pub async fn download_file(&self, file_id: &str, path: &Path) -> Res<()> {
+            log::info!("Downloading file id '{}' to {:?}", file_id, path);
+            let start = time::Instant::now();
+
+            let (resp, file) = self.hub
+                .files()
+                .get(file_id)
+                .add_scope("https://www.googleapis.com/auth/drive")
+                .param("alt", "media")
+                .acknowledge_abuse(true)
+                .doit()
+                .await
+                .map_err(|e| {
+                    let msg = format!("Downloading failed: {:?}", e);
+                    Errors::StorageError(msg)
+                })?;
+
+            if !resp.status().is_success() {
+                let msg = format!("Downloading failed: {}, {:?}", resp.status(), resp.body());
+                return Err(Errors::StorageError(msg));
+            }
+
+            let d = body::to_bytes(resp.into_body()).await.map_err(|e| {
+                let msg = format!("Could not convert resp body to bytes: {:?}", e);
+                Errors::StorageError(msg)
+            })?;
+
+            fs::write(path, d)?;
+
+            log::info!("File got for {:?}", start.elapsed());
+            Ok(())
         }
     }
 
