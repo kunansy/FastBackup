@@ -227,22 +227,16 @@ pub mod google_drive {
 
     type Hub = DriveHub<HttpsConnector<HttpConnector>>;
 
-    pub struct GoogleDrive {
+    pub struct DriveAuth {
         secret: Option<ServiceAccountKey>,
         auth: Option<Authenticator<HttpsConnector<HttpConnector>>>,
-        hub: Option<Hub>
     }
-
-    impl GoogleDrive {
+    impl DriveAuth {
         pub fn new(creds: &String) -> Self {
             let secret = oauth2::parse_service_account_key(creds)
                 .expect("Could not parse creds");
 
-            GoogleDrive {
-                secret: Some(secret),
-                auth: None,
-                hub: None
-            }
+            DriveAuth { secret: Some(secret), auth: None }
         }
 
         pub async fn build_auth(&mut self) -> io::Result<()> {
@@ -253,11 +247,10 @@ pub mod google_drive {
 
             let auth = ServiceAuth::builder(secret).build().await?;
             self.auth = Some(auth);
-
             Ok(())
         }
 
-        pub fn build_hub(&mut self) {
+        pub fn build_hub(&mut self) -> GoogleDrive {
             let auth = match self.auth.take() {
                 Some(v) => v,
                 None => panic!("Could not build hub from None")
@@ -274,19 +267,20 @@ pub mod google_drive {
                 hyper::Client::builder().build(connector),
                 auth
             );
-            self.hub = Some(hub);
+            GoogleDrive { hub }
         }
+    }
 
+    pub struct GoogleDrive {
+        hub: Hub
+    }
+    impl GoogleDrive {
         pub async fn get_file_id(&self, file_name: &str) -> Res<String> {
             log::debug!("Getting file id: '{}'", file_name);
 
-            let hub = match &self.hub {
-                Some(hub) => hub,
-                None => return Err(Errors::StorageError("Dump not init".to_string()))
-            };
             let q = format!("name = '{}'", file_name);
 
-            let (resp, files) = hub.files().list()
+            let (resp, files) = self.hub.files().list()
                 .param("fields", "files(id)")
                 .q(&q)
                 .doit().await
@@ -336,12 +330,7 @@ pub mod google_drive {
         }
 
         pub async fn upload_file(&self, req: File, src_file: fs::File) -> Res<(Response<Body>, File)> {
-            let hub = match &self.hub {
-                Some(hub) => hub,
-                None => return Err(Errors::StorageError("Dump not init".to_string()))
-            };
-
-            hub.files()
+            self.hub.files()
                 .create(req)
                 .upload(src_file,
                         "application/octet-stream".parse().unwrap())
