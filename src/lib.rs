@@ -338,26 +338,25 @@ pub mod google_drive {
     #[async_trait]
     impl Storage for GoogleDrive {
         async fn send(&self, path: &Path) -> Res<String> {
+            log::info!("Sending file {:?}", path);
+            let start = time::Instant::now();
+
             assert!(path.exists(), "File {:?} not found", path);
+            // the func ensures that the file exists
+            let src_file = fs::File::open(path).map_err(|e| {
+                Errors::StorageError(format!("Error opening file '{:?}': {}", path, e))
+            })?;
 
             let hub = match &self.hub {
                 Some(hub) => hub,
                 None => return Err(Errors::StorageError("Hub not init".to_string()))
             };
 
-            log::info!("Sending file {:?}", path);
-            let start = time::Instant::now();
-
             let req = {
                 let folder_id = self.get_file_id("tracker").await?;
                 // path must be convertable to str
                 GoogleDrive::build_file(path.to_str().unwrap(), Some(vec![folder_id]))
             };
-
-            // the func ensures that the file exists
-            let src_file = fs::File::open(path).map_err(|e| {
-                Errors::StorageError(format!("Error opening file '{:?}': {}", path, e))
-            })?;
 
             let (resp, file) = hub.files().create(req)
                 .upload(src_file,
