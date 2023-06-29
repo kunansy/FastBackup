@@ -5,6 +5,8 @@ type Res<T> = Result<T, Errors>;
 #[async_trait::async_trait]
 pub trait Storage {
     async fn send(&self, path: &std::path::Path) -> Res<String>;
+
+    async fn download(&self, file_id: &str, path: &std::path::Path) -> Res<()>;
 }
 
 pub async fn send(store: &impl Storage, path: &std::path::Path) -> Res<String> {
