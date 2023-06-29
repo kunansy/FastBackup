@@ -216,7 +216,7 @@ pub mod google_drive {
     use std::path::Path;
     use std::{fs, io, time};
     use google_drive3::{DriveHub, hyper::client::HttpConnector, hyper_rustls};
-    use google_drive3::oauth2::{ServiceAccountKey, self, authenticator::Authenticator};
+    use google_drive3::oauth2::{ServiceAccountKey, self, authenticator::Authenticator, ServiceAccountAuthenticator as ServiceAuth};
     use async_trait::async_trait;
     use google_drive3::api::File;
     use google_drive3::hyper;
@@ -227,23 +227,41 @@ pub mod google_drive {
     type Hub = DriveHub<HttpsConnector<HttpConnector>>;
 
     pub struct GoogleDrive {
-        secret: ServiceAccountKey,
+        secret: Option<ServiceAccountKey>,
+        auth: Option<Authenticator<HttpsConnector<HttpConnector>>>,
+        hub: Option<Hub>
     }
 
     impl GoogleDrive {
         pub fn new(creds: &String) -> Self {
             let secret = oauth2::parse_service_account_key(creds)
                 .expect("Could not parse creds");
-            GoogleDrive { secret }
+
+            GoogleDrive {
+                secret: Some(secret),
+                auth: None,
+                hub: None
+            }
         }
 
-        async fn build_auth(&self) -> io::Result<Authenticator<HttpsConnector<HttpConnector>>> {
-            oauth2::ServiceAccountAuthenticator::builder(
-                self.secret.clone()).build().await
+        pub async fn build_auth(&mut self) -> io::Result<()> {
+            let secret = match self.secret.take() {
+                Some(v) => v,
+                None => panic!("Could not build auth from None")
+            };
+
+            let auth = ServiceAuth::builder(secret).build().await?;
+            self.auth = Some(auth);
+
+            Ok(())
         }
 
-        pub async fn build_hub(&self) -> io::Result<Hub> {
-            let auth = self.build_auth().await?;
+        pub fn build_hub(&mut self) {
+            let auth = match self.auth.take() {
+                Some(v) => v,
+                None => panic!("Could not build hub from None")
+            };
+
             let connector = hyper_rustls::HttpsConnectorBuilder::new()
                 .with_native_roots()
                 .https_or_http()
@@ -251,7 +269,11 @@ pub mod google_drive {
                 .enable_http2()
                 .build();
 
-            Ok(DriveHub::new(hyper::Client::builder().build(connector), auth))
+            let hub = DriveHub::new(
+                hyper::Client::builder().build(connector),
+                auth
+            );
+            self.hub = Some(hub);
         }
 
         pub async fn get_file_id(hub: &Hub, file_name: &str) -> Res<String> {
@@ -304,10 +326,13 @@ pub mod google_drive {
         async fn send(&self, path: &Path) -> Res<String> {
             assert!(path.exists(), "File {:?} not found", path);
 
+            let hub = match &self.hub {
+                Some(hub) => hub,
+                None => return Err(Errors::StorageError("Hub not init".to_string()))
+            };
+
             log::info!("Sending file {:?}", path);
             let start = time::Instant::now();
-
-            let hub = self.build_hub().await?;
 
             let req = {
                 let mut file = File::default();
