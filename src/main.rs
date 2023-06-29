@@ -4,6 +4,8 @@ use backuper::{settings::Settings, logger, errors::Errors, backup, google_drive:
 
 #[tokio::main]
 async fn main() -> Result<(), Errors> {
+    log::info!("Start app");
+
     backup::assert_programs_exist();
     let start = time::Instant::now();
 
@@ -24,6 +26,6 @@ async fn main() -> Result<(), Errors> {
 
     backuper::send(&drive, &filename).await?;
 
-    log::info!("Backup completed for {:?}", start.elapsed());
+    log::info!("App completed for {:?}", start.elapsed());
     Ok(())
 }
