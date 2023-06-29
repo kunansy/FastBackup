@@ -1,13 +1,13 @@
 pub use errors::Errors;
 
-type Res = Result<String, Errors>;
+type Res<T> = Result<T, Errors>;
 
 #[async_trait::async_trait]
 pub trait Storage {
-    async fn send(&self, path: &std::path::Path) -> Res;
+    async fn send(&self, path: &std::path::Path) -> Res<String>;
 }
 
-pub async fn send(store: &impl Storage, path: &std::path::Path) -> Res {
+pub async fn send(store: &impl Storage, path: &std::path::Path) -> Res<String> {
     store.send(path).await
 }
 
@@ -15,6 +15,7 @@ pub mod settings {
     use std::fs;
     use std::num::ParseIntError;
     use crate::errors::Errors;
+    use crate::Res;
 
     #[derive(Debug)]
     pub struct Settings {
@@ -28,7 +29,7 @@ pub mod settings {
     }
 
     impl Settings {
-        pub fn parse() -> Result<Self, Errors> {
+        pub fn parse() -> Res<Self> {
             log::debug!("Parse settings");
 
             let db_host = std::env::var("DB_HOST")?;
@@ -111,9 +112,10 @@ pub mod backup {
     use std::process::{Command, Stdio};
     use std::time;
     use crate::errors::Errors;
+    use crate::Res;
     use crate::settings::Settings;
 
-    pub fn dump(cfg: &Settings) -> Result<String, Errors> {
+    pub fn dump(cfg: &Settings) -> Res<String> {
         log::info!("Start backupping");
         let start = time::Instant::now();
         let filename = create_filename(&cfg.db_name);
@@ -220,7 +222,7 @@ pub mod google_drive {
     use google_drive3::hyper;
     use google_drive3::hyper_rustls::HttpsConnector;
     use crate::errors::Errors;
-    use crate::Storage;
+    use crate::{Res, Storage};
 
     type Hub = DriveHub<HttpsConnector<HttpConnector>>;
 
@@ -252,7 +254,7 @@ pub mod google_drive {
             Ok(DriveHub::new(hyper::Client::builder().build(connector), auth))
         }
 
-        pub async fn get_file_id(hub: &Hub, file_name: &str) -> Result<String, Errors> {
+        pub async fn get_file_id(hub: &Hub, file_name: &str) -> Res<String> {
             log::debug!("Getting file id: '{}'", file_name);
             let q = format!("name = '{}'", file_name);
 
@@ -299,7 +301,7 @@ pub mod google_drive {
 
     #[async_trait]
     impl Storage for GoogleDrive {
-        async fn send(&self, path: &Path) -> Result<String, Errors> {
+        async fn send(&self, path: &Path) -> Res<String> {
             assert!(path.exists(), "File {:?} not found", path);
 
             log::info!("Sending file {:?}", path);
