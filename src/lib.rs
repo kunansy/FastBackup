@@ -308,6 +308,7 @@ pub mod google_drive {
                     Err(Errors::StorageError(msg))
                 },
                 1 => {
+                    // when length 0 there must be [0] element
                     if let Some(file_id) = files[0].id.take() {
                         log::info!("File id = '{}'", &file_id);
                         Ok(file_id)
