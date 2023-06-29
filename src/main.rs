@@ -15,11 +15,14 @@ async fn main() -> Result<(), Errors> {
 
     let filename = backup::dump(&cfg)?;
     let filename = Path::new(&filename);
-    
-    let mut drive = GoogleDrive::new(&cfg.drive_creds);
-    drive.build_auth().await?;
-    drive.build_hub();
-    
+
+    let drive = {
+        let mut d = GoogleDrive::new(&cfg.drive_creds);
+        d.build_auth().await?;
+        d.build_hub();
+        d
+    };
+
     backuper::send(&drive, &filename).await?;
 
     log::info!("Backup completed for {:?}", start.elapsed());
