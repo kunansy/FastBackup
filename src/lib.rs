@@ -108,7 +108,7 @@ pub mod logger {
     }
 }
 
-pub mod backup {
+pub mod db {
     use std::{path::{Path, PathBuf}, process::{Command, Stdio}, time};
 
     use crate::{errors::Errors, Res, settings::Settings};
