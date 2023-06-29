@@ -14,10 +14,9 @@ pub async fn send(store: &impl Storage, path: &std::path::Path) -> Res<String> {
 }
 
 pub mod settings {
-    use std::fs;
-    use std::num::ParseIntError;
-    use crate::errors::Errors;
-    use crate::Res;
+    use std::{fs, num::ParseIntError};
+
+    use crate::{errors::Errors, Res};
 
     #[derive(Debug)]
     pub struct Settings {
@@ -110,12 +109,9 @@ pub mod logger {
 }
 
 pub mod backup {
-    use std::path::{Path, PathBuf};
-    use std::process::{Command, Stdio};
-    use std::time;
-    use crate::errors::Errors;
-    use crate::Res;
-    use crate::settings::Settings;
+    use std::{path::{Path, PathBuf}, process::{Command, Stdio}, time};
+
+    use crate::{errors::Errors, Res, settings::Settings};
 
     pub fn dump(cfg: &Settings) -> Res<String> {
         log::info!("Start backupping");
@@ -215,17 +211,15 @@ pub mod backup {
 }
 
 pub mod google_drive {
-    use std::path::Path;
-    use std::{fs, io, time};
+    use std::{fs, io, path::Path, time};
+
     use google_drive3::{DriveHub, hyper::client::HttpConnector, hyper_rustls};
-    use google_drive3::oauth2::{ServiceAccountKey, parse_service_account_key, authenticator::Authenticator, ServiceAccountAuthenticator as ServiceAuth};
-    use async_trait::async_trait;
     use google_drive3::api::File;
-    use google_drive3::hyper;
-    use google_drive3::hyper::{Body, body, Response};
+    use google_drive3::hyper::{self, Body, body, Response};
     use google_drive3::hyper_rustls::HttpsConnector;
-    use crate::errors::Errors;
-    use crate::{Res, Storage};
+    use google_drive3::oauth2::{authenticator::Authenticator, parse_service_account_key, ServiceAccountAuthenticator as ServiceAuth, ServiceAccountKey};
+
+    use crate::{errors::Errors, Res, Storage};
 
     type Hub = DriveHub<HttpsConnector<HttpConnector>>;
 
@@ -377,7 +371,7 @@ pub mod google_drive {
         }
     }
 
-    #[async_trait]
+    #[async_trait::async_trait]
     impl Storage for GoogleDrive {
         async fn upload(&self, path: &Path) -> Res<String> {
             log::info!("Sending file {:?}", path);
