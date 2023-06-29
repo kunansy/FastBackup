@@ -326,6 +326,13 @@ pub mod google_drive {
                 }
             }
         }
+
+        pub fn build_file(name: &str, parents: Option<Vec<String>>) -> File {
+            let mut file = File::default();
+            file.name = Some(name.to_string());
+            file.parents = parents;
+            file
+        }
     }
 
     #[async_trait]
@@ -342,13 +349,9 @@ pub mod google_drive {
             let start = time::Instant::now();
 
             let req = {
-                let mut file = File::default();
                 let folder_id = self.get_file_id("tracker").await?;
-
                 // path must be convertable to str
-                file.name = Some(path.to_str().unwrap().to_string());
-                file.parents = Some(vec![folder_id]);
-                file
+                GoogleDrive::build_file(path.to_str().unwrap(), Some(vec![folder_id]))
             };
 
             // the func ensures that the file exists
