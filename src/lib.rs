@@ -216,7 +216,7 @@ pub mod google_drive {
     use std::path::Path;
     use std::{fs, io, time};
     use google_drive3::{DriveHub, hyper::client::HttpConnector, hyper_rustls};
-    use google_drive3::oauth2::{ServiceAccountKey, self, authenticator::Authenticator, ServiceAccountAuthenticator as ServiceAuth};
+    use google_drive3::oauth2::{ServiceAccountKey, parse_service_account_key, authenticator::Authenticator, ServiceAccountAuthenticator as ServiceAuth};
     use async_trait::async_trait;
     use google_drive3::api::File;
     use google_drive3::hyper;
@@ -233,7 +233,7 @@ pub mod google_drive {
     }
     impl DriveAuth {
         pub fn new(creds: &String) -> Self {
-            let secret = oauth2::parse_service_account_key(creds)
+            let secret = parse_service_account_key(creds)
                 .expect("Could not parse creds");
 
             DriveAuth { secret: Some(secret), auth: None }
@@ -333,8 +333,7 @@ pub mod google_drive {
         pub async fn upload_file(&self, req: File, src_file: fs::File) -> Res<(Response<Body>, File)> {
             self.hub.files()
                 .create(req)
-                .upload(src_file,
-                        "application/octet-stream".parse().unwrap())
+                .upload(src_file, "application/octet-stream".parse().unwrap())
                 .await
                 .map_err(|e| {
                     let msg = format!("Sending failed: {:?}", e);
@@ -346,7 +345,7 @@ pub mod google_drive {
             log::info!("Downloading file id '{}' to {:?}", file_id, path);
             let start = time::Instant::now();
 
-            let (resp, file) = self.hub
+            let (resp, _) = self.hub
                 .files()
                 .get(file_id)
                 .add_scope("https://www.googleapis.com/auth/drive")
