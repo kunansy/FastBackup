@@ -298,13 +298,15 @@ pub mod google_drive {
                 let msg = format!("Request error: {:?}, {:?}", resp.status(), resp.body());
                 return Err(Errors::StorageError(msg));
             }
-            if files.files.is_none() {
-                let msg = "Could not get files, response body is empty".to_string();
-                return Err(Errors::StorageError(msg));
-            }
 
-            // here unwrap is save according to the last if statement
-            let mut files = files.files.unwrap();
+            let mut files = match files.files {
+                Some(files) => files,
+                None => {
+                    let msg = "Could not get files, response body is empty".to_string();
+                    return Err(Errors::StorageError(msg));
+                }
+            };
+
             match files.len() {
                 0 => {
                     let msg = format!("File '{}' not found", file_name);
