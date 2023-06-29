@@ -1,6 +1,6 @@
 use std::path::Path;
 use std::time;
-use backuper::{settings::Settings, logger, errors::Errors, backup, google_drive::GoogleDrive, sender};
+use backuper::{settings::Settings, logger, errors::Errors, backup, google_drive::GoogleDrive};
 
 #[tokio::main]
 async fn main() -> Result<(), Errors> {
@@ -16,7 +16,7 @@ async fn main() -> Result<(), Errors> {
     let filename = backup::dump(&cfg)?;
     let filename = Path::new(&filename);
     let drive = GoogleDrive::new(&cfg.drive_creds);
-    sender::send(&drive, &filename).await?;
+    backuper::send(&drive, &filename).await?;
 
     log::info!("Backup completed for {:?}", start.elapsed());
     Ok(())

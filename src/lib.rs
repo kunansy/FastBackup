@@ -1,3 +1,16 @@
+pub use errors::Errors;
+
+type Res = Result<String, Errors>;
+
+#[async_trait::async_trait]
+pub trait Storage {
+    async fn send(&self, path: &std::path::Path) -> Res;
+}
+
+pub async fn send(store: &impl Storage, path: &std::path::Path) -> Res {
+    store.send(path).await
+}
+
 pub mod settings {
     use std::fs;
     use std::num::ParseIntError;
@@ -197,23 +210,6 @@ pub mod backup {
     }
 }
 
-pub mod sender {
-    use std::path::Path;
-    use async_trait::async_trait;
-    use crate::errors::Errors;
-
-    type Res = Result<String, Errors>;
-
-    #[async_trait]
-    pub trait Storage {
-        async fn send(&self, path: &Path) -> Res;
-    }
-
-    pub async fn send(store: &impl Storage, path: &Path) -> Res {
-        store.send(path).await
-    }
-}
-
 pub mod google_drive {
     use std::path::Path;
     use std::{fs, io, time};
@@ -224,7 +220,7 @@ pub mod google_drive {
     use google_drive3::hyper;
     use google_drive3::hyper_rustls::HttpsConnector;
     use crate::errors::Errors;
-    use crate::sender::Storage;
+    use crate::Storage;
 
     type Hub = DriveHub<HttpsConnector<HttpConnector>>;
 
