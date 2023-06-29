@@ -124,7 +124,7 @@ pub mod db {
     pub fn dump(cfg: &Settings) -> Res<String> {
         log::info!("Start backupping");
         let start = time::Instant::now();
-        let filename = create_filename(&cfg.db_name);
+        let filename = create_filename(&cfg.db_name, &cfg.data_folder);
 
         let pg_dump = Command::new("pg_dump")
             .env("PGPASSWORD", &cfg.db_password)
@@ -171,8 +171,12 @@ pub mod db {
         }
     }
 
-    fn create_filename(db_name: &str) -> String {
-        format!("backup_{}_{}.enc", db_name,
+    fn create_filename(db_name: &str, folder: &Option<String>) -> String {
+        let prefix = match folder {
+            Some(v) => format!("{}/", v),
+            None => "".to_string()
+        };
+        format!("{}backup_{}_{}.enc", prefix, db_name,
                 chrono::Utc::now().format("%Y-%m-%d_%H:%M:%S"))
     }
 
