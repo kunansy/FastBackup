@@ -28,11 +28,11 @@ pub mod settings {
 
     #[derive(Debug)]
     pub struct Settings {
-        pub db_host: String,
-        pub db_port: String,
-        pub db_username: String,
-        pub db_password: String,
-        pub db_name: String,
+        db_host: String,
+        db_port: String,
+        db_username: String,
+        db_password: String,
+        db_name: String,
         pub encrypt_pub_key_file: String,
         pub drive_creds: String,
         // dump backups to this folder
