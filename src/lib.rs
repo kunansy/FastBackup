@@ -220,6 +220,42 @@ pub mod db {
 
         log::debug!("Db is alive");
     }
+
+    #[cfg(test)]
+    mod test_db {
+        use crate::db;
+
+        #[test]
+        fn test_create_filename_with_folder() {
+            let f = db::create_filename("tdb", &Some("tf".to_string()));
+
+            assert!(f.starts_with("tf/backup_tdb_"));
+            assert!(f.ends_with(".enc"));
+        }
+
+        #[test]
+        fn test_create_filename_without_folder() {
+            let f = db::create_filename("tdb", &None);
+
+            assert!(f.starts_with("backup_tdb_"));
+            assert!(f.ends_with(".enc"));
+        }
+
+        #[test]
+        fn test_assert_programs_exist() {
+            db::assert_programs_exist();
+        }
+
+        #[test]
+        fn test_find_it() {
+            assert_eq!(db::find_it("ls"), Some("/bin/ls".into()));
+        }
+
+        #[test]
+        fn test_find_it_none() {
+            assert_eq!(db::find_it("myproc_test"), None);
+        }
+    }
 }
 
 pub mod google_drive {
