@@ -10,7 +10,7 @@ COPY src src/
 COPY vendor vendor/
 COPY .cargo/config.toml .cargo/config.toml
 
-RUN cargo build --release --bins --offline -vv -j $(nproc)
+RUN cargo build --release --bin backup-server --offline -vv -j $(nproc)
 
 FROM ubuntu:22.04
 
@@ -36,4 +36,4 @@ RUN apt-get upgrade -y \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR app
-COPY --from=builder /build/target/release/app ./
+COPY --from=builder /build/target/release/backup-server ./
