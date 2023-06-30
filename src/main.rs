@@ -1,5 +1,3 @@
-mod server;
-
 use std::path::Path;
 use std::time;
 use backuper::{settings::Settings, logger, errors::Errors, db, google_drive::DriveAuth};
