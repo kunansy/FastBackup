@@ -158,11 +158,13 @@ pub mod db {
         let start = time::Instant::now();
         let filename = create_filename(&cfg.db_name(), data_folder);
 
+        // TODO: stop one of the processes failed
         let pg_dump = Command::new("pg_dump")
             .env("PGPASSWORD", &cfg.db_password())
             .args(["-h", &cfg.db_host()])
             .args(["-p", &cfg.db_port()])
             .args(["-U", &cfg.db_username()])
+            // TODO: more dump options
             .arg("--data-only")
             .arg("--verbose")
             .arg("--inserts")
