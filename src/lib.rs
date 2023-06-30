@@ -15,8 +15,6 @@ pub trait DbConfig {
     fn db_username(&self) -> &String;
     fn db_password(&self) -> &String;
     fn db_name(&self) -> &String;
-    fn data_folder(&self) -> &Option<String>;
-    fn encrypt_pub_key_file(&self) -> &String;
 }
 
 pub async fn send(store: &impl Storage, path: &std::path::Path) -> Res<String> {
@@ -121,14 +119,6 @@ pub mod settings {
 
         fn db_name(&self) -> &String {
             &self.db_name
-        }
-
-        fn data_folder(&self) -> &Option<String> {
-            &self.data_folder
-        }
-
-        fn encrypt_pub_key_file(&self) -> &String {
-            &self.encrypt_pub_key_file
         }
     }
 }
