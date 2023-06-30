@@ -151,10 +151,12 @@ pub mod db {
 
     use crate::{DbConfig, errors::Errors, Res, settings::Settings};
 
-    pub fn dump(cfg: &impl DbConfig) -> Res<String> {
+    pub fn dump(cfg: &impl DbConfig,
+                data_folder: &Option<String>,
+                encrypt_pub_key_file: &String) -> Res<String> {
         log::info!("Start backupping");
         let start = time::Instant::now();
-        let filename = create_filename(&cfg.db_name(), &cfg.data_folder());
+        let filename = create_filename(&cfg.db_name(), data_folder);
 
         let pg_dump = Command::new("pg_dump")
             .env("PGPASSWORD", &cfg.db_password())
@@ -184,7 +186,7 @@ pub mod db {
             .arg("-binary")
             .args(["-outform", "DEM"])
             .args(["-out", &filename])
-            .arg(&cfg.encrypt_pub_key_file())
+            .arg(encrypt_pub_key_file)
             .stdin(Stdio::from(gzip.stdout.unwrap()))
             .spawn()?;
 
