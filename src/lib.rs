@@ -149,7 +149,7 @@ pub mod logger {
 pub mod db {
     use std::{path::{Path, PathBuf}, process::{Command, Stdio}, time};
 
-    use crate::{DbConfig, errors::Errors, Res, settings::Settings};
+    use crate::{DbConfig, errors::Errors, Res};
 
     pub fn dump(cfg: &impl DbConfig,
                 data_folder: &Option<String>,
@@ -238,14 +238,14 @@ pub mod db {
         })
     }
 
-    pub fn assert_db_is_ready(cfg: &Settings) {
+    pub fn assert_db_is_ready(cfg: &impl DbConfig) {
         log::debug!("Check the database is alive");
 
         let c = Command::new("pg_isready")
-            .args(["--host", &cfg.db_host])
-            .args(["--port", &cfg.db_port])
+            .args(["--host", &cfg.db_host()])
+            .args(["--port", &cfg.db_port()])
             .args(["--timeout", "10"])
-            .args(["--username", &cfg.db_username])
+            .args(["--username", &cfg.db_username()])
             .status().unwrap()
             .success();
         assert!(c, "DB is not ready");
