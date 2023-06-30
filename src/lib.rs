@@ -447,3 +447,89 @@ pub mod errors {
         }
     }
 }
+
+
+#[cfg(test)]
+mod test_settings {
+
+    use std::path::Path;
+    use crate::settings::Settings;
+
+    #[test]
+    fn test_parse_with_empty_env() {
+        for (key, _) in std::env::vars() {
+            std::env::remove_var(key);
+        }
+        // TODO: check not found msg
+        assert!(Settings::parse().is_err());
+    }
+
+    #[test]
+    fn test_parse_ok() {
+        assert!(Path::new(".env").exists(), ".env should exist");
+        Settings::load_env();
+
+        assert!(Settings::parse().is_ok());
+    }
+
+    #[test]
+    fn test_parse_without_a_var() {
+        assert!(Path::new(".env").exists(), ".env should exist");
+        Settings::load_env();
+
+        std::env::remove_var("DB_NAME");
+        assert!(std::env::var("DB_NAME").is_err());
+
+        // TODO: check not found msg
+        assert!(Settings::parse().is_err());
+    }
+
+    #[test]
+    fn test_parse_wrong_data_folder() {
+        assert!(Path::new(".env").exists(), ".env should exist");
+        Settings::load_env();
+
+        std::env::set_var("DATA_FOLDER", "test/");
+
+        // TODO: check parse error msg
+        assert!(Settings::parse().is_err());
+    }
+
+    #[test]
+    fn test_parse_not_int_port() {
+        assert!(Path::new(".env").exists(), ".env should exist");
+        Settings::load_env();
+
+        std::env::set_var("DB_PORT", "3.1415926535");
+
+        // TODO: check parse error msg
+        assert!(Settings::parse().is_err());
+    }
+
+    #[test]
+    fn test_parse_negative_port() {
+        assert!(Path::new(".env").exists(), ".env should exist");
+        Settings::load_env();
+
+        std::env::set_var("DB_PORT", "-42");
+
+        // TODO: check parse error msg
+        assert!(Settings::parse().is_err());
+    }
+
+    #[test]
+    fn test_parse_zero_port() {
+        assert!(Path::new(".env").exists(), ".env should exist");
+        Settings::load_env();
+
+        std::env::set_var("DB_PORT", "0");
+
+        // TODO: check parse error msg
+        assert!(Settings::parse().is_err());
+    }
+
+    #[test]
+    fn test_load_env() {
+        Settings::load_env();
+    }
+}
