@@ -1,0 +1,16 @@
+version: '3'
+
+services:
+  backup:
+    image: kunansy/backup-postgres-rs:0.1.0
+    restart: always
+    container_name: backup
+    env_file: .env
+    entrypoint: ["/app/backup-server"]
+    ports:
+      - "127.0.0.1:${BACKUP_PORT}:50051"
+    healthcheck:
+      test: exit 0
+      interval: 10s
+      timeout: 5s
+      retries: 3
