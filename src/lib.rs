@@ -9,6 +9,16 @@ pub trait Storage {
     async fn download(&self, file_id: &str, path: &std::path::Path) -> Res<()>;
 }
 
+pub trait DbConfig {
+    fn db_host(&self) -> &String;
+    fn db_port(&self) -> &String;
+    fn db_username(&self) -> &String;
+    fn db_password(&self) -> &String;
+    fn db_name(&self) -> &String;
+    fn data_folder(&self) -> &Option<String>;
+    fn encrypt_pub_key_file(&self) -> &String;
+}
+
 pub async fn send(store: &impl Storage, path: &std::path::Path) -> Res<String> {
     store.upload(path).await
 }
@@ -16,7 +26,7 @@ pub async fn send(store: &impl Storage, path: &std::path::Path) -> Res<String> {
 pub mod settings {
     use std::{fs, num::ParseIntError};
 
-    use crate::{errors::Errors, Res};
+    use crate::{DbConfig, errors::Errors, Res};
 
     #[derive(Debug)]
     pub struct Settings {
@@ -119,24 +129,24 @@ pub mod logger {
 pub mod db {
     use std::{path::{Path, PathBuf}, process::{Command, Stdio}, time};
 
-    use crate::{errors::Errors, Res, settings::Settings};
+    use crate::{DbConfig, errors::Errors, Res, settings::Settings};
 
-    pub fn dump(cfg: &Settings) -> Res<String> {
+    pub fn dump(cfg: &impl DbConfig) -> Res<String> {
         log::info!("Start backupping");
         let start = time::Instant::now();
-        let filename = create_filename(&cfg.db_name, &cfg.data_folder);
+        let filename = create_filename(&cfg.db_name(), &cfg.data_folder());
 
         let pg_dump = Command::new("pg_dump")
-            .env("PGPASSWORD", &cfg.db_password)
-            .args(["-h", &cfg.db_host])
-            .args(["-p", &cfg.db_port])
-            .args(["-U", &cfg.db_username])
+            .env("PGPASSWORD", &cfg.db_password())
+            .args(["-h", &cfg.db_host()])
+            .args(["-p", &cfg.db_port()])
+            .args(["-U", &cfg.db_username()])
             .arg("--data-only")
             .arg("--verbose")
             .arg("--inserts")
             .arg("--blobs")
             .arg("--column-inserts")
-            .arg(&cfg.db_name)
+            .arg(&cfg.db_name())
             .stdout(Stdio::piped())
             .spawn()?;
 
@@ -154,7 +164,7 @@ pub mod db {
             .arg("-binary")
             .args(["-outform", "DEM"])
             .args(["-out", &filename])
-            .arg(&cfg.encrypt_pub_key_file)
+            .arg(&cfg.encrypt_pub_key_file())
             .stdin(Stdio::from(gzip.stdout.unwrap()))
             .spawn()?;
 
