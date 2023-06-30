@@ -101,6 +101,36 @@ pub mod settings {
             }
         }
     }
+
+    impl DbConfig for Settings {
+        fn db_host(&self) -> &String {
+            &self.db_host
+        }
+
+        fn db_port(&self) -> &String {
+            &self.db_port
+        }
+
+        fn db_username(&self) -> &String {
+            &self.db_username
+        }
+
+        fn db_password(&self) -> &String {
+            &self.db_password
+        }
+
+        fn db_name(&self) -> &String {
+            &self.db_name
+        }
+
+        fn data_folder(&self) -> &Option<String> {
+            &self.data_folder
+        }
+
+        fn encrypt_pub_key_file(&self) -> &String {
+            &self.encrypt_pub_key_file
+        }
+    }
 }
 
 pub mod logger {
