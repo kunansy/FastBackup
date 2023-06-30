@@ -25,5 +25,5 @@ name = "app"
 path = "src/main.rs"
 
 [[bin]] # Bin to run the GoogleDrive gRPC server
-name = "google-drive-server"
+name = "backup-server"
 path = "src/server.rs"
