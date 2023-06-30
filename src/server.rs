@@ -43,6 +43,7 @@ impl GoogleDrive for Backup {
         log::info!("Got a request: {:?}", request);
 
         let params = request.into_inner();
+        Settings::load_env();
         let cfg = Settings::parse().unwrap();
 
         let path = db::dump(&params, &cfg.data_folder, &cfg.encrypt_pub_key_file)
