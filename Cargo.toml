@@ -23,3 +23,7 @@ tonic-build = "0.9"
 [[bin]]
 name = "app"
 path = "src/main.rs"
+
+[[bin]] # Bin to run the GoogleDrive gRPC server
+name = "google-drive-server"
+path = "src/server.rs"
