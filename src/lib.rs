@@ -533,3 +533,13 @@ mod test_settings {
         Settings::load_env();
     }
 }
+
+#[cfg(test)]
+mod test_logger {
+    use crate::logger;
+
+    #[test]
+    fn test_init() {
+        logger::init();
+    }
+}
