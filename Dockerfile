@@ -1,12 +1,15 @@
 FROM rust:1.70-slim-buster as builder
 
 RUN apt-get update  \
-    && apt-get upgrade -y
+    && apt-get upgrade -y  \
+    && apt-get install protobuf-compiler -y
 
 WORKDIR build
 
 COPY Cargo.toml Cargo.lock ./
 COPY src src/
+COPY proto proto/
+COPY build.rs ./
 COPY vendor vendor/
 COPY .cargo/config.toml .cargo/config.toml
 
