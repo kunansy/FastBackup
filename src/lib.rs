@@ -9,6 +9,14 @@ pub trait Storage {
     async fn download(&self, file_id: &str, path: &std::path::Path) -> Res<()>;
 }
 
+pub trait DbConfig {
+    fn db_host(&self) -> &String;
+    fn db_port(&self) -> &String;
+    fn db_username(&self) -> &String;
+    fn db_password(&self) -> &String;
+    fn db_name(&self) -> &String;
+}
+
 pub async fn send(store: &impl Storage, path: &std::path::Path) -> Res<String> {
     store.upload(path).await
 }
@@ -16,15 +24,15 @@ pub async fn send(store: &impl Storage, path: &std::path::Path) -> Res<String> {
 pub mod settings {
     use std::{fs, num::ParseIntError};
 
-    use crate::{errors::Errors, Res};
+    use crate::{DbConfig, errors::Errors, Res};
 
     #[derive(Debug)]
     pub struct Settings {
-        pub db_host: String,
-        pub db_port: String,
-        pub db_username: String,
-        pub db_password: String,
-        pub db_name: String,
+        db_host: String,
+        db_port: String,
+        db_username: String,
+        db_password: String,
+        db_name: String,
         pub encrypt_pub_key_file: String,
         pub drive_creds: String,
         // dump backups to this folder
@@ -91,6 +99,28 @@ pub mod settings {
             }
         }
     }
+
+    impl DbConfig for Settings {
+        fn db_host(&self) -> &String {
+            &self.db_host
+        }
+
+        fn db_port(&self) -> &String {
+            &self.db_port
+        }
+
+        fn db_username(&self) -> &String {
+            &self.db_username
+        }
+
+        fn db_password(&self) -> &String {
+            &self.db_password
+        }
+
+        fn db_name(&self) -> &String {
+            &self.db_name
+        }
+    }
 }
 
 pub mod logger {
@@ -119,24 +149,28 @@ pub mod logger {
 pub mod db {
     use std::{path::{Path, PathBuf}, process::{Command, Stdio}, time};
 
-    use crate::{errors::Errors, Res, settings::Settings};
+    use crate::{DbConfig, errors::Errors, Res};
 
-    pub fn dump(cfg: &Settings) -> Res<String> {
+    pub fn dump(cfg: &impl DbConfig,
+                data_folder: &Option<String>,
+                encrypt_pub_key_file: &String) -> Res<String> {
         log::info!("Start backupping");
         let start = time::Instant::now();
-        let filename = create_filename(&cfg.db_name, &cfg.data_folder);
+        let filename = create_filename(&cfg.db_name(), data_folder);
 
+        // TODO: stop one of the processes failed
         let pg_dump = Command::new("pg_dump")
-            .env("PGPASSWORD", &cfg.db_password)
-            .args(["-h", &cfg.db_host])
-            .args(["-p", &cfg.db_port])
-            .args(["-U", &cfg.db_username])
+            .env("PGPASSWORD", &cfg.db_password())
+            .args(["-h", &cfg.db_host()])
+            .args(["-p", &cfg.db_port()])
+            .args(["-U", &cfg.db_username()])
+            // TODO: more dump options
             .arg("--data-only")
             .arg("--verbose")
             .arg("--inserts")
             .arg("--blobs")
             .arg("--column-inserts")
-            .arg(&cfg.db_name)
+            .arg(&cfg.db_name())
             .stdout(Stdio::piped())
             .spawn()?;
 
@@ -154,7 +188,7 @@ pub mod db {
             .arg("-binary")
             .args(["-outform", "DEM"])
             .args(["-out", &filename])
-            .arg(&cfg.encrypt_pub_key_file)
+            .arg(encrypt_pub_key_file)
             .stdin(Stdio::from(gzip.stdout.unwrap()))
             .spawn()?;
 
@@ -206,19 +240,22 @@ pub mod db {
         })
     }
 
-    pub fn assert_db_is_ready(cfg: &Settings) {
+    pub fn assert_db_is_ready(cfg: &impl DbConfig) {
+        assert!(is_db_ready(cfg), "DB is not ready");
+    }
+
+    pub fn is_db_ready<T>(cfg: &T) -> bool
+        where T: DbConfig
+    {
         log::debug!("Check the database is alive");
 
-        let c = Command::new("pg_isready")
-            .args(["--host", &cfg.db_host])
-            .args(["--port", &cfg.db_port])
+        Command::new("pg_isready")
+            .args(["--host", &cfg.db_host()])
+            .args(["--port", &cfg.db_port()])
             .args(["--timeout", "10"])
-            .args(["--username", &cfg.db_username])
+            .args(["--username", &cfg.db_username()])
             .status().unwrap()
-            .success();
-        assert!(c, "DB is not ready");
-
-        log::debug!("Db is alive");
+            .success()
     }
 
     #[cfg(test)]

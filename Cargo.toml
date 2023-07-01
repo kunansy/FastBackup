@@ -14,7 +14,16 @@ thiserror = "1.0"
 google-drive3 = "5.0"
 async-trait = "0.1"
 tokio = { version = "1.28", features = ["full"] }
+tonic = "0.9"
+prost = "0.11"
+
+[build-dependencies]
+tonic-build = "0.9"
 
 [[bin]]
 name = "app"
 path = "src/main.rs"
+
+[[bin]] # Bin to run the GoogleDrive gRPC server
+name = "backup-server"
+path = "src/server.rs"

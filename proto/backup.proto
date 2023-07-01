@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package backup;
+
+// work with google drive through this service
+service GoogleDrive {
+    // TODO: restore
+    // TODO: healthcheck
+    rpc Backup (BackupRequest) returns (BackupReply);
+}
+
+message BackupRequest {
+    string db_host = 1;
+    string db_port = 2;
+    string db_username = 3;
+    string db_password = 4;
+    string db_name = 5;
+    // TODO
+    bool with_enc = 6;
+}
+
+message BackupReply {
+    string file_id = 1;
+}

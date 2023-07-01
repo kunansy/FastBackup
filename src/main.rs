@@ -15,7 +15,7 @@ async fn main() -> Result<(), Errors> {
     let cfg = Settings::parse()?;
     db::assert_db_is_ready(&cfg);
 
-    let filename = db::dump(&cfg)?;
+    let filename = db::dump(&cfg, &cfg.data_folder, &cfg.encrypt_pub_key_file)?;
     let filename = Path::new(&filename);
 
     let drive = {

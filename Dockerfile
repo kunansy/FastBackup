@@ -1,16 +1,19 @@
 FROM rust:1.70-slim-buster as builder
 
 RUN apt-get update  \
-    && apt-get upgrade -y
+    && apt-get upgrade -y  \
+    && apt-get install protobuf-compiler -y
 
 WORKDIR build
 
 COPY Cargo.toml Cargo.lock ./
 COPY src src/
+COPY proto proto/
+COPY build.rs ./
 COPY vendor vendor/
 COPY .cargo/config.toml .cargo/config.toml
 
-RUN cargo build --release --bins --offline -vv -j $(nproc)
+RUN cargo build --release --bin backup-server --offline -vv -j $(nproc)
 
 FROM ubuntu:22.04
 
@@ -20,6 +23,7 @@ ENV TZ Etc/UTC
 
 LABEL maintainer="Kirill <k@kunansy.ru>"
 
+# TODO: add these apps by mounting to the container from the host machine
 RUN apt-get update \
     && apt-get upgrade -y \
     && apt-get install apt-utils wget lsb-release -y
@@ -36,4 +40,4 @@ RUN apt-get upgrade -y \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR app
-COPY --from=builder /build/target/release/app ./
+COPY --from=builder /build/target/release/backup-server ./
