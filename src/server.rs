@@ -5,10 +5,10 @@ use tonic::{Request, Response, Status, transport::Server};
 use backuper::{db, DbConfig};
 use backuper::google_drive::DriveAuth;
 use backuper::settings::Settings;
-use google_drive::{BackupReply, BackupRequest};
-use google_drive::google_drive_server::{GoogleDrive, GoogleDriveServer};
+use backup::{BackupReply, BackupRequest};
+use backup::google_drive_server::{GoogleDrive, GoogleDriveServer};
 
-pub mod google_drive {
+pub mod backup {
     tonic::include_proto!("backup");
 }
 
