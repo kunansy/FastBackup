@@ -151,6 +151,21 @@ pub mod db {
 
     use crate::{DbConfig, errors::Errors, Res};
 
+    trait PathOps {
+        fn file_name(&self) -> &str;
+    }
+
+    impl PathOps for String {
+        fn file_name(&self) -> &str {
+            match self.contains("/") {
+                true => {
+                    self.split("/").last().unwrap()
+                },
+                false => self
+            }
+        }
+    }
+
     pub fn dump(cfg: &impl DbConfig,
                 data_folder: &Option<String>,
                 encrypt_pub_key_file: &String) -> Res<String> {
@@ -187,7 +202,7 @@ pub mod db {
             .arg("-aes256")
             .arg("-binary")
             .args(["-outform", "DEM"])
-            .args(["-out", &filename])
+            .args(["-out", filename.file_name()])
             .arg(encrypt_pub_key_file)
             .stdin(Stdio::from(gzip.stdout.unwrap()))
             .spawn()?;
