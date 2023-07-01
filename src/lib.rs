@@ -166,7 +166,6 @@ pub mod db {
             .args(["-U", &cfg.db_username()])
             // TODO: more dump options
             .arg("--data-only")
-            .arg("--verbose")
             .arg("--inserts")
             .arg("--blobs")
             .arg("--column-inserts")
