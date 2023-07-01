@@ -9,8 +9,16 @@ services:
     entrypoint: ["/app/backup-server"]
     ports:
       - "127.0.0.1:${BACKUP_PORT}:50051"
+    volumes:
+      - ./data:/app/data:rw
+    networks:
+      - readingtracker_tracker-net
     healthcheck:
       test: exit 0
       interval: 10s
       timeout: 5s
       retries: 3
+
+networks:
+  readingtracker_tracker-net:
+    external: true
