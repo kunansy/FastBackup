@@ -404,7 +404,9 @@ pub mod google_drive {
             }
         }
 
-        pub fn build_file(name: &str, parents: Option<Vec<String>>) -> File {
+        pub fn build_file<T>(name: T, parents: Option<Vec<String>>) -> File
+            where T: ToString
+        {
             let mut file = File::default();
             file.name = Some(name.to_string());
             file.parents = parents;
@@ -472,7 +474,8 @@ pub mod google_drive {
             let req = {
                 let folder_id = self.get_file_id("tracker").await?;
                 // path must be convertable to str
-                GoogleDrive::build_file(path.to_str().unwrap(), Some(vec![folder_id]))
+                let file_name = path.file_name().unwrap().to_str().unwrap();
+                GoogleDrive::build_file(file_name, Some(vec![folder_id]))
             };
 
             let (resp, file) = self.upload_file(req, src_file).await?;
