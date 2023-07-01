@@ -241,18 +241,7 @@ pub mod db {
     }
 
     pub fn assert_db_is_ready(cfg: &impl DbConfig) {
-        log::debug!("Check the database is alive");
-
-        let c = Command::new("pg_isready")
-            .args(["--host", &cfg.db_host()])
-            .args(["--port", &cfg.db_port()])
-            .args(["--timeout", "10"])
-            .args(["--username", &cfg.db_username()])
-            .status().unwrap()
-            .success();
-        assert!(c, "DB is not ready");
-
-        log::debug!("Db is alive");
+        assert!(is_db_ready(cfg), "DB is not ready");
     }
 
     pub fn is_db_ready<T>(cfg: &T) -> bool
