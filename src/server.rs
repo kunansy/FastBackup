@@ -49,12 +49,10 @@ impl GoogleDrive for Backup {
 
         Settings::load_env();
         let cfg = Settings::parse()
-            .map_err(|e| Status::aborted(e.to_string()))?;
+            .map_err(|e| Status::internal(e.to_string()))?;
 
         let path = db::dump(&params, &cfg.data_folder, &cfg.encrypt_pub_key_file)
-            .map_err(|e| {
-                Status::new(500.into(), e.to_string())
-            })?;
+            .map_err(|e| Status::internal(e.to_string()))?;
         let path = Path::new(&path);
 
         let drive = {
@@ -64,9 +62,7 @@ impl GoogleDrive for Backup {
         };
         let file_id = backuper::send(&drive, path)
             .await
-            .map_err(|e| {
-                Status::new(500.into(), e.to_string())
-            })?;
+            .map_err(|e| Status::aborted(e.to_string()))?;
 
         Ok(Response::new(BackupReply { file_id }))
     }
