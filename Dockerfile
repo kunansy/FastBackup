@@ -23,8 +23,7 @@ ENV TZ Etc/UTC
 
 LABEL maintainer="Kirill <k@kunansy.ru>"
 
-# TODO: add these apps by mounting to the container from the host machine
-# install Postgresql 15; only in gh actions the key not found
+# install Postgresql 15
 RUN apt-get update \
     && apt-get upgrade -y \
     && apt-get install apt-utils wget lsb-release gnupg -y \
