@@ -44,7 +44,8 @@ impl GoogleDrive for Backup {
 
         let params = request.into_inner();
         Settings::load_env();
-        let cfg = Settings::parse().unwrap();
+        let cfg = Settings::parse()
+            .map_err(|e| Status::aborted(e.to_string()))?;
 
         let path = db::dump(&params, &cfg.data_folder, &cfg.encrypt_pub_key_file)
             .map_err(|e| {
