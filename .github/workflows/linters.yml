@@ -30,4 +30,4 @@ jobs:
 
     - name: Build
       run: |
-        cargo build --bins --release -j $(nproc)
+        cargo build --bins --release --offline -j $(nproc)
