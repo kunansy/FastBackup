@@ -27,8 +27,9 @@ LABEL maintainer="Kirill <k@kunansy.ru>"
 RUN apt-get update \
     && apt-get upgrade -y \
     && apt-get install apt-utils wget lsb-release -y
-# install Postgresql 15
-RUN echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
+# install Postgresql 15; only in gh actions the key not found
+RUN apt-key adv --recv-keys --keyserver keyserver.ubuntu.com 7FCC7D46ACCC4CF8 \
+    && echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
     && wget -qO- https://www.postgresql.org/media/keys/ACCC4CF8.asc | tee /etc/apt/trusted.gpg.d/pgdg.asc &>/dev/null \
     && apt-get update
 
