@@ -43,6 +43,10 @@ impl GoogleDrive for Backup {
         log::info!("Got a request: {:?}", request);
 
         let params = request.into_inner();
+        if !db::is_db_ready(&params) {
+            return Err(Status::not_found("The database not ready"));
+        }
+
         Settings::load_env();
         let cfg = Settings::parse()
             .map_err(|e| Status::aborted(e.to_string()))?;
