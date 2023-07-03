@@ -540,12 +540,14 @@ pub mod google_drive {
             Ok(file_id)
         }
 
-        async fn download(&self, file_name: &str, path: &Path) -> Res<()> {
-            // TODO: get the last backup file
-            let file_id = self.get_file_id(file_name).await?;
-            self.download_file(&file_id, path).await?;
+        async fn download(&self, folder_name: &str, prefix: &str) -> Res<String> {
+            let folder_id = self.get_file_id(folder_name).await?;
+            let (file_id, file_name) = self.get_last_file_id(&folder_id).await?;
 
-            Ok(())
+            let path = format!("{}{}", prefix, file_name);
+            self.download_file(&file_id, Path::new(&path)).await?;
+
+            Ok(path)
         }
     }
 }
