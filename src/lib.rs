@@ -34,6 +34,7 @@ pub mod settings {
         db_password: String,
         db_name: String,
         pub encrypt_pub_key_file: String,
+        pub encrypt_key_file: String,
         pub drive_creds: String,
         // dump backups to this folder
         pub data_folder: Option<String>,
@@ -48,6 +49,7 @@ pub mod settings {
             let db_password = std::env::var("DB_PASSWORD")?;
             let db_name = std::env::var("DB_NAME")?;
             let encrypt_pub_key_file = std::env::var("ENCRYPT_PUB_KEY_FILE")?;
+            let encrypt_key_file = std::env::var("ENCRYPT_KEY_FILE")?;
             let drive_creds = std::env::var("DRIVE_CREDS")?;
             let data_folder = std::env::var("DATA_FOLDER")
                 .map_or(None, |v| {
@@ -67,6 +69,7 @@ pub mod settings {
                 db_password,
                 db_name,
                 encrypt_pub_key_file,
+                encrypt_key_file,
                 drive_creds,
                 data_folder,
             })
