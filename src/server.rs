@@ -1,7 +1,9 @@
 use std::path::Path;
 use std::sync::Arc;
+use std::thread;
 
 use tonic::{Request, Response, Status, transport::Server};
+use signal_hook::{iterator::Signals, consts::SIGHUP};
 use once_cell::sync::Lazy;
 
 use backuper::{db, DbConfig};
@@ -77,6 +79,22 @@ impl GoogleDrive for Backup {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut signals = Signals::new(&[SIGHUP])?;
+
+    // reload the settings on SIGHUP
+    thread::spawn(move || {
+        for sig in signals.forever() {
+            log::info!("Received signal '{:?}', reload the settings", sig);
+
+            unsafe {
+                CFG = Lazy::<Arc<Settings>>::new(|| {
+                    Settings::load_env();
+                    Arc::new(Settings::parse().unwrap())
+                });
+            }
+        }
+    });
+
     let addr = "0.0.0.0:50051".parse()?;
     let server = Backup::default();
 
