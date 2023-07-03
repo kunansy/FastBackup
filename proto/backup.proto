@@ -6,7 +6,7 @@ package backup;
 service GoogleDrive {
     // TODO: healthcheck
     rpc Backup (BackupRequest) returns (BackupReply);
-    rpc Restore (RestoreRequest) returns (RestoreReply);
+//    rpc Restore (RestoreRequest) returns (RestoreReply);
 }
 
 message BackupRequest {
