@@ -280,9 +280,11 @@ pub mod db {
     pub fn define_tables_order<'a>(tables: &'a Vec<String>,
                                    table_refs: &'a HashMap<String, String>) -> Vec<&'a String> {
         let mut weights = HashMap::new();
+        // how many links to the table
         for table_name in table_refs.values() {
             *weights.entry(table_name).or_insert(0) += 1;
         }
+        // there might be tables without links, add them
         for table_name in tables {
             weights.entry(table_name).or_insert(0);
         }
