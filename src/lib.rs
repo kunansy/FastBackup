@@ -597,6 +597,12 @@ pub mod errors {
             Self::DumpError(value.to_string())
         }
     }
+
+    impl From<sqlx::Error> for Errors {
+        fn from(value: sqlx::Error) -> Self {
+            Self::DumpError(value.to_string())
+        }
+    }
 }
 
 
