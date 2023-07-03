@@ -103,6 +103,7 @@ dependencies = [
  "env_logger",
  "google-drive3",
  "log",
+ "once_cell",
  "prost",
  "thiserror",
  "tokio",

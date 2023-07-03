@@ -1,6 +1,8 @@
 use std::path::Path;
+use std::sync::Arc;
 
 use tonic::{Request, Response, Status, transport::Server};
+use once_cell::sync::Lazy;
 
 use backuper::{db, DbConfig};
 use backuper::google_drive::DriveAuth;
@@ -37,19 +39,24 @@ impl DbConfig for BackupRequest {
     }
 }
 
+
+static mut CFG: Lazy<Arc<Settings>> = Lazy::new(|| {
+    Settings::load_env();
+    Arc::new(Settings::parse().unwrap())
+});
+
 #[tonic::async_trait]
 impl GoogleDrive for Backup {
     async fn backup(&self, request: Request<BackupRequest>) -> Result<Response<BackupReply>, Status> {
+        let cfg = unsafe {
+            CFG.clone()
+        };
         log::info!("Got a request: {:?}", request);
 
         let params = request.into_inner();
         if !db::is_db_ready(&params) {
             return Err(Status::not_found("The database not ready"));
         }
-
-        Settings::load_env();
-        let cfg = Settings::parse()
-            .map_err(|e| Status::internal(e.to_string()))?;
 
         let path = db::dump(&params, &cfg.data_folder, &cfg.encrypt_pub_key_file)
             .map_err(|e| Status::internal(e.to_string()))?;
