@@ -6,7 +6,7 @@ type Res<T> = Result<T, Errors>;
 pub trait Storage {
     async fn upload(&self, path: &std::path::Path) -> Res<String>;
 
-    async fn download(&self, file_id: &str, path: &std::path::Path) -> Res<()>;
+    async fn download(&self, file_id: &str, path: &str) -> Res<String>;
 }
 
 pub trait DbConfig {
