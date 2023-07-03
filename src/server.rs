@@ -72,10 +72,10 @@ static mut CFG: Lazy<Arc<Settings>> = Lazy::new(|| {
 #[tonic::async_trait]
 impl GoogleDrive for Backup {
     async fn backup(&self, request: Request<BackupRequest>) -> Result<Response<BackupReply>, Status> {
+        log::info!("Request to backup: {:?}", request);
         let cfg = unsafe {
             CFG.clone()
         };
-        log::info!("Got a request: {:?}", request);
 
         let params = request.into_inner();
         if !db::is_db_ready(&params) {
