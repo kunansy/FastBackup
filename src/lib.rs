@@ -455,6 +455,53 @@ pub mod google_drive {
             log::info!("File got for {:?}", start.elapsed());
             Ok(())
         }
+
+        /// Get id of the newest file in the folder.
+        /// Required to restore.
+        pub async fn get_last_file_id(&self, folder_id: &str) -> Res<String> {
+            log::info!("Getting id of the last file, folder id: '{}'", folder_id);
+            let start = time::Instant::now();
+
+            let q = format!("'{}' in parents", folder_id);
+            let (resp, files) = self.hub
+                .files()
+                .list()
+                .param("fields", "files(id,createdTime)")
+                .q(&q)
+                .doit().await
+                .map_err(|e| {
+                    let msg = format!("Error requesting to Google Drive: {}", e.to_string());
+                    Errors::StorageError(msg)
+                })?;
+
+            if !resp.status().is_success() {
+                let msg = format!("Request error: {:?}, {:?}", resp.status(), resp.body());
+                return Err(Errors::StorageError(msg));
+            }
+
+            let mut files = match files.files {
+                Some(files) if files.len() > 0 => files,
+                _ => {
+                    let msg = "Could not get files, response body is empty".to_string();
+                    return Err(Errors::StorageError(msg));
+                }
+            };
+            log::debug!("{} files found, sort and get the last one", files.len());
+
+            files.sort_by(
+                |prev, next| {
+                    // created_time must exist
+                    next.created_time.unwrap().cmp(&prev.created_time.unwrap())
+                }
+            );
+            // if list is not empty we can get the first elem
+            let mut first = files.into_iter().nth(0).unwrap();
+            // field id must exist
+            let file_id = first.id.take().unwrap();
+            log::info!("File id '{}' got for {:?}", file_id, start.elapsed());
+
+            Ok(file_id)
+        }
     }
 
     #[async_trait::async_trait]
