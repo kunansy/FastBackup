@@ -156,7 +156,7 @@ pub mod db {
     use chrono::{NaiveDate, NaiveDateTime};
     use serde_json::Value;
     use sqlx::{Column, PgPool, Pool, Postgres, query, Row, TypeInfo};
-    use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgRow, PgSslMode, PgTypeKind, types};
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgRow, PgSslMode, PgTypeKind};
     use sqlx::types::Uuid;
 
     use crate::{DbConfig, errors::Errors, Res};
@@ -277,8 +277,8 @@ pub mod db {
         Ok(refs)
     }
 
-     pub fn define_tables_order<'a>(tables: &'a Vec<String>,
-                                    table_refs: &'a HashMap<String, String>) -> Vec<&'a String> {
+    pub fn define_tables_order<'a>(tables: &'a Vec<String>,
+                                   table_refs: &'a HashMap<String, String>) -> Vec<&'a String> {
         let mut weights = HashMap::new();
         for table_name in table_refs.values() {
             *weights.entry(table_name).or_insert(0) += 1;
@@ -775,8 +775,8 @@ pub mod errors {
 
 #[cfg(test)]
 mod test_settings {
-
     use std::path::Path;
+
     use crate::settings::Settings;
 
     #[test]
