@@ -461,7 +461,7 @@ pub mod google_drive {
 
         /// Get id of the newest file in the folder.
         /// Required to restore.
-        pub async fn get_last_file_id(&self, folder_id: &str) -> Res<String> {
+        pub async fn get_last_file_id(&self, folder_id: &str) -> Res<(String, String)> {
             log::info!("Getting id of the last file, folder id: '{}'", folder_id);
             let start = time::Instant::now();
 
@@ -469,7 +469,7 @@ pub mod google_drive {
             let (resp, files) = self.hub
                 .files()
                 .list()
-                .param("fields", "files(id,createdTime)")
+                .param("fields", "files(id,name,createdTime)")
                 .q(&q)
                 .doit().await
                 .map_err(|e| {
@@ -499,11 +499,12 @@ pub mod google_drive {
             );
             // if list is not empty we can get the first elem
             let mut first = files.into_iter().nth(0).unwrap();
-            // field id must exist
+            // field id, name must exist
             let file_id = first.id.take().unwrap();
-            log::info!("File id '{}' got for {:?}", file_id, start.elapsed());
+            let file_name = first.name.take().unwrap();
+            log::info!("File name '{}', id '{}' got for {:?}", file_name, file_id, start.elapsed());
 
-            Ok(file_id)
+            Ok((file_id, file_name))
         }
     }
 
