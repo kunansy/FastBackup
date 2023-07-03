@@ -153,8 +153,11 @@ pub mod db {
     use std::{path::{Path, PathBuf}, process::{Command, Stdio}, time};
     use std::collections::HashMap;
 
-    use sqlx::{PgPool, Pool, Postgres, Row};
-    use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
+    use chrono::{NaiveDate, NaiveDateTime};
+    use serde_json::Value;
+    use sqlx::{Column, PgPool, Pool, Postgres, query, Row, TypeInfo};
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgRow, PgSslMode, PgTypeKind, types};
+    use sqlx::types::Uuid;
 
     use crate::{DbConfig, errors::Errors, Res};
 
@@ -291,6 +294,104 @@ pub mod db {
         order.into_iter()
             .map(|(k, _)| k)
             .collect::<Vec<&String>>()
+    }
+
+    pub async fn dump_all<'a>(pool: &PgPool, tables: Vec<&'a String>) -> Res<HashMap<&'a String, Vec<HashMap<String, Value>>>> {
+        let mut table_dumps = HashMap::with_capacity(tables.len());
+
+        // TODO: run all tasks concurrently
+        for table in tables {
+            let dump = dump_table(pool, &table).await?;
+            table_dumps.insert(table, dump);
+        }
+
+        Ok(table_dumps)
+    }
+
+    async fn dump_table(pool: &PgPool, table_name: &str) -> Res<Vec<HashMap<String, Value>>> {
+        let res = query(&format!("SELECT * FROM {}", table_name))
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .map(|row| dump_row(row))
+            .collect::<Vec<HashMap<String, Value>>>();
+
+        Ok(res)
+    }
+
+    fn dump_row(row: PgRow) -> HashMap<String, Value> {
+        let mut res = HashMap::with_capacity(row.columns().len());
+
+        for column in row.columns() {
+            let value = match column.type_info().name() {
+                "INT4" => {
+                    let v = row.get::<Option<i32>, _>(column.name());
+                    match v {
+                        Some(v) => Value::Number(v.into()),
+                        None => Value::Null
+                    }
+                },
+                "INT8" => {
+                    let v = row.get::<Option<i64>, _>(column.name());
+                    match v {
+                        Some(v) => Value::Number(v.into()),
+                        None => Value::Null
+                    }
+                },
+                "VARCHAR" | "TEXT" => {
+                    let v = row.get::<Option<String>, _>(column.name());
+                    match v {
+                        Some(v) => Value::String(v),
+                        None => Value::Null
+                    }
+                },
+                "UUID" => {
+                    let v = row.get::<Option<Uuid>, _>(column.name());
+                    match v {
+                        Some(v) => Value::String(v.to_string()),
+                        None => Value::Null
+                    }
+                },
+                "BOOL" => {
+                    let v = row.get::<Option<bool>, _>(column.name());
+                    match v {
+                        Some(v) => Value::Bool(v),
+                        None => Value::Null
+                    }
+                },
+                "TIMESTAMP" => {
+                    let v = row.get::<Option<NaiveDateTime>, _>(column.name());
+                    match v {
+                        Some(v) => Value::String(v.to_string()),
+                        None => Value::Null
+                    }
+                },
+                "JSONB" | "JSON" => {
+                    row.get::<Value, _>(column.name())
+                },
+                "DATE" => {
+                    let v = row.get::<Option<NaiveDate>, _>(column.name());
+                    match v {
+                        Some(v) => Value::String(v.to_string()),
+                        None => Value::Null
+                    }
+                }
+                _ => {
+                    match column.type_info().kind() {
+                        PgTypeKind::Enum(_) => {
+                            // log::error!("Enum: {:?}, could not process", column);
+                            Value::Null
+                        },
+                        v @ _ => {
+                            panic!("Not processed type: {:?}, {:?}", v, column.type_info().name())
+                        }
+                    }
+                }
+            };
+
+            res.insert(column.name().to_string(), value);
+        }
+        res
     }
 
     fn create_filename(db_name: &str, folder: &Option<String>) -> String {
