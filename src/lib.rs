@@ -161,6 +161,9 @@ pub mod db {
 
     use crate::{DbConfig, errors::Errors, Res};
 
+    type RowDump = HashMap<String, Value>;
+    type TableDump = Vec<RowDump>;
+
     pub fn dump(cfg: &impl DbConfig,
                 data_folder: &Option<String>,
                 encrypt_pub_key_file: &String) -> Res<String> {
@@ -296,7 +299,7 @@ pub mod db {
             .collect::<Vec<&String>>()
     }
 
-    pub async fn dump_all<'a>(pool: &PgPool, tables: Vec<&'a String>) -> Res<HashMap<&'a String, Vec<HashMap<String, Value>>>> {
+    pub async fn dump_all<'a>(pool: &PgPool, tables: Vec<&'a String>) -> Res<HashMap<&'a String, TableDump>> {
         let mut table_dumps = HashMap::with_capacity(tables.len());
 
         // TODO: run all tasks concurrently
@@ -308,7 +311,7 @@ pub mod db {
         Ok(table_dumps)
     }
 
-    async fn dump_table(pool: &PgPool, table_name: &str) -> Res<Vec<HashMap<String, Value>>> {
+    async fn dump_table(pool: &PgPool, table_name: &str) -> Res<TableDump> {
         let res = query(&format!("SELECT * FROM {}", table_name))
             .fetch_all(pool)
             .await?
@@ -319,7 +322,7 @@ pub mod db {
         Ok(res)
     }
 
-    fn dump_row(row: PgRow) -> HashMap<String, Value> {
+    fn dump_row(row: PgRow) -> RowDump {
         let mut res = HashMap::with_capacity(row.columns().len());
 
         for column in row.columns() {
