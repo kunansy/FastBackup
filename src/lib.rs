@@ -152,6 +152,9 @@ pub mod logger {
 pub mod db {
     use std::{path::{Path, PathBuf}, process::{Command, Stdio}, time};
 
+    use sqlx::{Pool, Postgres};
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
+
     use crate::{DbConfig, errors::Errors, Res};
 
     pub fn dump(cfg: &impl DbConfig,
@@ -205,6 +208,26 @@ pub mod db {
                 Err(Errors::DumpError(msg))
             }
         }
+    }
+
+    pub async fn init_pool<T>(cfg: &T) -> Res<Pool<Postgres>>
+        where T: DbConfig
+    {
+        let conn = PgConnectOptions::new()
+            .host(cfg.db_host())
+            .port(cfg.db_port().parse().unwrap())
+            .username(cfg.db_username())
+            .password(cfg.db_password())
+            .database(cfg.db_name())
+            .ssl_mode(PgSslMode::Disable);
+
+        PgPoolOptions::new()
+            .max_connections(5)
+            .acquire_timeout(time::Duration::from_secs(5))
+            .idle_timeout(time::Duration::from_secs(5))
+            .connect_with(conn)
+            .await
+            .map_err(|e| e.into())
     }
 
     fn create_filename(db_name: &str, folder: &Option<String>) -> String {
