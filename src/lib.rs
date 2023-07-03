@@ -151,8 +151,9 @@ pub mod logger {
 
 pub mod db {
     use std::{path::{Path, PathBuf}, process::{Command, Stdio}, time};
+    use std::collections::HashMap;
 
-    use sqlx::{Pool, Postgres};
+    use sqlx::{PgPool, Pool, Postgres, Row};
     use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
 
     use crate::{DbConfig, errors::Errors, Res};
@@ -228,6 +229,68 @@ pub mod db {
             .connect_with(conn)
             .await
             .map_err(|e| e.into())
+    }
+
+    pub async fn get_tables(pool: &PgPool) -> Res<Vec<String>> {
+        log::info!("Getting tables");
+
+        let tables = sqlx::query(
+            "SELECT tablename FROM pg_catalog.pg_tables \
+            WHERE schemaname != 'pg_catalog' AND schemaname != 'information_schema';")
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .map(|r| r.get("tablename"))
+            .collect::<Vec<String>>();
+
+        log::info!("{} tables got", tables.len());
+        Ok(tables)
+    }
+
+    pub async fn get_table_refs(pool: &PgPool) -> Res<HashMap<String, String>> {
+        log::info!("Getting table refs");
+
+        let refs = sqlx::query(
+            "SELECT
+                tc.table_name,
+                ccu.table_name AS foreign_table_name
+            FROM
+                information_schema.table_constraints tc
+                JOIN information_schema.constraint_column_usage ccu
+                  ON ccu.constraint_name = tc.constraint_name
+                  AND ccu.table_schema = tc.table_schema
+            WHERE tc.table_schema != 'pg_catalog' and tc.table_name != ccu.table_name;")
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .map(|r| (r.get("table_name"), r.get("foreign_table_name")))
+            .collect::<HashMap<String, String>>();
+
+        log::info!("{} table refs got", refs.len());
+
+        Ok(refs)
+    }
+
+     pub fn define_tables_order<'a>(tables: &'a Vec<String>,
+                                    table_refs: &'a HashMap<String, String>) -> Vec<&'a String> {
+        let mut weights = HashMap::new();
+        for table_name in table_refs.values() {
+            *weights.entry(table_name).or_insert(0) += 1;
+        }
+        for table_name in tables {
+            weights.entry(table_name).or_insert(0);
+        }
+
+        let mut order = weights
+            .into_iter()
+            .map(|(k, v)| (k, v))
+            .collect::<Vec<(&String, i32)>>();
+
+        order.sort_by(|(_, v), (_, v2)| v.cmp(v2).reverse());
+
+        order.into_iter()
+            .map(|(k, _)| k)
+            .collect::<Vec<&String>>()
     }
 
     fn create_filename(db_name: &str, folder: &Option<String>) -> String {
