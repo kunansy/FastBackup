@@ -11,6 +11,7 @@ use backuper::google_drive::DriveAuth;
 use backuper::settings::Settings;
 use backup::{BackupReply, BackupRequest};
 use backup::google_drive_server::{GoogleDrive, GoogleDriveServer};
+use crate::backup::{RestoreReply, RestoreRequest};
 
 pub mod backup {
     tonic::include_proto!("backup");
@@ -41,6 +42,27 @@ impl DbConfig for BackupRequest {
     }
 }
 
+impl DbConfig for RestoreRequest {
+    fn db_host(&self) -> &String {
+        &self.db_host
+    }
+
+    fn db_port(&self) -> &String {
+        &self.db_port
+    }
+
+    fn db_username(&self) -> &String {
+        &self.db_username
+    }
+
+    fn db_password(&self) -> &String {
+        &self.db_password
+    }
+
+    fn db_name(&self) -> &String {
+        &self.db_name
+    }
+}
 
 static mut CFG: Lazy<Arc<Settings>> = Lazy::new(|| {
     Settings::load_env();
