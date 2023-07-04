@@ -152,6 +152,8 @@ pub mod logger {
 pub mod db {
     use std::{path::{Path, PathBuf}, process::{Command, Stdio}, time};
     use std::collections::HashMap;
+    use std::fmt::Display;
+    use std::sync::Arc;
 
     use chrono::{NaiveDate, NaiveDateTime};
     use serde_json::Value;
@@ -318,9 +320,11 @@ pub mod db {
     }
 
     #[inline]
-    async fn dump_table(pool: &PgPool, table_name: &str) -> Res<TableDump> {
+    async fn dump_table<T>(pool: Arc<PgPool>, table_name: T) -> Res<TableDump>
+        where T: Display
+    {
         let res = query(&format!("SELECT * FROM {}", table_name))
-            .fetch_all(pool)
+            .fetch_all(&*pool)
             .await?
             .into_iter()
             .map(|row| dump_row(row))
