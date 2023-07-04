@@ -548,11 +548,12 @@ pub mod ordered_map {
 }
 
 pub mod compression {
-    use std::fs::File;
+    use std::{fs::File, path::Path};
     use std::io::{BufReader, BufWriter, Write};
-    use std::path::Path;
+
     use zstd::stream::{copy_decode, copy_encode};
-    use crate::{Compression, Res, db::DBDump, Decompression, Errors};
+
+    use crate::{Compression, db::DBDump, Decompression, Res};
 
     impl<'a, T> Compression<T> for DBDump<'a>
         where T: AsRef<Path>
