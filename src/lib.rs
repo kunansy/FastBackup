@@ -158,74 +158,45 @@ pub mod logger {
 }
 
 pub mod db {
-    use std::{path::{Path, PathBuf}, process::{Command, Stdio}, time};
-    use std::collections::HashMap;
-    use std::fmt::Display;
-    use std::sync::Arc;
+    use std::{collections::HashMap, fmt::Display, sync::Arc};
+    use std::path::{Path, PathBuf};
+    use std::time;
 
     use chrono::{NaiveDate, NaiveDateTime};
     use serde_json::Value;
     use sqlx::{Column, PgPool, Pool, Postgres, query, Row, TypeInfo};
     use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgRow, PgSslMode, PgTypeKind};
     use sqlx::types::Uuid;
+    use tokio::join;
 
-    use crate::{DbConfig, errors::Errors, ordered_map::OMap, Res};
+    use crate::{Compression, DbConfig, ordered_map::OMap, Res};
 
     type RowDump = HashMap<String, Value>;
     type TableDump = Vec<RowDump>;
     pub type DBDump<'a> = OMap<&'a String, TableDump>;
 
-    pub fn dump(cfg: &impl DbConfig,
-                data_folder: &Option<String>,
-                encrypt_pub_key_file: &String) -> Res<String> {
-        log::info!("Start backupping");
+    pub async fn dump(pool: Arc<PgPool>,
+                      data_folder: &Option<String>,
+                      compression_level: i32) -> Res<String> {
+        log::info!("Start dumping");
         let start = time::Instant::now();
-        let filename = create_filename(&cfg.db_name(), data_folder);
 
-        // TODO: stop one of the processes failed
-        let pg_dump = Command::new("pg_dump")
-            .env("PGPASSWORD", &cfg.db_password())
-            .args(["-h", &cfg.db_host()])
-            .args(["-p", &cfg.db_port()])
-            .args(["-U", &cfg.db_username()])
-            // TODO: more dump options
-            .arg("--data-only")
-            .arg("--inserts")
-            .arg("--blobs")
-            .arg("--column-inserts")
-            .arg(&cfg.db_name())
-            .stdout(Stdio::piped())
-            .spawn()?;
+        let db_name = pool.connect_options().get_database().unwrap_or("undefined");
 
-        let gzip = Command::new("gzip")
-            .args(["-c", "--best"])
-            .stdin(Stdio::from(pg_dump.stdout.unwrap()))
-            .stdout(Stdio::piped())
-            .spawn()?;
+        let (tables, table_refs) = join!(
+            get_tables(&pool),
+            get_table_refs(&pool)
+        );
+        let (tables, table_refs) = (tables?, table_refs?);
+        let tables_order = define_tables_order(&tables, &table_refs);
 
-        // TODO: let encryption switched off
-        let openssl = Command::new("openssl")
-            .arg("smime")
-            .arg("-encrypt")
-            .arg("-aes256")
-            .arg("-binary")
-            .args(["-outform", "DEM"])
-            .args(["-out", &filename])
-            .arg(encrypt_pub_key_file)
-            .stdin(Stdio::from(gzip.stdout.unwrap()))
-            .spawn()?;
+        let json = dump_all(pool.clone(), tables_order).await?;
+        let filename = create_filename(db_name, data_folder);
 
-        match openssl.wait_with_output() {
-            Ok(s) => {
-                log::info!("Backup completed for {:?}, {:?}", start.elapsed(), s);
-                Ok(filename)
-            },
-            Err(e) => {
-                let msg = format!("Backup error: {}", e);
-                log::error!("{}", msg);
-                Err(Errors::DumpError(msg))
-            }
-        }
+        json.compress(&filename, compression_level)?;
+
+        log::info!("Dump completed for {:?}", start.elapsed());
+        Ok(filename)
     }
 
     pub async fn init_pool<T>(cfg: &T) -> Res<Pool<Postgres>>
