@@ -142,6 +142,7 @@ dependencies = [
  "log",
  "once_cell",
  "prost",
+ "serde",
  "serde_json",
  "signal-hook",
  "sqlx",
