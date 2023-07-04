@@ -775,8 +775,8 @@ pub mod google_drive {
 
         /// Get id of the newest file in the folder.
         /// Required to restore.
-        pub async fn get_last_file_id(&self, folder_id: &str) -> Res<(String, String)> {
-            log::info!("Getting id of the last file, folder id: '{}'", folder_id);
+        pub async fn get_last_dump_id(&self, folder_id: &str) -> Res<(String, String)> {
+            log::info!("Getting id of the last dump, folder id: '{}'", folder_id);
             let start = time::Instant::now();
 
             let q = format!("'{}' in parents", folder_id);
@@ -816,7 +816,7 @@ pub mod google_drive {
             // field id, name must exist
             let file_id = first.id.take().unwrap();
             let file_name = first.name.take().unwrap();
-            log::info!("File name '{}', id '{}' got for {:?}", file_name, file_id, start.elapsed());
+            log::info!("Dump name '{}', id '{}' got for {:?}", file_name, file_id, start.elapsed());
 
             Ok((file_id, file_name))
         }
@@ -856,7 +856,7 @@ pub mod google_drive {
 
         async fn download(&self, folder_name: &str, prefix: &str) -> Res<String> {
             let folder_id = self.get_file_id(folder_name).await?;
-            let (file_id, file_name) = self.get_last_file_id(&folder_id).await?;
+            let (file_id, file_name) = self.get_last_dump_id(&folder_id).await?;
 
             let path = format!("{}{}", prefix, file_name);
             self.download_file(&file_id, Path::new(&path)).await?;
