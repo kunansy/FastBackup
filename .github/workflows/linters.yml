@@ -15,7 +15,7 @@ jobs:
       run: |
         rustup update
 
-    - name: Set up Rust
+    - name: Install packages
       run: |
         sudo apt-get install protobuf-compiler -y
 
@@ -24,10 +24,10 @@ jobs:
         cargo --version --verbose
         rustc --version
 
-    - name: Lint
+    - name: Cargo check
       run: |
-        cargo check
+        cargo check --jobs $(nproc) --release 
 
     - name: Build
       run: |
-        cargo build --bins --release --offline -j $(nproc)
+        cargo build --bins --release --offline --jobs $(nproc)
