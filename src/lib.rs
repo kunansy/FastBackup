@@ -467,7 +467,7 @@ pub mod ordered_map {
         order: Vec<K>
     }
 
-    impl<'a, K, V> OMap<K, V>
+    impl<K, V> OMap<K, V>
         where K: Eq + PartialEq + Hash + Clone
     {
         pub fn new() -> Self {
@@ -499,7 +499,7 @@ pub mod ordered_map {
         }
 
         #[inline]
-        pub fn to_serialize(&'a self) -> Vec<(&'a K, &'a V)> {
+        pub fn to_serialize<'a>(&'a self) -> Vec<(&'a K, &'a V)> {
             self.order
                 .iter()
                 .map(|v| (v, self.map.get(v).unwrap()))
@@ -507,7 +507,7 @@ pub mod ordered_map {
         }
     }
 
-    impl<'a, K, V> Deref for OMap<K, V> {
+    impl<K, V> Deref for OMap<K, V> {
         type Target = HashMap<K, V>;
 
         fn deref(&self) -> &Self::Target {
