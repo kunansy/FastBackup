@@ -240,13 +240,12 @@ pub mod db {
             .database(cfg.db_name())
             .ssl_mode(PgSslMode::Disable);
 
-        PgPoolOptions::new()
+        Ok(PgPoolOptions::new()
             .max_connections(5)
             .acquire_timeout(time::Duration::from_secs(5))
             .idle_timeout(time::Duration::from_secs(5))
             .connect_with(conn)
-            .await
-            .map_err(|e| e.into())
+            .await?)
     }
 
     pub fn delete_dump(path: &Path) -> Res<()>{
