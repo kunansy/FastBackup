@@ -19,7 +19,7 @@ pub trait Decompression<I> {
 
 pub trait DbConfig {
     fn db_host(&self) -> &String;
-    fn db_port(&self) -> &String;
+    fn db_port(&self) -> u16;
     fn db_username(&self) -> &String;
     fn db_password(&self) -> &String;
     fn db_name(&self) -> &String;
@@ -111,8 +111,8 @@ pub mod settings {
             &self.db_host
         }
 
-        fn db_port(&self) -> &String {
-            &self.db_port
+        fn db_port(&self) -> u16 {
+            self.db_port
         }
 
         fn db_username(&self) -> &String {
@@ -225,7 +225,7 @@ pub mod db {
     {
         let conn = PgConnectOptions::new()
             .host(cfg.db_host())
-            .port(cfg.db_port().parse().unwrap())
+            .port(cfg.db_port())
             .username(cfg.db_username())
             .password(cfg.db_password())
             .database(cfg.db_name())

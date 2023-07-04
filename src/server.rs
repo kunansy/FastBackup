@@ -23,8 +23,8 @@ impl DbConfig for BackupRequest {
         &self.db_host
     }
 
-    fn db_port(&self) -> &String {
-        &self.db_port
+    fn db_port(&self) -> u16 {
+        self.db_port as u16
     }
 
     fn db_username(&self) -> &String {
@@ -45,8 +45,8 @@ impl DbConfig for RestoreRequest {
         &self.db_host
     }
 
-    fn db_port(&self) -> &String {
-        &self.db_port
+    fn db_port(&self) -> u16 {
+        self.db_port as u16
     }
 
     fn db_username(&self) -> &String {
