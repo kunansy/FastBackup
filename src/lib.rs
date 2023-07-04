@@ -305,15 +305,21 @@ pub mod db {
             .collect::<Vec<&String>>()
     }
 
-    pub async fn dump_all<'a>(pool: &PgPool,
+    pub async fn dump_all<'a>(pool: Arc<PgPool>,
                               tables: Vec<&'a String>) -> Res<DBDump<'a>> {
         // save order of the tables with OMap
         let mut table_dumps = OMap::with_capacity(tables.len());
 
-        // TODO: run all tasks concurrently
-        for table in tables {
-            let dump = dump_table(pool, &table).await?;
-            table_dumps.insert(table, dump);
+        let tasks = tables
+            .into_iter()
+            .map(|table| {
+                (table, tokio::spawn(dump_table(pool.clone(), table.clone())))
+            });
+
+        // run all tasks concurrently
+        for (table, task) in tasks.into_iter() {
+            let table_dump =  task.await.unwrap()?;
+            table_dumps.insert(table, table_dump);
         }
 
         Ok(table_dumps)
