@@ -355,82 +355,69 @@ pub mod db {
         let mut res = HashMap::with_capacity(row.columns().len());
 
         for column in row.columns() {
+            let name = column.name();
             let value = match column.type_info().name() {
                 "INT4" => {
-                    let v = row.get::<Option<i32>, _>(column.name());
-                    match v {
+                    match row.get::<Option<i32>, _>(name) {
                         Some(v) => Value::Number(v.into()),
                         None => Value::Null
                     }
                 },
                 "INT8" => {
-                    let v = row.get::<Option<i64>, _>(column.name());
-                    match v {
+                    match row.get::<Option<i64>, _>(name) {
                         Some(v) => Value::Number(v.into()),
                         None => Value::Null
                     }
                 },
                 "VARCHAR" | "TEXT" => {
-                    let v = row.get::<Option<String>, _>(column.name());
-                    match v {
+                    match row.get::<Option<String>, _>(name) {
                         Some(v) => Value::String(v),
                         None => Value::Null
                     }
                 },
                 "UUID" => {
-                    let v = row.get::<Option<Uuid>, _>(column.name());
-                    match v {
+                    match row.get::<Option<Uuid>, _>(name) {
                         Some(v) => Value::String(v.to_string()),
                         None => Value::Null
                     }
                 },
                 "BOOL" => {
-                    let v = row.get::<Option<bool>, _>(column.name());
-                    match v {
+                    match row.get::<Option<bool>, _>(name) {
                         Some(v) => Value::Bool(v),
                         None => Value::Null
                     }
                 },
                 "TIMESTAMP" => {
-                    let v = row.get::<Option<NaiveDateTime>, _>(column.name());
-                    match v {
+                    match row.get::<Option<NaiveDateTime>, _>(name) {
                         Some(v) => Value::String(v.to_string()),
                         None => Value::Null
                     }
                 },
                 "JSONB" | "JSON" => {
-                    row.get::<Value, _>(column.name())
+                    row.get::<Value, _>(name)
                 },
                 "DATE" => {
-                    let v = row.get::<Option<NaiveDate>, _>(column.name());
-                    match v {
+                    match row.get::<Option<NaiveDate>, _>(name) {
                         Some(v) => Value::String(v.to_string()),
                         None => Value::Null
                     }
                 },
                 // TODO: how to match type without name??
                 "materialtypesenum" => {
-                    let v = row.get::<Option<MaterialTypesEnum>, _>(column.name());
-                    match v {
-                        Some(v) => {
-                            Value::String(v.to_string())
-                        }
+                    match row.get::<Option<MaterialTypesEnum>, _>(name) {
+                        Some(v) => Value::String(v.to_string()),
                         None => Value::Null
                     }
                 }
                 _ => {
                     match column.type_info().kind() {
-                        PgTypeKind::Enum(_) => {
-                            panic!("Enum column: {:?}, could not process", column);
-                        },
-                        v @ _ => {
-                            panic!("Not processed type: {:?}, {:?}", v, column.type_info().name())
-                        }
+                        PgTypeKind::Enum(_) => panic!("Enum column: {:?}, could not process", column),
+                        v @ _ => panic!("Not processed type: {:?}, {:?}", v, column.type_info().name())
                     }
                 }
             };
 
-            res.insert(column.name().to_string(), value);
+            res.insert(name.to_string(), value);
         }
         res
     }
