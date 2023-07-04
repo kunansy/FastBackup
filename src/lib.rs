@@ -37,7 +37,7 @@ pub mod settings {
     #[derive(Debug)]
     pub struct Settings {
         db_host: String,
-        db_port: String,
+        db_port: u16,
         db_username: String,
         db_password: String,
         db_name: String,
@@ -63,7 +63,7 @@ pub mod settings {
                     Some(v)
                 });
             let db_port = std::env::var("DB_PORT")?
-                .parse::<u32>()
+                .parse::<u16>()
                 .map_err(|e: ParseIntError|
                     Errors::EnvError(format!("DB_PORT must be int: {}", e.to_string())))?;
             let comp_level = std::env::var("COMPRESSION_LEVEL")
@@ -75,16 +75,7 @@ pub mod settings {
             assert!(comp_level <= 22, "Max compression level is 22, {} found", comp_level);
 
             log::debug!("Settings parsed");
-            Ok(Self {
-                db_host,
-                db_port: db_port.to_string(),
-                db_username,
-                db_password,
-                db_name,
-                drive_creds,
-                data_folder,
-                comp_level,
-            })
+            Ok(Self { db_host, db_port, db_username, db_password, db_name, drive_creds, data_folder, comp_level })
         }
 
         /// load .env file to env.
