@@ -78,9 +78,6 @@ impl GoogleDrive for Backup {
         };
 
         let params = request.into_inner();
-        if !db::is_db_ready(&params) {
-            return Err(Status::not_found("The database not ready"));
-        }
 
         let path = db::dump(&params, &cfg.data_folder, &cfg.encrypt_pub_key_file)
             .map_err(|e| Status::internal(e.to_string()))?;
