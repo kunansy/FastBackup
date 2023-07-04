@@ -153,7 +153,6 @@ pub mod logger {
 
 pub mod db {
     use std::{collections::HashMap, fmt::Display, sync::Arc};
-    use std::path::{Path, PathBuf};
     use std::time;
 
     use chrono::{NaiveDate, NaiveDateTime};
@@ -396,32 +395,6 @@ pub mod db {
                 chrono::Utc::now().format("%Y-%m-%d_%H:%M:%S"))
     }
 
-    /// All required programs must exist.
-    ///
-    /// # Panics
-    /// Panic if a program not found
-    pub fn assert_programs_exist() {
-        for p in vec!["openssl", "pg_dump", "gzip", "pg_isready"] {
-            if find_it(p).is_none() {
-                panic!("'{}' not found", p);
-            }
-        }
-    }
-
-    fn find_it<P>(exe_name: P) -> Option<PathBuf>
-        where P: AsRef<Path>
-    {
-        std::env::var_os("PATH").and_then(|paths| {
-            std::env::split_paths(&paths).filter_map(|dir| {
-                let full_path = dir.join(&exe_name);
-                match full_path.is_file() {
-                    true => Some(full_path),
-                    false => None
-                }
-            }).next()
-        })
-    }
-
     #[cfg(test)]
     mod test_db {
         use crate::db;
@@ -440,21 +413,6 @@ pub mod db {
 
             assert!(f.starts_with("backup_tdb_"));
             assert!(f.ends_with(".enc"));
-        }
-
-        #[test]
-        fn test_assert_programs_exist() {
-            db::assert_programs_exist();
-        }
-
-        #[test]
-        fn test_find_it() {
-            assert_eq!(db::find_it("ls"), Some("/bin/ls".into()));
-        }
-
-        #[test]
-        fn test_find_it_none() {
-            assert_eq!(db::find_it("myproc_test"), None);
         }
     }
 }
