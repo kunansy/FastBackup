@@ -576,6 +576,67 @@ pub mod ordered_map {
     }
 }
 
+pub mod compression {
+    use std::fs::File;
+    use std::io::{BufReader, BufWriter, Write};
+    use std::path::Path;
+    use zstd::stream::{copy_decode, copy_encode};
+    use crate::{Compression, Res, db::DBDump, Decompression, Errors};
+
+    impl<'a, T> Compression<T> for DBDump<'a>
+        where T: AsRef<Path>
+    {
+        fn compress(&self, output: &T, level: i32) -> Res<()>{
+            let input = serde_json::to_string_pretty(&*self)?;
+            compress(input.as_bytes(), output, level)?;
+            Ok(())
+        }
+    }
+
+    impl<'a, T> Decompression<T> for DBDump<'a>
+        where T: AsRef<Path>
+    {
+        fn decompress(_input: &T) -> Res<Box<Self>> {
+            unimplemented!()
+        }
+    }
+
+    const BUF_SIZE: usize = 1024 * 1024 * 8;
+
+    fn compress<T>(input: &[u8], output_file: &T, level: i32) -> Res<()>
+        where T: AsRef<Path>
+    {
+        let output_file = File::create(output_file)?;
+
+        let mut reader = BufReader::with_capacity(BUF_SIZE, input);
+        let mut writer = BufWriter::new(output_file);
+
+        copy_encode(&mut reader, &mut writer, level)?;
+
+        writer.flush()?;
+
+        Ok(())
+    }
+
+    fn _decompress<I, O>(input_file: &I, output_file: &O) -> Res<()>
+        where
+            I: AsRef<Path>,
+            O: AsRef<Path>
+    {
+        let input_file = File::open(input_file)?;
+        let output_file = File::create(output_file)?;
+
+        let mut reader = BufReader::with_capacity(BUF_SIZE, input_file);
+        let mut writer = BufWriter::new(output_file);
+
+        copy_decode(&mut reader, &mut writer)?;
+
+        writer.flush()?;
+
+        Ok(())
+    }
+}
+
 pub mod google_drive {
     use std::{fs, io, path::Path, time};
 
