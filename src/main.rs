@@ -1,21 +1,23 @@
 use std::path::Path;
+use std::sync::Arc;
 use std::time;
-use backuper::{settings::Settings, logger, errors::Errors, db, google_drive::DriveAuth};
+
+use backuper::{db, errors::Errors, google_drive::DriveAuth, logger, settings::Settings};
 
 #[tokio::main]
 async fn main() -> Result<(), Errors> {
     log::info!("Start app");
-
-    db::assert_programs_exist();
     let start = time::Instant::now();
 
     Settings::load_env();
     logger::init();
 
     let cfg = Settings::parse()?;
-    db::assert_db_is_ready(&cfg);
 
-    let filename = db::dump(&cfg, &cfg.data_folder, &cfg.encrypt_pub_key_file)?;
+    let pool = db::init_pool(&cfg).await?;
+    let arc_pool = Arc::new(pool);
+
+    let filename = db::dump(arc_pool, &cfg.data_folder, 3).await?;
     let filename = Path::new(&filename);
 
     let drive = {
