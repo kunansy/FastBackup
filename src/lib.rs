@@ -207,7 +207,10 @@ pub mod db {
         log::info!("Start dumping");
         let start = time::Instant::now();
 
-        let db_name = pool.connect_options().get_database().unwrap_or("undefined");
+        let db_name = pool
+            .connect_options()
+            .get_database()
+            .unwrap_or("undefined");
 
         let (tables, table_refs) = join!(
             get_tables(&pool),
