@@ -163,7 +163,8 @@ pub mod logger {
 
 pub mod db {
     use std::{collections::HashMap, fmt::Display, sync::Arc};
-    use std::time;
+    use std::path::Path;
+    use std::{time, fs};
 
     use chrono::{NaiveDate, NaiveDateTime};
     use serde_json::Value;
@@ -246,6 +247,10 @@ pub mod db {
             .connect_with(conn)
             .await
             .map_err(|e| e.into())
+    }
+
+    pub fn delete_dump(path: &Path) -> Res<()>{
+        Ok(fs::remove_file(path)?)
     }
 
     async fn get_tables(pool: &PgPool) -> Res<Vec<String>> {
