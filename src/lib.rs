@@ -164,6 +164,7 @@ pub mod db {
 
     type RowDump = HashMap<String, Value>;
     type TableDump = Vec<RowDump>;
+    type DBDump<'a> = OMap<&'a String, TableDump>;
 
     pub fn dump(cfg: &impl DbConfig,
                 data_folder: &Option<String>,
@@ -302,7 +303,8 @@ pub mod db {
             .collect::<Vec<&String>>()
     }
 
-    pub async fn dump_all<'a>(pool: &PgPool, tables: Vec<&'a String>) -> Res<OMap<&'a String, TableDump>> {
+    pub async fn dump_all<'a>(pool: &PgPool,
+                              tables: Vec<&'a String>) -> Res<DBDump<'a>> {
         // save order of the tables with OMap
         let mut table_dumps = OMap::with_capacity(tables.len());
 
