@@ -161,8 +161,7 @@ pub mod db {
     use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgRow, PgSslMode, PgTypeKind};
     use sqlx::types::Uuid;
 
-    use crate::{DbConfig, errors::Errors, Res};
-    use crate::ordered_map::OMap;
+    use crate::{DbConfig, errors::Errors, ordered_map::OMap, Res};
 
     type RowDump = HashMap<String, Value>;
     type TableDump = Vec<RowDump>;
@@ -334,7 +333,7 @@ pub mod db {
             .await?
             .into_iter()
             .map(|row| dump_row(row))
-            .collect::<Vec<HashMap<String, Value>>>();
+            .collect::<Vec<RowDump>>();
 
         Ok(res)
     }
