@@ -163,8 +163,8 @@ pub mod logger {
 
 pub mod db {
     use std::{collections::HashMap, fmt::Display, sync::Arc};
+    use std::{fs, time};
     use std::path::Path;
-    use std::{time, fs};
 
     use chrono::{NaiveDate, NaiveDateTime};
     use serde_json::Value;
@@ -454,10 +454,7 @@ pub mod db {
 }
 
 pub mod ordered_map {
-    use std::collections::HashMap;
-    use std::fmt::Debug;
-    use std::hash::Hash;
-    use std::ops::Deref;
+    use std::{collections::HashMap, fmt::Debug, hash::Hash, ops::Deref};
 
     use serde::{ser::SerializeMap, Serialize, Serializer};
 

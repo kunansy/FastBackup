@@ -1,8 +1,7 @@
-use std::path::Path;
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 use std::time;
 
-use backuper::{db, Res, google_drive::DriveAuth, logger, settings::Settings};
+use backuper::{db, google_drive::DriveAuth, logger, Res, settings::Settings};
 
 #[tokio::main]
 async fn main() -> Res<()> {
