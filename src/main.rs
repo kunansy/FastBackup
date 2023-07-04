@@ -17,7 +17,7 @@ async fn main() -> Result<(), Errors> {
     let pool = db::init_pool(&cfg).await?;
     let arc_pool = Arc::new(pool);
 
-    let filename = db::dump(arc_pool, &cfg.data_folder, 3).await?;
+    let filename = db::dump(arc_pool, &cfg.data_folder, cfg.comp_level).await?;
     let filename = Path::new(&filename);
 
     let drive = {
