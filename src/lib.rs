@@ -317,7 +317,7 @@ pub mod db {
 
         // run all tasks concurrently
         for (table, task) in tasks.into_iter() {
-            let table_dump =  task.await.unwrap()?;
+            let table_dump =  task.await??;
             table_dumps.insert(table, table_dump);
         }
 
@@ -848,6 +848,12 @@ pub mod errors {
 
     impl From<sqlx::Error> for Errors {
         fn from(value: sqlx::Error) -> Self {
+            Self::DumpError(value.to_string())
+        }
+    }
+
+    impl From<tokio::task::JoinError> for Errors {
+        fn from(value: tokio::task::JoinError) -> Self {
             Self::DumpError(value.to_string())
         }
     }
