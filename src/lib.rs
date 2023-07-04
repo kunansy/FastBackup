@@ -564,12 +564,12 @@ pub mod compression {
     {
         let output_file = File::create(output_file)?;
 
-        let mut reader = BufReader::with_capacity(BUF_SIZE, input);
-        let mut writer = BufWriter::new(output_file);
+        let mut src = BufReader::with_capacity(BUF_SIZE, input);
+        let mut dst = BufWriter::new(output_file);
 
-        copy_encode(&mut reader, &mut writer, level)?;
+        copy_encode(&mut src, &mut dst, level)?;
 
-        writer.flush()?;
+        dst.flush()?;
 
         Ok(())
     }
@@ -582,12 +582,12 @@ pub mod compression {
         let input_file = File::open(input_file)?;
         let output_file = File::create(output_file)?;
 
-        let mut reader = BufReader::with_capacity(BUF_SIZE, input_file);
-        let mut writer = BufWriter::new(output_file);
+        let mut src = BufReader::with_capacity(BUF_SIZE, input_file);
+        let mut dst = BufWriter::new(output_file);
 
-        copy_decode(&mut reader, &mut writer)?;
+        copy_decode(&mut src, &mut dst)?;
 
-        writer.flush()?;
+        dst.flush()?;
 
         Ok(())
     }
