@@ -2,15 +2,16 @@ use std::path::Path;
 use std::sync::Arc;
 use std::thread;
 
-use tonic::{Request, Response, Status, transport::Server};
-use signal_hook::{iterator::Signals, consts::SIGHUP};
 use once_cell::sync::Lazy;
+use signal_hook::{consts::SIGHUP, iterator::Signals};
+use tonic::{Request, Response, Status, transport::Server};
 
+use backup::{BackupReply, BackupRequest};
+use backup::google_drive_server::{GoogleDrive, GoogleDriveServer};
 use backuper::{db, DbConfig};
 use backuper::google_drive::DriveAuth;
 use backuper::settings::Settings;
-use backup::{BackupReply, BackupRequest};
-use backup::google_drive_server::{GoogleDrive, GoogleDriveServer};
+
 use crate::backup::{RestoreReply, RestoreRequest};
 
 pub mod backup {

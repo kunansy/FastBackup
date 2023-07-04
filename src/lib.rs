@@ -480,7 +480,8 @@ pub mod ordered_map {
     use std::fmt::Debug;
     use std::hash::Hash;
     use std::ops::Deref;
-    use serde::{Serialize, Serializer, ser::SerializeMap};
+
+    use serde::{ser::SerializeMap, Serialize, Serializer};
 
     #[derive(Clone, Debug)]
     pub struct OMap<K, V> {
