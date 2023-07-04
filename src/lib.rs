@@ -417,8 +417,7 @@ pub mod db {
                 _ => {
                     match column.type_info().kind() {
                         PgTypeKind::Enum(_) => {
-                            // log::error!("Enum: {:?}, could not process", column);
-                            Value::Null
+                            panic!("Enum column: {:?}, could not process", column);
                         },
                         v @ _ => {
                             panic!("Not processed type: {:?}, {:?}", v, column.type_info().name())
