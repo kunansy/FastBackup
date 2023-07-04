@@ -9,6 +9,14 @@ pub trait Storage {
     async fn download(&self, file_id: &str, path: &str) -> Res<String>;
 }
 
+pub trait Compression<T> {
+    fn compress(&self, output: &T, level: i32) -> Res<()>;
+}
+
+pub trait Decompression<I> {
+    fn decompress(input: &I) -> Res<Box<Self>>;
+}
+
 pub trait DbConfig {
     fn db_host(&self) -> &String;
     fn db_port(&self) -> &String;
