@@ -25,6 +25,10 @@ serde = "1.0"
 [build-dependencies]
 tonic-build = "0.9"
 
+[profile.release]
+# fat lto: https://doc.rust-lang.org/cargo/reference/profiles.html#lto
+lto = true
+
 [[bin]]
 name = "app"
 path = "src/main.rs"
