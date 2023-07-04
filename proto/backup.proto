@@ -15,8 +15,6 @@ message BackupRequest {
     string db_username = 3;
     string db_password = 4;
     string db_name = 5;
-    // TODO
-    bool with_enc = 6;
 }
 
 message BackupReply {
