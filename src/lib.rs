@@ -178,6 +178,29 @@ pub mod db {
     type TableDump = Vec<RowDump>;
     pub type DBDump<'a> = OMap<&'a String, TableDump>;
 
+    #[derive(sqlx::Type, Debug)]
+    #[sqlx(rename = "materialtypesenum", rename_all = "lowercase")]
+    enum MaterialTypesEnum {
+        Book,
+        Article,
+        Course,
+        Lecture,
+        Audiobook
+    }
+
+    impl ToString for MaterialTypesEnum {
+        fn to_string(&self) -> String {
+            let v = match self {
+                MaterialTypesEnum::Book => "book",
+                MaterialTypesEnum::Article => "article",
+                MaterialTypesEnum::Course => "course",
+                MaterialTypesEnum::Lecture => "lecture",
+                MaterialTypesEnum::Audiobook => "audiobook",
+            };
+            v.to_string()
+        }
+    }
+
     pub async fn dump(pool: Arc<PgPool>,
                       data_folder: &Option<String>,
                       compression_level: i32) -> Res<String> {
