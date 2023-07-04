@@ -44,6 +44,8 @@ pub mod settings {
         pub drive_creds: String,
         // dump backups to this folder
         pub data_folder: Option<String>,
+        // compression level, default is 3
+        pub comp_level: i32,
     }
 
     impl Settings {
@@ -64,6 +66,11 @@ pub mod settings {
                 .parse::<u32>()
                 .map_err(|e: ParseIntError|
                     Errors::EnvError(format!("DB_PORT must be int: {}", e.to_string())))?;
+            let comp_level = std::env::var("COMPRESSION_LEVEL")
+                .unwrap_or("3".to_string())
+                .parse::<i32>()
+                .map_err(|e: ParseIntError|
+                    Errors::EnvError(format!("COMPRESSION_LEVEL must be int: {}", e.to_string())))?;
 
             log::debug!("Settings parsed");
             Ok(Self {
@@ -74,6 +81,7 @@ pub mod settings {
                 db_name,
                 drive_creds,
                 data_folder,
+                comp_level,
             })
         }
 
