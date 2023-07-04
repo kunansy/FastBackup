@@ -441,7 +441,7 @@ pub mod db {
             Some(v) => format!("{}/", v),
             None => "".to_string()
         };
-        format!("{}backup_{}_{}.enc", prefix, db_name,
+        format!("{}backup_{}_{}.dump", prefix, db_name,
                 chrono::Utc::now().format("%Y-%m-%d_%H:%M:%S"))
     }
 
