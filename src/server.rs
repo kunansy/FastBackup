@@ -96,7 +96,7 @@ impl GoogleDrive for Backup {
             d.build_auth().await?;
             d.build_hub()
         };
-        let file_id = backuper::send(&drive, path)
+        let file_id = backuper::send(&drive, path, None)
             .await
             .map_err(|e| Status::aborted(e.to_string()))?;
 

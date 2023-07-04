@@ -1,10 +1,11 @@
+use std::path::Path;
 pub use errors::Errors;
 
 pub type Res<T> = Result<T, Errors>;
 
 #[async_trait::async_trait]
 pub trait Storage {
-    async fn upload(&self, path: &std::path::Path) -> Res<String>;
+    async fn upload(&self, path: &Path, folder_id: Option<String>) -> Res<String>;
 
     async fn download(&self, file_id: &str, path: &str) -> Res<String>;
 }
@@ -25,8 +26,8 @@ pub trait DbConfig {
     fn db_name(&self) -> &String;
 }
 
-pub async fn send(store: &impl Storage, path: &std::path::Path) -> Res<String> {
-    store.upload(path).await
+pub async fn send(store: &impl Storage, path: &Path, folder_id: Option<String>) -> Res<String> {
+    store.upload(path, folder_id).await
 }
 
 pub mod settings {
@@ -34,7 +35,7 @@ pub mod settings {
 
     use crate::{DbConfig, errors::Errors, Res};
 
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub struct Settings {
         db_host: String,
         db_port: u16,
@@ -797,7 +798,7 @@ pub mod google_drive {
 
     #[async_trait::async_trait]
     impl Storage for GoogleDrive {
-        async fn upload(&self, path: &Path) -> Res<String> {
+        async fn upload(&self, path: &Path, folder_id: Option<String>) -> Res<String> {
             log::info!("Sending file {:?}", path);
             let start = time::Instant::now();
 
@@ -809,7 +810,10 @@ pub mod google_drive {
             })?;
 
             let req = {
-                let folder_id = self.get_file_id("tracker").await?;
+                let folder_id = match folder_id {
+                    Some(v) => v,
+                    None => self.get_file_id("tracker").await?
+                };
                 // path must be convertable to str
                 let file_name = path.file_name().unwrap().to_str().unwrap();
                 GoogleDrive::build_file(file_name, Some(vec![folder_id]))
