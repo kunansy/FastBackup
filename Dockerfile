@@ -2,7 +2,7 @@ FROM rust:1.70-slim-buster as builder
 
 RUN apt-get update  \
     && apt-get upgrade -y  \
-    && apt-get install protobuf-compiler -y
+    && apt-get install protobuf-compiler ca-certificates -y
 
 WORKDIR build
 
@@ -38,4 +38,5 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR app
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=builder /build/target/release/backup-server ./
