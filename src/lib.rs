@@ -400,6 +400,16 @@ pub mod db {
                         Some(v) => Value::String(v.to_string()),
                         None => Value::Null
                     }
+                },
+                // TODO: how to match type without name??
+                "materialtypesenum" => {
+                    let v = row.get::<Option<MaterialTypesEnum>, _>(column.name());
+                    match v {
+                        Some(v) => {
+                            Value::String(v.to_string())
+                        }
+                        None => Value::Null
+                    }
                 }
                 _ => {
                     match column.type_info().kind() {
