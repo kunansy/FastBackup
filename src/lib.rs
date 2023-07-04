@@ -520,7 +520,7 @@ pub mod ordered_map {
         }
 
         #[inline]
-        pub fn into_serialize(&'a self) -> Vec<(&'a K, &'a V)> {
+        pub fn to_serialize(&'a self) -> Vec<(&'a K, &'a V)> {
             self.order
                 .iter()
                 .map(|v| (v, self.map.get(v).unwrap()))
@@ -548,7 +548,7 @@ pub mod ordered_map {
             S: Serializer,
         {
             let mut map = serializer.serialize_map(Some(self.len()))?;
-            for (k, v) in self.into_serialize() {
+            for (k, v) in self.to_serialize() {
                 map.serialize_entry(k, v)?;
             }
             map.end()
