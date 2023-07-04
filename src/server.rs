@@ -62,6 +62,8 @@ impl DbConfig for RestoreRequest {
     }
 }
 
+// I ensure that the var could not be accessed
+// from the different threads to read/modify it
 static mut CFG: Lazy<Arc<Settings>> = Lazy::new(|| {
     Settings::load_env();
     Arc::new(Settings::parse().unwrap())
