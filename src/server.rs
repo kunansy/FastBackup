@@ -80,7 +80,15 @@ impl GoogleDrive for Backup {
 
         let params = request.into_inner();
 
-        let path = db::dump(&params, &cfg.data_folder, &cfg.encrypt_pub_key_file)
+        let pool = db::init_pool(&params).await
+            .map_err(|e| {
+                let msg = format!("Could not create DB pool: {}", e.to_string());
+                Status::internal(&msg)
+            })?;
+
+        let arc_pool = Arc::new(pool);
+        // TODO: pass comp level through or config
+        let path = db::dump(arc_pool.clone(), &cfg.data_folder, 3).await
             .map_err(|e| Status::internal(e.to_string()))?;
         let path = Path::new(&path);
 
