@@ -315,6 +315,7 @@ pub mod db {
         Ok(table_dumps)
     }
 
+    #[inline]
     async fn dump_table(pool: &PgPool, table_name: &str) -> Res<TableDump> {
         let res = query(&format!("SELECT * FROM {}", table_name))
             .fetch_all(pool)
@@ -326,6 +327,7 @@ pub mod db {
         Ok(res)
     }
 
+    #[inline]
     fn dump_row(row: PgRow) -> RowDump {
         let mut res = HashMap::with_capacity(row.columns().len());
 
