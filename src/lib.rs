@@ -811,7 +811,7 @@ pub mod google_drive {
                     next.created_time.unwrap().cmp(&prev.created_time.unwrap())
                 }
             );
-            // if list is not empty we can get the first elem
+            // list is not empty, so we can get the first elem
             let mut first = files.into_iter().nth(0).unwrap();
             // field id, name must exist
             let file_id = first.id.take().unwrap();

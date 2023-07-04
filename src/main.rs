@@ -20,6 +20,9 @@ async fn main() -> Res<()> {
     let filename = db::dump(arc_pool, &cfg.data_folder, cfg.comp_level).await?;
     let filename = Path::new(&filename);
 
+    // TODO: add two parallel threads: 
+    //  1. Init pool and dump db; 
+    //  2. Init drive, get "tracker" folder id, last dump id
     let drive = {
         let mut d = DriveAuth::new(&cfg.drive_creds);
         d.build_auth().await?;
