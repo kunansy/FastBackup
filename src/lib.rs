@@ -293,7 +293,7 @@ pub mod db {
     }
 
     fn define_tables_order<'a>(tables: &'a Vec<String>,
-                                   table_refs: &'a HashMap<String, String>) -> Vec<&'a String> {
+                               table_refs: &'a HashMap<String, String>) -> Vec<&'a String> {
         let mut weights = HashMap::new();
         // how many links to the table
         for table_name in table_refs.values() {
@@ -317,7 +317,7 @@ pub mod db {
     }
 
     async fn dump_all<'a>(pool: Arc<PgPool>,
-                              tables: Vec<&'a String>) -> Res<DBDump<'a>> {
+                          tables: Vec<&'a String>) -> Res<DBDump<'a>> {
         // save order of the tables with OMap
         let mut table_dumps = OMap::with_capacity(tables.len());
 
@@ -329,7 +329,7 @@ pub mod db {
 
         // run all tasks concurrently
         for (table, task) in tasks.into_iter() {
-            let table_dump =  task.await??;
+            let table_dump = task.await??;
             table_dumps.insert(table, table_dump);
         }
 
@@ -533,11 +533,9 @@ pub mod ordered_map {
             K: Serialize + Eq + PartialEq + Hash + Clone,
             V: Serialize,
     {
-
         #[inline]
         fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-        where
-            S: Serializer,
+            where S: Serializer,
         {
             let mut map = serializer.serialize_map(Some(self.len()))?;
             for (k, v) in self.to_serialize() {
