@@ -87,8 +87,8 @@ impl GoogleDrive for Backup {
             })?;
 
         let arc_pool = Arc::new(pool);
-        // TODO: pass comp level through or config
-        let path = db::dump(arc_pool.clone(), &cfg.data_folder, 3).await
+        let path = db::dump(arc_pool.clone(), &cfg.data_folder, cfg.comp_level)
+            .await
             .map_err(|e| Status::internal(e.to_string()))?;
         let path = Path::new(&path);
 
