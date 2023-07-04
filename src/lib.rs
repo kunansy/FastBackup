@@ -1,6 +1,6 @@
 pub use errors::Errors;
 
-type Res<T> = Result<T, Errors>;
+pub type Res<T> = Result<T, Errors>;
 
 #[async_trait::async_trait]
 pub trait Storage {
@@ -9,9 +9,17 @@ pub trait Storage {
     async fn download(&self, file_id: &str, path: &str) -> Res<String>;
 }
 
+pub trait Compression<T> {
+    fn compress(&self, output: &T, level: i32) -> Res<()>;
+}
+
+pub trait Decompression<I> {
+    fn decompress(input: &I) -> Res<Box<Self>>;
+}
+
 pub trait DbConfig {
     fn db_host(&self) -> &String;
-    fn db_port(&self) -> &String;
+    fn db_port(&self) -> u16;
     fn db_username(&self) -> &String;
     fn db_password(&self) -> &String;
     fn db_name(&self) -> &String;
@@ -29,15 +37,15 @@ pub mod settings {
     #[derive(Debug)]
     pub struct Settings {
         db_host: String,
-        db_port: String,
+        db_port: u16,
         db_username: String,
         db_password: String,
         db_name: String,
-        pub encrypt_pub_key_file: String,
-        pub encrypt_key_file: String,
         pub drive_creds: String,
         // dump backups to this folder
         pub data_folder: Option<String>,
+        // compression level, default is 3
+        pub comp_level: i32,
     }
 
     impl Settings {
@@ -48,8 +56,6 @@ pub mod settings {
             let db_username = std::env::var("DB_USERNAME")?;
             let db_password = std::env::var("DB_PASSWORD")?;
             let db_name = std::env::var("DB_NAME")?;
-            let encrypt_pub_key_file = std::env::var("ENCRYPT_PUB_KEY_FILE")?;
-            let encrypt_key_file = std::env::var("ENCRYPT_KEY_FILE")?;
             let drive_creds = std::env::var("DRIVE_CREDS")?;
             let data_folder = std::env::var("DATA_FOLDER")
                 .map_or(None, |v| {
@@ -57,22 +63,19 @@ pub mod settings {
                     Some(v)
                 });
             let db_port = std::env::var("DB_PORT")?
-                .parse::<u32>()
+                .parse::<u16>()
                 .map_err(|e: ParseIntError|
                     Errors::EnvError(format!("DB_PORT must be int: {}", e.to_string())))?;
+            let comp_level = std::env::var("COMPRESSION_LEVEL")
+                .unwrap_or("3".to_string())
+                .parse::<i32>()
+                .map_err(|e: ParseIntError|
+                    Errors::EnvError(format!("COMPRESSION_LEVEL must be int: {}", e.to_string())))?;
+
+            assert!(comp_level <= 22, "Max compression level is 22, {} found", comp_level);
 
             log::debug!("Settings parsed");
-            Ok(Self {
-                db_host,
-                db_port: db_port.to_string(),
-                db_username,
-                db_password,
-                db_name,
-                encrypt_pub_key_file,
-                encrypt_key_file,
-                drive_creds,
-                data_folder,
-            })
+            Ok(Self { db_host, db_port, db_username, db_password, db_name, drive_creds, data_folder, comp_level })
         }
 
         /// load .env file to env.
@@ -108,8 +111,8 @@ pub mod settings {
             &self.db_host
         }
 
-        fn db_port(&self) -> &String {
-            &self.db_port
+        fn db_port(&self) -> u16 {
+            self.db_port
         }
 
         fn db_username(&self) -> &String {
@@ -150,61 +153,264 @@ pub mod logger {
 }
 
 pub mod db {
-    use std::{path::{Path, PathBuf}, process::{Command, Stdio}, time};
+    use std::{collections::HashMap, fmt::Display, sync::Arc};
+    use std::{fs, time};
+    use std::path::Path;
 
-    use crate::{DbConfig, errors::Errors, Res};
+    use chrono::{NaiveDate, NaiveDateTime};
+    use serde_json::Value;
+    use sqlx::{Column, PgPool, Pool, Postgres, query, Row, TypeInfo};
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgRow, PgSslMode, PgTypeKind};
+    use sqlx::types::Uuid;
+    use tokio::join;
 
-    pub fn dump(cfg: &impl DbConfig,
-                data_folder: &Option<String>,
-                encrypt_pub_key_file: &String) -> Res<String> {
-        log::info!("Start backupping");
-        let start = time::Instant::now();
-        let filename = create_filename(&cfg.db_name(), data_folder);
+    use crate::{Compression, DbConfig, ordered_map::OMap, Res};
 
-        // TODO: stop one of the processes failed
-        let pg_dump = Command::new("pg_dump")
-            .env("PGPASSWORD", &cfg.db_password())
-            .args(["-h", &cfg.db_host()])
-            .args(["-p", &cfg.db_port()])
-            .args(["-U", &cfg.db_username()])
-            // TODO: more dump options
-            .arg("--data-only")
-            .arg("--inserts")
-            .arg("--blobs")
-            .arg("--column-inserts")
-            .arg(&cfg.db_name())
-            .stdout(Stdio::piped())
-            .spawn()?;
+    type RowDump = HashMap<String, Value>;
+    type TableDump = Vec<RowDump>;
+    pub type DBDump<'a> = OMap<&'a String, TableDump>;
 
-        let gzip = Command::new("gzip")
-            .args(["-c", "--best"])
-            .stdin(Stdio::from(pg_dump.stdout.unwrap()))
-            .stdout(Stdio::piped())
-            .spawn()?;
+    #[derive(sqlx::Type, Debug)]
+    #[sqlx(type_name = "materialtypesenum", rename_all = "lowercase")]
+    enum MaterialTypesEnum {
+        Book,
+        Article,
+        Course,
+        Lecture,
+        Audiobook
+    }
 
-        // TODO: let encryption switched off
-        let openssl = Command::new("openssl")
-            .arg("smime")
-            .arg("-encrypt")
-            .arg("-aes256")
-            .arg("-binary")
-            .args(["-outform", "DEM"])
-            .args(["-out", &filename])
-            .arg(encrypt_pub_key_file)
-            .stdin(Stdio::from(gzip.stdout.unwrap()))
-            .spawn()?;
-
-        match openssl.wait_with_output() {
-            Ok(s) => {
-                log::info!("Backup completed for {:?}, {:?}", start.elapsed(), s);
-                Ok(filename)
-            },
-            Err(e) => {
-                let msg = format!("Backup error: {}", e);
-                log::error!("{}", msg);
-                Err(Errors::DumpError(msg))
-            }
+    impl ToString for MaterialTypesEnum {
+        fn to_string(&self) -> String {
+            let v = match self {
+                MaterialTypesEnum::Book => "book",
+                MaterialTypesEnum::Article => "article",
+                MaterialTypesEnum::Course => "course",
+                MaterialTypesEnum::Lecture => "lecture",
+                MaterialTypesEnum::Audiobook => "audiobook",
+            };
+            v.to_string()
         }
+    }
+
+    pub async fn dump(pool: Arc<PgPool>,
+                      data_folder: &Option<String>,
+                      compression_level: i32) -> Res<String> {
+        log::info!("Start dumping");
+        let start = time::Instant::now();
+
+        let db_name = pool
+            .connect_options()
+            .get_database()
+            .unwrap_or("undefined");
+
+        let (tables, table_refs) = join!(
+            get_tables(&pool),
+            get_table_refs(&pool)
+        );
+        let (tables, table_refs) = (tables?, table_refs?);
+        let tables_order = define_tables_order(&tables, &table_refs);
+
+        let json = dump_all(pool.clone(), tables_order).await?;
+        let filename = create_filename(db_name, data_folder);
+
+        json.compress(&filename, compression_level)?;
+
+        log::info!("Dump completed for {:?}", start.elapsed());
+        Ok(filename)
+    }
+
+    pub async fn init_pool<T>(cfg: &T) -> Res<Pool<Postgres>>
+        where T: DbConfig
+    {
+        let conn = PgConnectOptions::new()
+            .host(cfg.db_host())
+            .port(cfg.db_port())
+            .username(cfg.db_username())
+            .password(cfg.db_password())
+            .database(cfg.db_name())
+            .ssl_mode(PgSslMode::Disable);
+
+        Ok(PgPoolOptions::new()
+            .max_connections(5)
+            .acquire_timeout(time::Duration::from_secs(5))
+            .idle_timeout(time::Duration::from_secs(5))
+            .connect_with(conn)
+            .await?)
+    }
+
+    pub fn delete_dump(path: &Path) -> Res<()>{
+        Ok(fs::remove_file(path)?)
+    }
+
+    async fn get_tables(pool: &PgPool) -> Res<Vec<String>> {
+        log::info!("Getting tables");
+
+        let tables = sqlx::query(
+            "SELECT tablename FROM pg_catalog.pg_tables \
+            WHERE schemaname != 'pg_catalog' AND schemaname != 'information_schema';")
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .map(|r| r.get("tablename"))
+            .collect::<Vec<String>>();
+
+        log::info!("{} tables got", tables.len());
+        Ok(tables)
+    }
+
+    async fn get_table_refs(pool: &PgPool) -> Res<HashMap<String, String>> {
+        log::info!("Getting table refs");
+
+        let refs = sqlx::query(
+            "SELECT
+                tc.table_name,
+                ccu.table_name AS foreign_table_name
+            FROM
+                information_schema.table_constraints tc
+                JOIN information_schema.constraint_column_usage ccu
+                  ON ccu.constraint_name = tc.constraint_name
+                  AND ccu.table_schema = tc.table_schema
+            WHERE tc.table_schema != 'pg_catalog' and tc.table_name != ccu.table_name;")
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .map(|r| (r.get("table_name"), r.get("foreign_table_name")))
+            .collect::<HashMap<String, String>>();
+
+        log::info!("{} table refs got", refs.len());
+
+        Ok(refs)
+    }
+
+    fn define_tables_order<'a>(tables: &'a Vec<String>,
+                               table_refs: &'a HashMap<String, String>) -> Vec<&'a String> {
+        let mut weights = HashMap::new();
+        // how many links to the table
+        for table_name in table_refs.values() {
+            *weights.entry(table_name).or_insert(0) += 1;
+        }
+        // there might be tables without links, add them
+        for table_name in tables {
+            weights.entry(table_name).or_insert(0);
+        }
+
+        let mut order = weights
+            .into_iter()
+            .map(|(k, v)| (k, v))
+            .collect::<Vec<(&String, i32)>>();
+
+        order.sort_by(|(_, v), (_, v2)| v.cmp(v2).reverse());
+
+        order.into_iter()
+            .map(|(k, _)| k)
+            .collect::<Vec<&String>>()
+    }
+
+    async fn dump_all<'a>(pool: Arc<PgPool>,
+                          tables: Vec<&'a String>) -> Res<DBDump<'a>> {
+        // save order of the tables with OMap
+        let mut table_dumps = OMap::with_capacity(tables.len());
+
+        let tasks = tables
+            .into_iter()
+            .map(|table| {
+                (table, tokio::spawn(dump_table(pool.clone(), table.clone())))
+            });
+
+        // run all tasks concurrently
+        for (table, task) in tasks.into_iter() {
+            let table_dump = task.await??;
+            table_dumps.insert(table, table_dump);
+        }
+
+        Ok(table_dumps)
+    }
+
+    #[inline]
+    async fn dump_table<T>(pool: Arc<PgPool>, table_name: T) -> Res<TableDump>
+        where T: Display
+    {
+        let res = query(&format!("SELECT * FROM {}", table_name))
+            .fetch_all(&*pool)
+            .await?
+            .into_iter()
+            .map(|row| dump_row(row))
+            .collect::<Vec<RowDump>>();
+
+        Ok(res)
+    }
+
+    #[inline]
+    fn dump_row(row: PgRow) -> RowDump {
+        let mut res = HashMap::with_capacity(row.columns().len());
+
+        for column in row.columns() {
+            let name = column.name();
+            let value = match column.type_info().name() {
+                "INT4" => {
+                    match row.get::<Option<i32>, _>(name) {
+                        Some(v) => Value::Number(v.into()),
+                        None => Value::Null
+                    }
+                },
+                "INT8" => {
+                    match row.get::<Option<i64>, _>(name) {
+                        Some(v) => Value::Number(v.into()),
+                        None => Value::Null
+                    }
+                },
+                "VARCHAR" | "TEXT" => {
+                    match row.get::<Option<String>, _>(name) {
+                        Some(v) => Value::String(v),
+                        None => Value::Null
+                    }
+                },
+                "UUID" => {
+                    match row.get::<Option<Uuid>, _>(name) {
+                        Some(v) => Value::String(v.to_string()),
+                        None => Value::Null
+                    }
+                },
+                "BOOL" => {
+                    match row.get::<Option<bool>, _>(name) {
+                        Some(v) => Value::Bool(v),
+                        None => Value::Null
+                    }
+                },
+                "TIMESTAMP" => {
+                    match row.get::<Option<NaiveDateTime>, _>(name) {
+                        Some(v) => Value::String(v.to_string()),
+                        None => Value::Null
+                    }
+                },
+                "JSONB" | "JSON" => {
+                    row.get::<Value, _>(name)
+                },
+                "DATE" => {
+                    match row.get::<Option<NaiveDate>, _>(name) {
+                        Some(v) => Value::String(v.to_string()),
+                        None => Value::Null
+                    }
+                },
+                // TODO: how to match type without name??
+                "materialtypesenum" => {
+                    match row.get::<Option<MaterialTypesEnum>, _>(name) {
+                        Some(v) => Value::String(v.to_string()),
+                        None => Value::Null
+                    }
+                }
+                _ => {
+                    match column.type_info().kind() {
+                        PgTypeKind::Enum(_) => panic!("Enum column: {:?}, could not process", column),
+                        v @ _ => panic!("Not processed type: {:?}, {:?}", v, column.type_info().name())
+                    }
+                }
+            };
+
+            res.insert(name.to_string(), value);
+        }
+        res
     }
 
     fn create_filename(db_name: &str, folder: &Option<String>) -> String {
@@ -212,52 +418,8 @@ pub mod db {
             Some(v) => format!("{}/", v),
             None => "".to_string()
         };
-        format!("{}backup_{}_{}.enc", prefix, db_name,
+        format!("{}backup_{}_{}.dump", prefix, db_name,
                 chrono::Utc::now().format("%Y-%m-%d_%H:%M:%S"))
-    }
-
-    /// All required programs must exist.
-    ///
-    /// # Panics
-    /// Panic if a program not found
-    pub fn assert_programs_exist() {
-        for p in vec!["openssl", "pg_dump", "gzip", "pg_isready"] {
-            if find_it(p).is_none() {
-                panic!("'{}' not found", p);
-            }
-        }
-    }
-
-    fn find_it<P>(exe_name: P) -> Option<PathBuf>
-        where P: AsRef<Path>
-    {
-        std::env::var_os("PATH").and_then(|paths| {
-            std::env::split_paths(&paths).filter_map(|dir| {
-                let full_path = dir.join(&exe_name);
-                match full_path.is_file() {
-                    true => Some(full_path),
-                    false => None
-                }
-            }).next()
-        })
-    }
-
-    pub fn assert_db_is_ready(cfg: &impl DbConfig) {
-        assert!(is_db_ready(cfg), "DB is not ready");
-    }
-
-    pub fn is_db_ready<T>(cfg: &T) -> bool
-        where T: DbConfig
-    {
-        log::debug!("Check the database is alive");
-
-        Command::new("pg_isready")
-            .args(["--host", &cfg.db_host()])
-            .args(["--port", &cfg.db_port()])
-            .args(["--timeout", "10"])
-            .args(["--username", &cfg.db_username()])
-            .status().unwrap()
-            .success()
     }
 
     #[cfg(test)]
@@ -279,21 +441,146 @@ pub mod db {
             assert!(f.starts_with("backup_tdb_"));
             assert!(f.ends_with(".enc"));
         }
+    }
+}
 
-        #[test]
-        fn test_assert_programs_exist() {
-            db::assert_programs_exist();
+pub mod ordered_map {
+    use std::{collections::HashMap, fmt::Debug, hash::Hash, ops::Deref};
+
+    use serde::{ser::SerializeMap, Serialize, Serializer};
+
+    #[derive(Clone, Debug)]
+    pub struct OMap<K, V> {
+        map: HashMap<K, V>,
+        order: Vec<K>
+    }
+
+    impl<K, V> OMap<K, V>
+        where K: Eq + PartialEq + Hash + Clone
+    {
+        pub fn new() -> Self {
+            OMap {
+                map: HashMap::new(),
+                order: Vec::new()
+            }
         }
 
-        #[test]
-        fn test_find_it() {
-            assert_eq!(db::find_it("ls"), Some("/bin/ls".into()));
+        pub fn with_capacity(capacity: usize) -> Self {
+            OMap {
+                map: HashMap::with_capacity(capacity),
+                order: Vec::with_capacity(capacity)
+            }
         }
 
-        #[test]
-        fn test_find_it_none() {
-            assert_eq!(db::find_it("myproc_test"), None);
+        #[inline]
+        pub fn insert(&mut self, key: K, value: V) {
+            if self.order.contains(&key) {
+                let index = self.order
+                    .iter()
+                    .position(|x| *x == key)
+                    .unwrap();
+                self.order.remove(index);
+            }
+
+            self.order.push(key.clone());
+            self.map.insert(key, value);
         }
+
+        #[inline]
+        pub fn to_serialize<'a>(&'a self) -> Vec<(&'a K, &'a V)> {
+            self.order
+                .iter()
+                .map(|v| (v, self.map.get(v).unwrap()))
+                .collect::<Vec<(&'a K, &'a V)>>()
+        }
+    }
+
+    impl<K, V> Deref for OMap<K, V> {
+        type Target = HashMap<K, V>;
+
+        fn deref(&self) -> &Self::Target {
+            &self.map
+        }
+    }
+
+    impl<K, V> Serialize for OMap<K, V>
+        where
+            K: Serialize + Eq + PartialEq + Hash + Clone,
+            V: Serialize,
+    {
+        #[inline]
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where S: Serializer,
+        {
+            let mut map = serializer.serialize_map(Some(self.len()))?;
+            for (k, v) in self.to_serialize() {
+                map.serialize_entry(k, v)?;
+            }
+            map.end()
+        }
+    }
+}
+
+pub mod compression {
+    use std::{fs::File, path::Path};
+    use std::io::{BufReader, BufWriter, Write};
+
+    use zstd::stream::{copy_decode, copy_encode};
+
+    use crate::{Compression, db::DBDump, Decompression, Res};
+
+    impl<'a, T> Compression<T> for DBDump<'a>
+        where T: AsRef<Path>
+    {
+        fn compress(&self, output: &T, level: i32) -> Res<()>{
+            // deref to access to the hashmap
+            let input = serde_json::to_string_pretty(&*self)?;
+            compress(input.as_bytes(), output, level)?;
+            Ok(())
+        }
+    }
+
+    impl<'a, T> Decompression<T> for DBDump<'a>
+        where T: AsRef<Path>
+    {
+        fn decompress(_input: &T) -> Res<Box<Self>> {
+            todo!()
+        }
+    }
+
+    const BUF_SIZE: usize = 1024 * 1024 * 8;
+
+    fn compress<T>(input: &[u8], output_file: &T, level: i32) -> Res<()>
+        where T: AsRef<Path>
+    {
+        let output_file = File::create(output_file)?;
+
+        let mut src = BufReader::with_capacity(BUF_SIZE, input);
+        let mut dst = BufWriter::new(output_file);
+
+        copy_encode(&mut src, &mut dst, level)?;
+
+        dst.flush()?;
+
+        Ok(())
+    }
+
+    fn _decompress<I, O>(input_file: &I, output_file: &O) -> Res<()>
+        where
+            I: AsRef<Path>,
+            O: AsRef<Path>
+    {
+        let input_file = File::open(input_file)?;
+        let output_file = File::create(output_file)?;
+
+        let mut src = BufReader::with_capacity(BUF_SIZE, input_file);
+        let mut dst = BufWriter::new(output_file);
+
+        copy_decode(&mut src, &mut dst)?;
+
+        dst.flush()?;
+
+        Ok(())
     }
 }
 
@@ -461,8 +748,8 @@ pub mod google_drive {
 
         /// Get id of the newest file in the folder.
         /// Required to restore.
-        pub async fn get_last_file_id(&self, folder_id: &str) -> Res<(String, String)> {
-            log::info!("Getting id of the last file, folder id: '{}'", folder_id);
+        pub async fn get_last_dump_id(&self, folder_id: &str) -> Res<(String, String)> {
+            log::info!("Getting id of the last dump, folder id: '{}'", folder_id);
             let start = time::Instant::now();
 
             let q = format!("'{}' in parents", folder_id);
@@ -497,12 +784,12 @@ pub mod google_drive {
                     next.created_time.unwrap().cmp(&prev.created_time.unwrap())
                 }
             );
-            // if list is not empty we can get the first elem
+            // the list is not empty, so we can get the first elem
             let mut first = files.into_iter().nth(0).unwrap();
             // field id, name must exist
             let file_id = first.id.take().unwrap();
             let file_name = first.name.take().unwrap();
-            log::info!("File name '{}', id '{}' got for {:?}", file_name, file_id, start.elapsed());
+            log::info!("Dump name '{}', id '{}' got for {:?}", file_name, file_id, start.elapsed());
 
             Ok((file_id, file_name))
         }
@@ -542,7 +829,7 @@ pub mod google_drive {
 
         async fn download(&self, folder_name: &str, prefix: &str) -> Res<String> {
             let folder_id = self.get_file_id(folder_name).await?;
-            let (file_id, file_name) = self.get_last_file_id(&folder_id).await?;
+            let (file_id, file_name) = self.get_last_dump_id(&folder_id).await?;
 
             let path = format!("{}{}", prefix, file_name);
             self.download_file(&file_id, Path::new(&path)).await?;
@@ -574,13 +861,31 @@ pub mod errors {
             Self::DumpError(value.to_string())
         }
     }
+
+    impl From<sqlx::Error> for Errors {
+        fn from(value: sqlx::Error) -> Self {
+            Self::DumpError(value.to_string())
+        }
+    }
+
+    impl From<tokio::task::JoinError> for Errors {
+        fn from(value: tokio::task::JoinError) -> Self {
+            Self::DumpError(value.to_string())
+        }
+    }
+
+    impl From<serde_json::Error> for Errors {
+        fn from(value: serde_json::Error) -> Self {
+            Self::DumpError(value.to_string())
+        }
+    }
 }
 
 
 #[cfg(test)]
 mod test_settings {
-
     use std::path::Path;
+
     use crate::settings::Settings;
 
     #[test]

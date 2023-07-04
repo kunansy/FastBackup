@@ -11,12 +11,11 @@ service GoogleDrive {
 
 message BackupRequest {
     string db_host = 1;
-    string db_port = 2;
+    uint32 db_port = 2;
     string db_username = 3;
     string db_password = 4;
     string db_name = 5;
-    // TODO
-    bool with_enc = 6;
+    bool delete_after = 6;
 }
 
 message BackupReply {
@@ -25,7 +24,7 @@ message BackupReply {
 
 message RestoreRequest {
     string db_host = 1;
-    string db_port = 2;
+    uint32 db_port = 2;
     string db_username = 3;
     string db_password = 4;
     string db_name = 5;
@@ -33,6 +32,5 @@ message RestoreRequest {
 }
 
 message RestoreReply {
-    bool is_ok = 1;
-    optional string file_id = 2;
+    string file_id = 1;
 }

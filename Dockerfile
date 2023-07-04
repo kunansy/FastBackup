@@ -2,7 +2,7 @@ FROM rust:1.70-slim-buster as builder
 
 RUN apt-get update  \
     && apt-get upgrade -y  \
-    && apt-get install protobuf-compiler -y
+    && apt-get install protobuf-compiler ca-certificates -y
 
 WORKDIR build
 
@@ -23,19 +23,12 @@ ENV TZ Etc/UTC
 
 LABEL maintainer="Kirill <k@kunansy.ru>"
 
-# install Postgresql 15
 RUN apt-get update \
     && apt-get upgrade -y \
-    && apt-get install apt-utils wget lsb-release gnupg -y \
-    && apt-key adv --recv-keys --keyserver keyserver.ubuntu.com 7FCC7D46ACCC4CF8 \
-    && echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
-    && wget -qO- https://www.postgresql.org/media/keys/ACCC4CF8.asc | tee /etc/apt/trusted.gpg.d/pgdg.asc \
-    && apt-get update \
-    && apt-get install -y openssl gzip postgresql-client ca-certificates \
-    && apt-get remove wget lsb-release apt-utils -y \
     && apt-get autoremove -y \
     && apt-get clean && apt-get autoclean \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR app
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=builder /build/target/release/backup-server ./

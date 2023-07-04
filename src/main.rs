@@ -1,23 +1,27 @@
-use std::path::Path;
+use std::{path::Path, sync::Arc};
 use std::time;
-use backuper::{settings::Settings, logger, errors::Errors, db, google_drive::DriveAuth};
+
+use backuper::{db, google_drive::DriveAuth, logger, Res, settings::Settings};
 
 #[tokio::main]
-async fn main() -> Result<(), Errors> {
+async fn main() -> Res<()> {
     log::info!("Start app");
-
-    db::assert_programs_exist();
     let start = time::Instant::now();
 
     Settings::load_env();
     logger::init();
 
     let cfg = Settings::parse()?;
-    db::assert_db_is_ready(&cfg);
 
-    let filename = db::dump(&cfg, &cfg.data_folder, &cfg.encrypt_pub_key_file)?;
+    let pool = db::init_pool(&cfg).await?;
+    let arc_pool = Arc::new(pool);
+
+    let filename = db::dump(arc_pool, &cfg.data_folder, cfg.comp_level).await?;
     let filename = Path::new(&filename);
 
+    // TODO: add two parallel threads: 
+    //  1. Init pool and dump db; 
+    //  2. Init drive, get "tracker" folder id, last dump id
     let drive = {
         let mut d = DriveAuth::new(&cfg.drive_creds);
         d.build_auth().await?;

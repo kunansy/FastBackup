@@ -2,16 +2,14 @@ use std::path::Path;
 use std::sync::Arc;
 use std::thread;
 
-use tonic::{Request, Response, Status, transport::Server};
-use signal_hook::{iterator::Signals, consts::SIGHUP};
 use once_cell::sync::Lazy;
+use signal_hook::{consts::SIGHUP, iterator::Signals};
+use tonic::{Request, Response, Status, transport::Server};
 
-use backuper::{db, DbConfig};
-use backuper::google_drive::DriveAuth;
-use backuper::settings::Settings;
-use backup::{BackupReply, BackupRequest};
+use backup::{BackupReply, BackupRequest, RestoreRequest};
 use backup::google_drive_server::{GoogleDrive, GoogleDriveServer};
-use crate::backup::{RestoreReply, RestoreRequest};
+use backuper::{db, DbConfig};
+use backuper::{google_drive::DriveAuth, settings::Settings};
 
 pub mod backup {
     tonic::include_proto!("backup");
@@ -25,8 +23,8 @@ impl DbConfig for BackupRequest {
         &self.db_host
     }
 
-    fn db_port(&self) -> &String {
-        &self.db_port
+    fn db_port(&self) -> u16 {
+        self.db_port as u16
     }
 
     fn db_username(&self) -> &String {
@@ -47,8 +45,8 @@ impl DbConfig for RestoreRequest {
         &self.db_host
     }
 
-    fn db_port(&self) -> &String {
-        &self.db_port
+    fn db_port(&self) -> u16 {
+        self.db_port as u16
     }
 
     fn db_username(&self) -> &String {
@@ -64,6 +62,8 @@ impl DbConfig for RestoreRequest {
     }
 }
 
+// I ensure that the var could not be accessed
+// from the different threads to read/modify it
 static mut CFG: Lazy<Arc<Settings>> = Lazy::new(|| {
     Settings::load_env();
     Arc::new(Settings::parse().unwrap())
@@ -78,11 +78,16 @@ impl GoogleDrive for Backup {
         };
 
         let params = request.into_inner();
-        if !db::is_db_ready(&params) {
-            return Err(Status::not_found("The database not ready"));
-        }
 
-        let path = db::dump(&params, &cfg.data_folder, &cfg.encrypt_pub_key_file)
+        let pool = db::init_pool(&params).await
+            .map_err(|e| {
+                let msg = format!("Could not create DB pool: {}", e.to_string());
+                Status::internal(&msg)
+            })?;
+
+        let arc_pool = Arc::new(pool);
+        let path = db::dump(arc_pool.clone(), &cfg.data_folder, cfg.comp_level)
+            .await
             .map_err(|e| Status::internal(e.to_string()))?;
         let path = Path::new(&path);
 
@@ -94,6 +99,14 @@ impl GoogleDrive for Backup {
         let file_id = backuper::send(&drive, path)
             .await
             .map_err(|e| Status::aborted(e.to_string()))?;
+
+        if params.delete_after {
+            db::delete_dump(&path)
+                .map_err(|e| {
+                    let msg = format!("Could not delete dump: {:?}", e);
+                    Status::internal(&msg)
+                })?;
+        }
 
         Ok(Response::new(BackupReply { file_id }))
     }
