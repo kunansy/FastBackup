@@ -213,7 +213,7 @@ pub mod db {
             .map_err(|e| e.into())
     }
 
-    pub async fn get_tables(pool: &PgPool) -> Res<Vec<String>> {
+    async fn get_tables(pool: &PgPool) -> Res<Vec<String>> {
         log::info!("Getting tables");
 
         let tables = sqlx::query(
@@ -229,7 +229,7 @@ pub mod db {
         Ok(tables)
     }
 
-    pub async fn get_table_refs(pool: &PgPool) -> Res<HashMap<String, String>> {
+    async fn get_table_refs(pool: &PgPool) -> Res<HashMap<String, String>> {
         log::info!("Getting table refs");
 
         let refs = sqlx::query(
@@ -253,7 +253,7 @@ pub mod db {
         Ok(refs)
     }
 
-    pub fn define_tables_order<'a>(tables: &'a Vec<String>,
+    fn define_tables_order<'a>(tables: &'a Vec<String>,
                                    table_refs: &'a HashMap<String, String>) -> Vec<&'a String> {
         let mut weights = HashMap::new();
         // how many links to the table
@@ -277,7 +277,7 @@ pub mod db {
             .collect::<Vec<&String>>()
     }
 
-    pub async fn dump_all<'a>(pool: Arc<PgPool>,
+    async fn dump_all<'a>(pool: Arc<PgPool>,
                               tables: Vec<&'a String>) -> Res<DBDump<'a>> {
         // save order of the tables with OMap
         let mut table_dumps = OMap::with_capacity(tables.len());
