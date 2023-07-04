@@ -179,7 +179,7 @@ pub mod db {
     pub type DBDump<'a> = OMap<&'a String, TableDump>;
 
     #[derive(sqlx::Type, Debug)]
-    #[sqlx(rename = "materialtypesenum", rename_all = "lowercase")]
+    #[sqlx(type_name = "materialtypesenum", rename_all = "lowercase")]
     enum MaterialTypesEnum {
         Book,
         Article,
