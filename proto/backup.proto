@@ -15,7 +15,7 @@ message BackupRequest {
     string db_username = 3;
     string db_password = 4;
     string db_name = 5;
-    optional bool delete_after = 6;
+    bool delete_after = 6;
 }
 
 message BackupReply {
@@ -32,6 +32,5 @@ message RestoreRequest {
 }
 
 message RestoreReply {
-    bool is_ok = 1;
-    optional string file_id = 2;
+    string file_id = 1;
 }
