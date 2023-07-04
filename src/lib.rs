@@ -160,6 +160,7 @@ pub mod db {
     use sqlx::types::Uuid;
 
     use crate::{DbConfig, errors::Errors, Res};
+    use crate::ordered_map::OMap;
 
     type RowDump = HashMap<String, Value>;
     type TableDump = Vec<RowDump>;
@@ -301,8 +302,9 @@ pub mod db {
             .collect::<Vec<&String>>()
     }
 
-    pub async fn dump_all<'a>(pool: &PgPool, tables: Vec<&'a String>) -> Res<HashMap<&'a String, TableDump>> {
-        let mut table_dumps = HashMap::with_capacity(tables.len());
+    pub async fn dump_all<'a>(pool: &PgPool, tables: Vec<&'a String>) -> Res<OMap<&'a String, TableDump>> {
+        // save order of the tables with OMap
+        let mut table_dumps = OMap::with_capacity(tables.len());
 
         // TODO: run all tasks concurrently
         for table in tables {
