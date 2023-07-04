@@ -165,7 +165,7 @@ pub mod db {
 
     type RowDump = HashMap<String, Value>;
     type TableDump = Vec<RowDump>;
-    type DBDump<'a> = OMap<&'a String, TableDump>;
+    pub type DBDump<'a> = OMap<&'a String, TableDump>;
 
     pub fn dump(cfg: &impl DbConfig,
                 data_folder: &Option<String>,
