@@ -6,13 +6,10 @@ use once_cell::sync::Lazy;
 use signal_hook::{consts::SIGHUP, iterator::Signals};
 use tonic::{Request, Response, Status, transport::Server};
 
-use backup::{BackupReply, BackupRequest};
+use backup::{BackupReply, BackupRequest, RestoreRequest};
 use backup::google_drive_server::{GoogleDrive, GoogleDriveServer};
 use backuper::{db, DbConfig};
-use backuper::google_drive::DriveAuth;
-use backuper::settings::Settings;
-
-use crate::backup::{RestoreReply, RestoreRequest};
+use backuper::{google_drive::DriveAuth, settings::Settings};
 
 pub mod backup {
     tonic::include_proto!("backup");
