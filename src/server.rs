@@ -100,6 +100,14 @@ impl GoogleDrive for Backup {
             .await
             .map_err(|e| Status::aborted(e.to_string()))?;
 
+        if params.delete_after.unwrap_or(false) {
+            db::delete_dump(&path)
+                .map_err(|e| {
+                    let msg = format!("Could not delete dump: {:?}", e);
+                    Status::internal(&msg)
+                })?;
+        }
+
         Ok(Response::new(BackupReply { file_id }))
     }
 }
