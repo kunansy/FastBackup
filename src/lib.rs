@@ -542,6 +542,7 @@ pub mod compression {
         where T: AsRef<Path>
     {
         fn compress(&self, output: &T, level: i32) -> Res<()>{
+            // deref to access to the hashmap
             let input = serde_json::to_string_pretty(&*self)?;
             compress(input.as_bytes(), output, level)?;
             Ok(())
@@ -552,7 +553,7 @@ pub mod compression {
         where T: AsRef<Path>
     {
         fn decompress(_input: &T) -> Res<Box<Self>> {
-            unimplemented!()
+            todo!()
         }
     }
 
@@ -792,7 +793,7 @@ pub mod google_drive {
                     next.created_time.unwrap().cmp(&prev.created_time.unwrap())
                 }
             );
-            // list is not empty, so we can get the first elem
+            // the list is not empty, so we can get the first elem
             let mut first = files.into_iter().nth(0).unwrap();
             // field id, name must exist
             let file_id = first.id.take().unwrap();
