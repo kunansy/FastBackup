@@ -865,6 +865,12 @@ pub mod errors {
             Self::DumpError(value.to_string())
         }
     }
+
+    impl From<serde_json::Error> for Errors {
+        fn from(value: serde_json::Error) -> Self {
+            Self::DumpError(value.to_string())
+        }
+    }
 }
 
 
