@@ -2,10 +2,10 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time;
 
-use backuper::{db, errors::Errors, google_drive::DriveAuth, logger, settings::Settings};
+use backuper::{db, Res, google_drive::DriveAuth, logger, settings::Settings};
 
 #[tokio::main]
-async fn main() -> Result<(), Errors> {
+async fn main() -> Res<()> {
     log::info!("Start app");
     let start = time::Instant::now();
 

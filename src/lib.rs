@@ -1,6 +1,6 @@
 pub use errors::Errors;
 
-type Res<T> = Result<T, Errors>;
+pub type Res<T> = Result<T, Errors>;
 
 #[async_trait::async_trait]
 pub trait Storage {
