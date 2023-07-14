@@ -333,6 +333,14 @@ pub mod db {
                                deps: &'a HashMap<T, T>) -> Vec<(&'a T, Vec<&'a T>)>
         where T: Hash + PartialEq + Eq
     {
+        // optimize empty deps case, so don't litter the stack frame
+        if deps.len() == 0 {
+            return tables
+                .iter()
+                .map(|table| (table, vec![table]))
+                .collect();
+        }
+
         tables
             .iter()
             .map(|table| {
