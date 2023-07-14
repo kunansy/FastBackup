@@ -2,7 +2,7 @@ version: '3'
 
 services:
   backup:
-    image: kunansy/backup-postgres-rs:0.2.0
+    image: kunansy/fast-backup:0.2.0
     restart: always
     container_name: backup
     env_file: .env

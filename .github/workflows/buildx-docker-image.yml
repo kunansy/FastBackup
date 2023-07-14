@@ -31,4 +31,4 @@ jobs:
           context: .
           platforms: linux/amd64
           push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/backup-postgres-rs:0.2.0
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/fast-backup:0.2.0
