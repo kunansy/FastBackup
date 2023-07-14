@@ -311,7 +311,8 @@ pub mod db {
             .map(|(k, v)| (k, v))
             .collect::<Vec<(&String, i32)>>();
 
-        order.sort_by(|(_, v), (_, v2)| v.cmp(v2).reverse());
+        // descending order by refs count
+        order.sort_by(|(_, v), (_, v2)| v2.cmp(v));
 
         order.into_iter()
             .map(|(k, _)| k)
