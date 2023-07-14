@@ -9,7 +9,7 @@ async fn main() -> Res<()> {
     log::info!("Start app");
     let start = time::Instant::now();
 
-    Settings::load_env();
+    Settings::load_env(&Some(".env"));
     logger::init();
 
     let cfg = Settings::parse()?;

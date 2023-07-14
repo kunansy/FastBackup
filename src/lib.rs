@@ -86,11 +86,12 @@ pub mod settings {
         /// # errors
         ///
         /// warn if it could not read file, don't panic.
-        pub fn load_env() {
-            let env = match fs::read_to_string(".env") {
+        pub fn load_env(path: &Option<&str>) {
+            let path = path.unwrap_or(".env");
+            let env = match fs::read_to_string(path) {
                 Ok(content) => content,
                 Err(e) => {
-                    log::warn!("error reading .env file: {}", e);
+                    log::warn!("error reading '{}' file: {}", path, e);
                     return;
                 }
             };
@@ -906,7 +907,7 @@ mod test_settings {
     #[test]
     fn test_parse_ok() {
         assert!(Path::new(".env").exists(), ".env should exist");
-        Settings::load_env();
+        Settings::load_env(&Some(".env"));
 
         assert!(Settings::parse().is_ok());
     }
@@ -914,7 +915,7 @@ mod test_settings {
     #[test]
     fn test_parse_without_a_var() {
         assert!(Path::new(".env").exists(), ".env should exist");
-        Settings::load_env();
+        Settings::load_env(&Some(".env"));
 
         std::env::remove_var("DB_NAME");
         assert!(std::env::var("DB_NAME").is_err());
@@ -926,7 +927,7 @@ mod test_settings {
     #[test]
     fn test_parse_wrong_data_folder() {
         assert!(Path::new(".env").exists(), ".env should exist");
-        Settings::load_env();
+        Settings::load_env(&Some(".env"));
 
         std::env::set_var("DATA_FOLDER", "test/");
 
@@ -937,7 +938,7 @@ mod test_settings {
     #[test]
     fn test_parse_not_int_port() {
         assert!(Path::new(".env").exists(), ".env should exist");
-        Settings::load_env();
+        Settings::load_env(&Some(".env"));
 
         std::env::set_var("DB_PORT", "3.1415926535");
 
@@ -948,7 +949,7 @@ mod test_settings {
     #[test]
     fn test_parse_negative_port() {
         assert!(Path::new(".env").exists(), ".env should exist");
-        Settings::load_env();
+        Settings::load_env(&Some(".env"));
 
         std::env::set_var("DB_PORT", "-42");
 
@@ -959,7 +960,7 @@ mod test_settings {
     #[test]
     fn test_parse_zero_port() {
         assert!(Path::new(".env").exists(), ".env should exist");
-        Settings::load_env();
+        Settings::load_env(&Some(".env"));
 
         std::env::set_var("DB_PORT", "0");
 
@@ -969,7 +970,7 @@ mod test_settings {
 
     #[test]
     fn test_load_env() {
-        Settings::load_env();
+        Settings::load_env(&Some(".env"));
     }
 }
 

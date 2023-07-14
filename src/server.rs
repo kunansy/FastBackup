@@ -65,7 +65,7 @@ impl DbConfig for RestoreRequest {
 // I ensure that the var could not be accessed
 // from the different threads to read/modify it
 static mut CFG: Lazy<Arc<Settings>> = Lazy::new(|| {
-    Settings::load_env();
+    Settings::load_env(&None);
     Arc::new(Settings::parse().unwrap())
 });
 
@@ -123,7 +123,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             unsafe {
                 CFG = Lazy::<Arc<Settings>>::new(|| {
-                    Settings::load_env();
+                    Settings::load_env(&None);
                     Arc::new(Settings::parse().unwrap())
                 });
             }
