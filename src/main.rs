@@ -17,7 +17,7 @@ async fn main() -> Res<()> {
         // TODO: cache folder_id
         db::prepare_drive(&cfg.drive_creds, &cfg.drive_folder_id).await
     });
-    let dump_hdl = tokio::spawn( async {
+    let dump_hdl = tokio::spawn(async {
         let c = Settings::parse().unwrap();
         db::prepare_dump(&c, &c.data_folder, c.comp_level).await
     });

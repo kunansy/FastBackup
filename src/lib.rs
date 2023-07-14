@@ -80,7 +80,7 @@ pub mod settings {
                     Errors::EnvError(format!("COMPRESSION_LEVEL must be int: {}", e.to_string())))?;
 
             assert!((0..=22).contains(&comp_level),
-                    "Compression level must be in [0, 22], {} found",
+                    "Compression level must be in [0; 22], {} found",
                     comp_level);
 
             log::debug!("Settings parsed");
@@ -397,7 +397,7 @@ pub mod db {
     }
 
     /// Go through the dependency graph and find
-    /// all values on which `target` depends
+    /// all the values on which `target` depends
     ///
     /// # Arguments
     ///
@@ -422,6 +422,7 @@ pub mod db {
                 } else {
                     visited.insert(link);
                 }
+
                 get_deps(link, deps, result, visited);
                 result.push(target);
             }
