@@ -174,6 +174,7 @@ pub mod db {
     use tokio::join;
 
     use crate::{Compression, DbConfig, ordered_map::OMap, Res};
+    use crate::google_drive::{DriveAuth, GoogleDrive};
 
     type RowDump = HashMap<String, Value>;
     type TableDump = Vec<RowDump>;
@@ -200,6 +201,39 @@ pub mod db {
             };
             v.to_string()
         }
+    }
+
+    pub async fn prepare_dump<T>(cfg: &T,
+                                 data_folder: &Option<String>,
+                                 comp_level: i32) -> Res<String>
+        where T: DbConfig
+    {
+        log::info!("Prepare db, dump it");
+        let pool = init_pool(cfg).await?;
+        let arc_pool = Arc::new(pool);
+
+        let path = dump(arc_pool, data_folder, comp_level).await;
+        log::info!("DB dumped");
+
+        path
+    }
+
+    pub async fn prepare_drive(creds: &String, folder_id: &Option<String>) -> Res<(GoogleDrive, String)> {
+        log::info!("Prepare drive");
+        let drive = {
+            let mut d = DriveAuth::new(creds);
+            d.build_auth().await?;
+            d.build_hub()
+        };
+
+        // TODO: cache folder_id
+        let folder_id = match folder_id {
+            Some(v) => v.clone(),
+            None => drive.get_file_id("tracker").await?
+        };
+
+        log::info!("Drive prepared");
+        Ok((drive, folder_id))
     }
 
     pub async fn dump(pool: Arc<PgPool>,
