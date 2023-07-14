@@ -67,7 +67,7 @@ static mut CFG: Option<Arc<Settings>> = None;
 #[tonic::async_trait]
 impl GoogleDrive for Backup {
     async fn backup(&self, request: Request<BackupRequest>) -> Result<Response<BackupReply>, Status> {
-        log::info!("Request to backup: {:?}", request);
+        log::info!("Request to backup");
         let cfg = match unsafe { CFG.clone() } {
             None => {
                 let err = Status::internal(&"Settings not loaded".to_string());
