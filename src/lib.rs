@@ -379,6 +379,14 @@ pub mod db {
         }
     }
 
+    fn sort_deps_graph<'a, T>(graph: &mut Vec<(&'a T, Vec<&'a T>)>) {
+        // the first step, single and double vectors should be first
+        graph.sort_by(|(_, prev), (_, next)| {
+            prev.len().cmp(&next.len())
+        });
+        // TODO
+    }
+
     async fn dump_all(pool: Arc<PgPool>,
                       tables: Vec<String>) -> Res<DBDump> {
         // save order of the tables with OMap
