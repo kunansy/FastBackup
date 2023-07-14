@@ -272,10 +272,11 @@ pub mod db {
                 ccu.table_name AS foreign_table_name
             FROM
                 information_schema.table_constraints tc
-                JOIN information_schema.constraint_column_usage ccu
-                  ON ccu.constraint_name = tc.constraint_name
-                  AND ccu.table_schema = tc.table_schema
-            WHERE tc.table_schema != 'pg_catalog' and tc.table_name != ccu.table_name;")
+            JOIN information_schema.constraint_column_usage ccu
+                ON ccu.constraint_name = tc.constraint_name
+                AND ccu.table_schema = tc.table_schema
+            WHERE 
+                tc.table_schema != 'pg_catalog' and tc.table_name != ccu.table_name;")
             .fetch_all(pool)
             .await?
             .into_iter()
