@@ -263,12 +263,16 @@ pub mod db {
         Ok(tables)
     }
 
+    /// Get pairs (table, ref_to)
     async fn get_table_refs(pool: &PgPool) -> Res<HashMap<String, String>> {
         log::info!("Getting table refs");
 
         let refs = sqlx::query(
             "SELECT
+                --- this is a table
                 tc.table_name,
+
+                --- this is a table TO which the table refers
                 ccu.table_name AS foreign_table_name
             FROM
                 information_schema.table_constraints tc
@@ -281,6 +285,8 @@ pub mod db {
             .await?
             .into_iter()
             .map(|r| (r.get("table_name"), r.get("foreign_table_name")))
+            // hash map might be used because in the query
+            // (table, ref TO) every row represents a single reference
             .collect::<HashMap<String, String>>();
 
         log::info!("{} table refs got", refs.len());
