@@ -73,7 +73,9 @@ pub mod settings {
                 .map_err(|e: ParseIntError|
                     Errors::EnvError(format!("COMPRESSION_LEVEL must be int: {}", e.to_string())))?;
 
-            assert!(comp_level <= 22, "Max compression level is 22, {} found", comp_level);
+            assert!((0..=22).contains(&comp_level),
+                    "Compression level must be in (0, 22], {} found",
+                    comp_level);
 
             log::debug!("Settings parsed");
             Ok(Self { db_host, db_port, db_username, db_password, db_name, drive_creds, data_folder, comp_level })
