@@ -293,7 +293,7 @@ pub mod db {
     }
 
     async fn get_tables(pool: &PgPool) -> Res<Vec<String>> {
-        log::info!("Getting tables");
+        log::debug!("Getting tables");
 
         let tables = sqlx::query(
             "SELECT tablename FROM pg_catalog.pg_tables \
@@ -304,13 +304,13 @@ pub mod db {
             .map(|r| r.get("tablename"))
             .collect::<Vec<String>>();
 
-        log::info!("{} tables got", tables.len());
+        log::debug!("{} tables got", tables.len());
         Ok(tables)
     }
 
     /// Get pairs (table, ref_to)
     async fn get_table_refs(pool: &PgPool) -> Res<HashMap<String, String>> {
-        log::info!("Getting table refs");
+        log::debug!("Getting table refs");
 
         let refs = sqlx::query(
             "SELECT
@@ -334,7 +334,7 @@ pub mod db {
             // (table, ref TO) every row represents a single reference
             .collect::<HashMap<String, String>>();
 
-        log::info!("{} table refs got", refs.len());
+        log::debug!("{} table refs got", refs.len());
 
         Ok(refs)
     }
