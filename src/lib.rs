@@ -506,6 +506,7 @@ pub mod db {
 
     #[cfg(test)]
     mod test_db {
+        use std::collections::{HashMap, HashSet};
         use crate::db;
 
         #[test]
@@ -522,6 +523,57 @@ pub mod db {
 
             assert!(f.starts_with("backup_tdb_"));
             assert!(f.ends_with(".dump"));
+        }
+
+        #[test]
+        fn test_get_deps() {
+            let mut table_refs = HashMap::with_capacity(4);
+            table_refs.insert("a", "b");
+            table_refs.insert("b", "f");
+            table_refs.insert("d", "a");
+            table_refs.insert("c", "a");
+
+            let mut r = Vec::with_capacity(4);
+            let mut visited = HashSet::with_capacity(3);
+            db::get_deps(&"d", &table_refs, &mut r, &mut visited);
+
+            assert_eq!(r, [&"f", &"b", &"a", &"d"]);
+
+            let mut r = Vec::with_capacity(4);
+            let mut visited = HashSet::with_capacity(3);
+            db::get_deps(&"a", &table_refs, &mut r, &mut visited);
+
+            assert_eq!(r, [&"f", &"b", &"a"]);
+        }
+
+        #[test]
+        fn test_get_deps_one_ref() {
+            let mut table_refs = HashMap::with_capacity(4);
+            table_refs.insert("a", "b");
+            table_refs.insert("b", "f");
+            table_refs.insert("d", "a");
+            table_refs.insert("c", "a");
+
+            let mut r = Vec::with_capacity(4);
+            let mut visited = HashSet::with_capacity(3);
+            db::get_deps(&"f", &table_refs, &mut r, &mut visited);
+
+            assert_eq!(r, [&"f"]);
+        }
+
+        #[test]
+        #[should_panic(expected = "The graph is looped, terminating")]
+        fn test_get_deps_looped_graph() {
+            let mut table_refs = HashMap::with_capacity(4);
+            table_refs.insert("a", "b");
+            table_refs.insert("b", "f");
+            table_refs.insert("d", "a");
+            table_refs.insert("c", "a");
+            table_refs.insert("f", "a");
+
+            let mut r = Vec::with_capacity(4);
+            let mut visited = HashSet::with_capacity(3);
+            db::get_deps(&"d", &table_refs, &mut r, &mut visited);
         }
     }
 }
