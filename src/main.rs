@@ -32,21 +32,3 @@ async fn main() -> Res<()> {
     log::info!("App completed for {:?}", start.elapsed());
     Ok(())
 }
-
-async fn prepare_dump(cfg: &Settings) -> Res<String> {
-    let pool = db::init_pool(cfg).await?;
-    let arc_pool = Arc::new(pool);
-
-    db::dump(arc_pool, &cfg.data_folder, cfg.comp_level).await
-}
-
-async fn prepare_drive(creds: &String) -> Res<(GoogleDrive, String)> {
-    let drive = {
-        let mut d = DriveAuth::new(creds);
-        d.build_auth().await?;
-        d.build_hub()
-    };
-    let folder_id = drive.get_file_id("tracker").await?;
-
-    Ok((drive, folder_id))
-}
