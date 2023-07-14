@@ -7,7 +7,7 @@ use tonic::{Request, Response, Status, transport::Server};
 
 use backup::{BackupReply, BackupRequest, RestoreRequest};
 use backup::google_drive_server::{GoogleDrive, GoogleDriveServer};
-use backuper::{db, DbConfig, settings::Settings};
+use backuper::{db, DbConfig, logger, settings::Settings};
 
 pub mod backup {
     tonic::include_proto!("backup");
@@ -109,10 +109,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         for sig in signals.forever() {
             log::info!("Received signal '{:?}', reload the settings", sig);
             load_settings();
+            logger::init();
         }
     });
 
     load_settings();
+    logger::init();
 
     let addr = "0.0.0.0:50051".parse()?;
     let server = Backup::default();
