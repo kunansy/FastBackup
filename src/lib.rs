@@ -513,7 +513,7 @@ pub mod db {
             let f = db::create_filename("tdb", &Some("tf".to_string()));
 
             assert!(f.starts_with("tf/backup_tdb_"));
-            assert!(f.ends_with(".enc"));
+            assert!(f.ends_with(".dump"));
         }
 
         #[test]
@@ -521,7 +521,7 @@ pub mod db {
             let f = db::create_filename("tdb", &None);
 
             assert!(f.starts_with("backup_tdb_"));
-            assert!(f.ends_with(".enc"));
+            assert!(f.ends_with(".dump"));
         }
     }
 }
