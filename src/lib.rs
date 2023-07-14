@@ -346,6 +346,7 @@ pub mod db {
             .map(|table| {
                 let mut refs: Vec<&T> = vec![];
                 let mut visited = HashSet::with_capacity(tables.len());
+
                 get_deps(table, deps, &mut refs, &mut visited);
                 (table, refs)
             })
