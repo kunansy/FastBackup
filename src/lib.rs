@@ -80,7 +80,7 @@ pub mod settings {
                     Errors::EnvError(format!("COMPRESSION_LEVEL must be int: {}", e.to_string())))?;
 
             assert!((0..=22).contains(&comp_level),
-                    "Compression level must be in (0, 22], {} found",
+                    "Compression level must be in [0, 22], {} found",
                     comp_level);
 
             log::debug!("Settings parsed");
