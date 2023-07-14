@@ -104,7 +104,8 @@ pub mod settings {
             };
 
             for line in env.lines() {
-                if line.is_empty() {
+                // skip empty lines and comments
+                if line.is_empty() || line.starts_with(';') {
                     continue;
                 }
                 let (name, value) = match line.split_once("=") {
