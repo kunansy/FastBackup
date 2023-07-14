@@ -583,7 +583,7 @@ pub mod db {
         #[test]
         #[should_panic(expected = "The graph is looped, terminating")]
         fn test_get_deps_looped_graph() {
-            let mut table_refs = HashMap::with_capacity(4);
+            let mut table_refs = HashMap::with_capacity(5);
             table_refs.insert("a", "b");
             table_refs.insert("b", "f");
             table_refs.insert("d", "a");
