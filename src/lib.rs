@@ -321,6 +321,29 @@ pub mod db {
             .collect::<Vec<String>>()
     }
 
+    /// Create dependency graphs for all tables
+    ///
+    /// # Arguments
+    /// * `tables` -- list of tables
+    /// * `deps` -- dependencies map, {from: to}
+    ///
+    /// # Returns
+    /// Unordered vector of (tables, their dependencies)
+    fn table_deps_graph<'a, T>(tables: &'a Vec<T>,
+                               deps: &'a HashMap<T, T>) -> Vec<(&'a T, Vec<&'a T>)>
+        where T: Hash + PartialEq + Eq
+    {
+        tables
+            .iter()
+            .map(|table| {
+                let mut refs: Vec<&T> = vec![];
+                let mut visited = HashSet::with_capacity(tables.len());
+                get_deps(table, deps, &mut refs, &mut visited);
+                (table, refs)
+            })
+            .collect::<Vec<(&T, Vec<&T>)>>()
+    }
+
     /// Go through the dependency graph and find
     /// all values on which `target` depends
     ///
