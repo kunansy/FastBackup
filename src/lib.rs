@@ -547,6 +547,17 @@ pub mod db {
         }
 
         #[test]
+        fn test_get_deps_empty_deps() {
+            let table_refs = HashMap::new();
+            let mut r = Vec::new();
+            let mut visited = HashSet::new();
+
+            db::get_deps(&"42", &table_refs, &mut r, &mut visited);
+            assert_eq!(r, [&"42"], "result must contain 42, {r:?} found");
+            assert!(visited.is_empty(), "visited must be empty, {visited:?} found");
+        }
+
+        #[test]
         fn test_get_deps_one_ref() {
             let mut table_refs = HashMap::with_capacity(4);
             table_refs.insert("a", "b");
