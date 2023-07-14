@@ -47,6 +47,7 @@ pub mod settings {
         pub data_folder: Option<String>,
         // compression level, default is 3
         pub comp_level: i32,
+        pub drive_folder_id: Option<String>
     }
 
     impl Settings {
@@ -58,6 +59,7 @@ pub mod settings {
             let db_password = std::env::var("DB_PASSWORD")?;
             let db_name = std::env::var("DB_NAME")?;
             let drive_creds = std::env::var("DRIVE_CREDS")?;
+            let drive_folder_id = std::env::var("DRIVE_FOLDER_ID").ok();
             let data_folder = std::env::var("DATA_FOLDER")
                 .map_or(None, |v| {
                     assert!(!v.ends_with('/'), "DATA_FOLDER could not ends with '/'");
@@ -78,7 +80,8 @@ pub mod settings {
                     comp_level);
 
             log::debug!("Settings parsed");
-            Ok(Self { db_host, db_port, db_username, db_password, db_name, drive_creds, data_folder, comp_level })
+            Ok(Self { db_host, db_port, db_username, db_password, db_name,
+                drive_creds, drive_folder_id, data_folder, comp_level })
         }
 
         /// load .env file to env.
