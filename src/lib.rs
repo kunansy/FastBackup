@@ -434,7 +434,8 @@ pub mod db {
     }
 
     fn sort_deps_graph<'a, T>(graph: &mut Vec<(&'a T, Vec<&'a T>)>) {
-        // the first step, single and double vectors should be first
+        // the first step, single and double
+        // vectors should be in the beginning
         graph.sort_by(|(_, prev), (_, next)| {
             prev.len().cmp(&next.len())
         });
