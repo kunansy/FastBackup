@@ -103,11 +103,12 @@ pub mod settings {
                 }
             };
 
-            for line in env.lines() {
+            let lines = env
+                .lines()
                 // skip empty lines and comments
-                if line.is_empty() || line.starts_with(';') {
-                    continue;
-                }
+                .filter(|&line| !(line.is_empty() && line.starts_with(';')));
+
+            for line in lines {
                 let (name, value) = match line.split_once("=") {
                     Some(pair) => pair,
                     None => continue
