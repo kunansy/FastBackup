@@ -2,14 +2,12 @@ use std::path::Path;
 use std::sync::Arc;
 use std::thread;
 
-use once_cell::sync::Lazy;
 use signal_hook::{consts::SIGHUP, iterator::Signals};
 use tonic::{Request, Response, Status, transport::Server};
 
 use backup::{BackupReply, BackupRequest, RestoreRequest};
 use backup::google_drive_server::{GoogleDrive, GoogleDriveServer};
-use backuper::{db, DbConfig};
-use backuper::{google_drive::DriveAuth, settings::Settings};
+use backuper::{db, DbConfig, logger, settings::Settings};
 
 pub mod backup {
     tonic::include_proto!("backup");
@@ -64,49 +62,39 @@ impl DbConfig for RestoreRequest {
 
 // I ensure that the var could not be accessed
 // from the different threads to read/modify it
-static mut CFG: Lazy<Arc<Settings>> = Lazy::new(|| {
-    Settings::load_env();
-    Arc::new(Settings::parse().unwrap())
-});
+static mut CFG: Option<Arc<Settings>> = None;
 
 #[tonic::async_trait]
 impl GoogleDrive for Backup {
     async fn backup(&self, request: Request<BackupRequest>) -> Result<Response<BackupReply>, Status> {
         log::info!("Request to backup: {:?}", request);
-        let cfg = unsafe {
-            CFG.clone()
+        let cfg = match unsafe { CFG.clone() } {
+            None => {
+                let err = Status::internal(&"Settings not loaded".to_string());
+                return Err(err);
+            },
+            Some(cfg) => cfg
         };
 
-        let params = request.into_inner();
+        let dump_hdl = tokio::spawn(async {
+            let cfg = unsafe {CFG.clone()}.unwrap();
+            let params = request.into_inner();
 
-        let pool = db::init_pool(&params).await
-            .map_err(|e| {
-                let msg = format!("Could not create DB pool: {}", e.to_string());
-                Status::internal(&msg)
-            })?;
+            db::prepare_dump(&params, &cfg.data_folder, cfg.comp_level).await
+        });
+        let drive_hdl = tokio::spawn(async move {
+            // TODO: cache folder_id
+            db::prepare_drive(&cfg.drive_creds, &cfg.drive_folder_id).await
+        });
 
-        let arc_pool = Arc::new(pool);
-        let path = db::dump(arc_pool.clone(), &cfg.data_folder, cfg.comp_level)
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+        // TODO: manage errors
+        let path = dump_hdl.await.unwrap().unwrap();
+        let (drive, folder_id) = drive_hdl.await.unwrap().unwrap();
         let path = Path::new(&path);
 
-        let drive = {
-            let mut d = DriveAuth::new(&cfg.drive_creds);
-            d.build_auth().await?;
-            d.build_hub()
-        };
-        let file_id = backuper::send(&drive, path)
+        let file_id = backuper::send(&drive, path, Some(folder_id))
             .await
             .map_err(|e| Status::aborted(e.to_string()))?;
-
-        if params.delete_after {
-            db::delete_dump(&path)
-                .map_err(|e| {
-                    let msg = format!("Could not delete dump: {:?}", e);
-                    Status::internal(&msg)
-                })?;
-        }
 
         Ok(Response::new(BackupReply { file_id }))
     }
@@ -120,23 +108,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     thread::spawn(move || {
         for sig in signals.forever() {
             log::info!("Received signal '{:?}', reload the settings", sig);
-
-            unsafe {
-                CFG = Lazy::<Arc<Settings>>::new(|| {
-                    Settings::load_env();
-                    Arc::new(Settings::parse().unwrap())
-                });
-            }
+            load_settings();
+            logger::init();
         }
     });
+
+    load_settings();
+    logger::init();
 
     let addr = "0.0.0.0:50051".parse()?;
     let server = Backup::default();
 
+    log::info!("Start gRPC server");
     Server::builder()
         .add_service(GoogleDriveServer::new(server))
         .serve(addr)
         .await?;
 
     Ok(())
+}
+
+fn load_settings() {
+    Settings::load_env(&None);
+    let cfg = Settings::parse().expect("Could not get settings");
+    unsafe {
+        CFG = Some(Arc::new(cfg));
+    }
 }

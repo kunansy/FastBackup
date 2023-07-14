@@ -1,10 +1,11 @@
+use std::path::Path;
 pub use errors::Errors;
 
 pub type Res<T> = Result<T, Errors>;
 
 #[async_trait::async_trait]
 pub trait Storage {
-    async fn upload(&self, path: &std::path::Path) -> Res<String>;
+    async fn upload(&self, path: &Path, folder_id: Option<String>) -> Res<String>;
 
     async fn download(&self, file_id: &str, path: &str) -> Res<String>;
 }
@@ -25,8 +26,12 @@ pub trait DbConfig {
     fn db_name(&self) -> &String;
 }
 
-pub async fn send(store: &impl Storage, path: &std::path::Path) -> Res<String> {
-    store.upload(path).await
+pub async fn send<T>(store: &T,
+                     path: &Path,
+                     folder_id: Option<String>) -> Res<String>
+    where T: Storage
+{
+    store.upload(path, folder_id).await
 }
 
 pub mod settings {
@@ -34,7 +39,7 @@ pub mod settings {
 
     use crate::{DbConfig, errors::Errors, Res};
 
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub struct Settings {
         db_host: String,
         db_port: u16,
@@ -46,6 +51,7 @@ pub mod settings {
         pub data_folder: Option<String>,
         // compression level, default is 3
         pub comp_level: i32,
+        pub drive_folder_id: Option<String>
     }
 
     impl Settings {
@@ -57,6 +63,7 @@ pub mod settings {
             let db_password = std::env::var("DB_PASSWORD")?;
             let db_name = std::env::var("DB_NAME")?;
             let drive_creds = std::env::var("DRIVE_CREDS")?;
+            let drive_folder_id = std::env::var("DRIVE_FOLDER_ID").ok();
             let data_folder = std::env::var("DATA_FOLDER")
                 .map_or(None, |v| {
                     assert!(!v.ends_with('/'), "DATA_FOLDER could not ends with '/'");
@@ -72,10 +79,13 @@ pub mod settings {
                 .map_err(|e: ParseIntError|
                     Errors::EnvError(format!("COMPRESSION_LEVEL must be int: {}", e.to_string())))?;
 
-            assert!(comp_level <= 22, "Max compression level is 22, {} found", comp_level);
+            assert!((0..=22).contains(&comp_level),
+                    "Compression level must be in [0; 22], {} found",
+                    comp_level);
 
             log::debug!("Settings parsed");
-            Ok(Self { db_host, db_port, db_username, db_password, db_name, drive_creds, data_folder, comp_level })
+            Ok(Self { db_host, db_port, db_username, db_password, db_name,
+                drive_creds, drive_folder_id, data_folder, comp_level })
         }
 
         /// load .env file to env.
@@ -83,19 +93,22 @@ pub mod settings {
         /// # errors
         ///
         /// warn if it could not read file, don't panic.
-        pub fn load_env() {
-            let env = match fs::read_to_string(".env") {
+        pub fn load_env(path: &Option<&str>) {
+            let path = path.unwrap_or(".env");
+            let env = match fs::read_to_string(path) {
                 Ok(content) => content,
                 Err(e) => {
-                    log::warn!("error reading .env file: {}", e);
+                    log::warn!("error reading '{}' file: {}", path, e);
                     return;
                 }
             };
 
-            for line in env.lines() {
-                if line.is_empty() {
-                    continue;
-                }
+            let lines = env
+                .lines()
+                // skip empty lines and comments
+                .filter(|&line| !(line.is_empty() && line.starts_with(';')));
+
+            for line in lines {
                 let (name, value) = match line.split_once("=") {
                     Some(pair) => pair,
                     None => continue
@@ -155,6 +168,8 @@ pub mod logger {
 pub mod db {
     use std::{collections::HashMap, fmt::Display, sync::Arc};
     use std::{fs, time};
+    use std::collections::HashSet;
+    use std::hash::Hash;
     use std::path::Path;
 
     use chrono::{NaiveDate, NaiveDateTime};
@@ -165,10 +180,11 @@ pub mod db {
     use tokio::join;
 
     use crate::{Compression, DbConfig, ordered_map::OMap, Res};
+    use crate::google_drive::{DriveAuth, GoogleDrive};
 
     type RowDump = HashMap<String, Value>;
     type TableDump = Vec<RowDump>;
-    pub type DBDump<'a> = OMap<&'a String, TableDump>;
+    pub type DBDump = OMap<String, TableDump>;
 
     #[derive(sqlx::Type, Debug)]
     #[sqlx(type_name = "materialtypesenum", rename_all = "lowercase")]
@@ -193,6 +209,39 @@ pub mod db {
         }
     }
 
+    pub async fn prepare_dump<T>(cfg: &T,
+                                 data_folder: &Option<String>,
+                                 comp_level: i32) -> Res<String>
+        where T: DbConfig
+    {
+        log::info!("Prepare db, dump it");
+        let pool = init_pool(cfg).await?;
+        let arc_pool = Arc::new(pool);
+
+        let path = dump(arc_pool, data_folder, comp_level).await;
+        log::info!("DB dumped");
+
+        path
+    }
+
+    pub async fn prepare_drive(creds: &String, folder_id: &Option<String>) -> Res<(GoogleDrive, String)> {
+        log::info!("Prepare drive");
+        let drive = {
+            let mut d = DriveAuth::new(creds);
+            d.build_auth().await?;
+            d.build_hub()
+        };
+
+        // TODO: cache folder_id
+        let folder_id = match folder_id {
+            Some(v) => v.clone(),
+            None => drive.get_file_id("tracker").await?
+        };
+
+        log::info!("Drive prepared");
+        Ok((drive, folder_id))
+    }
+
     pub async fn dump(pool: Arc<PgPool>,
                       data_folder: &Option<String>,
                       compression_level: i32) -> Res<String> {
@@ -209,7 +258,7 @@ pub mod db {
             get_table_refs(&pool)
         );
         let (tables, table_refs) = (tables?, table_refs?);
-        let tables_order = define_tables_order(&tables, &table_refs);
+        let tables_order = define_tables_order(tables, table_refs);
 
         let json = dump_all(pool.clone(), tables_order).await?;
         let filename = create_filename(db_name, data_folder);
@@ -244,7 +293,7 @@ pub mod db {
     }
 
     async fn get_tables(pool: &PgPool) -> Res<Vec<String>> {
-        log::info!("Getting tables");
+        log::debug!("Getting tables");
 
         let tables = sqlx::query(
             "SELECT tablename FROM pg_catalog.pg_tables \
@@ -255,39 +304,48 @@ pub mod db {
             .map(|r| r.get("tablename"))
             .collect::<Vec<String>>();
 
-        log::info!("{} tables got", tables.len());
+        log::debug!("{} tables got", tables.len());
         Ok(tables)
     }
 
+    /// Get pairs (table, ref_to)
     async fn get_table_refs(pool: &PgPool) -> Res<HashMap<String, String>> {
-        log::info!("Getting table refs");
+        log::debug!("Getting table refs");
 
         let refs = sqlx::query(
             "SELECT
+                --- this is a table
                 tc.table_name,
+
+                --- this is a table TO which the table refers
                 ccu.table_name AS foreign_table_name
             FROM
                 information_schema.table_constraints tc
-                JOIN information_schema.constraint_column_usage ccu
-                  ON ccu.constraint_name = tc.constraint_name
-                  AND ccu.table_schema = tc.table_schema
-            WHERE tc.table_schema != 'pg_catalog' and tc.table_name != ccu.table_name;")
+            JOIN information_schema.constraint_column_usage ccu
+                ON ccu.constraint_name = tc.constraint_name
+                AND ccu.table_schema = tc.table_schema
+            WHERE 
+                tc.table_schema != 'pg_catalog' and tc.table_name != ccu.table_name;")
             .fetch_all(pool)
             .await?
             .into_iter()
             .map(|r| (r.get("table_name"), r.get("foreign_table_name")))
+            // hash map might be used because in the query
+            // (table, ref TO) every row represents a single reference
             .collect::<HashMap<String, String>>();
 
-        log::info!("{} table refs got", refs.len());
+        log::debug!("{} table refs got", refs.len());
 
         Ok(refs)
     }
 
-    fn define_tables_order<'a>(tables: &'a Vec<String>,
-                               table_refs: &'a HashMap<String, String>) -> Vec<&'a String> {
+    fn define_tables_order(tables: Vec<String>,
+                           table_refs: HashMap<String, String>) -> Vec<String> {
+        // TODO: create dependency graph to define the order
+
         let mut weights = HashMap::new();
         // how many links to the table
-        for table_name in table_refs.values() {
+        for table_name in table_refs.into_values() {
             *weights.entry(table_name).or_insert(0) += 1;
         }
         // there might be tables without links, add them
@@ -298,24 +356,103 @@ pub mod db {
         let mut order = weights
             .into_iter()
             .map(|(k, v)| (k, v))
-            .collect::<Vec<(&String, i32)>>();
+            .collect::<Vec<(String, i32)>>();
 
-        order.sort_by(|(_, v), (_, v2)| v.cmp(v2).reverse());
+        // descending order by refs count
+        order.sort_by(|(_, v), (_, v2)| v2.cmp(v));
 
         order.into_iter()
             .map(|(k, _)| k)
-            .collect::<Vec<&String>>()
+            .collect::<Vec<String>>()
     }
 
-    async fn dump_all<'a>(pool: Arc<PgPool>,
-                          tables: Vec<&'a String>) -> Res<DBDump<'a>> {
+    /// Create dependency graphs for all tables
+    ///
+    /// # Arguments
+    /// * `tables` -- list of tables
+    /// * `deps` -- dependencies map, {from: to}
+    ///
+    /// # Returns
+    /// Unordered vector of (tables, their dependencies)
+    fn table_deps_graph<'a, T>(tables: &'a Vec<T>,
+                               deps: &'a HashMap<T, T>) -> Vec<(&'a T, Vec<&'a T>)>
+        where T: Hash + PartialEq + Eq
+    {
+        // optimize empty deps case, so don't litter the stack frame
+        if deps.len() == 0 {
+            return tables
+                .iter()
+                .map(|table| (table, vec![table]))
+                .collect();
+        }
+
+        tables
+            .iter()
+            .map(|table| {
+                let mut refs: Vec<&T> = vec![];
+                let mut visited = HashSet::with_capacity(tables.len());
+
+                get_deps(table, deps, &mut refs, &mut visited);
+                (table, refs)
+            })
+            .collect::<Vec<(&T, Vec<&T>)>>()
+    }
+
+    /// Go through the dependency graph and find
+    /// all the values on which `target` depends
+    ///
+    /// # Arguments
+    ///
+    /// * `target` -- for which table should we find dependencies
+    /// * `deps` -- dependencies map, {from: to}
+    /// * `result` -- vector of dependencies
+    /// * `visited` -- to prevent infinite looping we
+    /// should store values where we even was
+    ///
+    /// # Panics
+    /// If the graph is looped
+    fn get_deps<'a, T>(target: &'a T,
+                       deps: &'a HashMap<T, T>,
+                       result: &mut Vec<&'a T>,
+                       visited: &mut HashSet<&'a T>)
+        where T: Hash + PartialEq + Eq
+    {
+        match deps.get(target) {
+            Some(link) => {
+                match visited.contains(link) {
+                    true => panic!("The graph is looped, terminating"),
+                    false => { visited.insert(link); }
+                }
+
+                get_deps(link, deps, result, visited);
+                result.push(target);
+            }
+            None => {
+                result.push(target);
+            }
+        }
+    }
+
+    fn sort_deps_graph<'a, T>(graph: &mut Vec<(&'a T, Vec<&'a T>)>) {
+        // the first step, single and double
+        // vectors should be in the beginning
+        graph.sort_by(|(_, prev), (_, next)| {
+            prev.len().cmp(&next.len())
+        });
+        // TODO
+    }
+
+    async fn dump_all(pool: Arc<PgPool>,
+                      tables: Vec<String>) -> Res<DBDump> {
         // save order of the tables with OMap
         let mut table_dumps = OMap::with_capacity(tables.len());
 
         let tasks = tables
             .into_iter()
             .map(|table| {
-                (table, tokio::spawn(dump_table(pool.clone(), table.clone())))
+                // clone is not escapable here
+                let cp = table.clone();
+                (table, tokio::spawn(dump_table(pool.clone(), cp)))
             });
 
         // run all tasks concurrently
@@ -424,6 +561,7 @@ pub mod db {
 
     #[cfg(test)]
     mod test_db {
+        use std::collections::{HashMap, HashSet};
         use crate::db;
 
         #[test]
@@ -431,7 +569,7 @@ pub mod db {
             let f = db::create_filename("tdb", &Some("tf".to_string()));
 
             assert!(f.starts_with("tf/backup_tdb_"));
-            assert!(f.ends_with(".enc"));
+            assert!(f.ends_with(".dump"));
         }
 
         #[test]
@@ -439,7 +577,121 @@ pub mod db {
             let f = db::create_filename("tdb", &None);
 
             assert!(f.starts_with("backup_tdb_"));
-            assert!(f.ends_with(".enc"));
+            assert!(f.ends_with(".dump"));
+        }
+
+        #[test]
+        fn test_get_deps() {
+            let mut table_refs = HashMap::with_capacity(4);
+            table_refs.insert("a", "b");
+            table_refs.insert("b", "f");
+            table_refs.insert("d", "a");
+            table_refs.insert("c", "a");
+
+            let mut r = Vec::with_capacity(4);
+            let mut visited = HashSet::with_capacity(3);
+            db::get_deps(&"d", &table_refs, &mut r, &mut visited);
+
+            assert_eq!(r, [&"f", &"b", &"a", &"d"]);
+
+            let mut r = Vec::with_capacity(4);
+            let mut visited = HashSet::with_capacity(3);
+            db::get_deps(&"a", &table_refs, &mut r, &mut visited);
+
+            assert_eq!(r, [&"f", &"b", &"a"]);
+        }
+
+        #[test]
+        fn test_get_deps_empty_deps() {
+            let table_refs = HashMap::new();
+            let mut r = Vec::new();
+            let mut visited = HashSet::new();
+
+            db::get_deps(&"42", &table_refs, &mut r, &mut visited);
+            assert_eq!(r, [&"42"], "result must contain 42, {r:?} found");
+            assert!(visited.is_empty(), "visited must be empty, {visited:?} found");
+        }
+
+        #[test]
+        fn test_get_deps_one_ref() {
+            let mut table_refs = HashMap::with_capacity(4);
+            table_refs.insert("a", "b");
+            table_refs.insert("b", "f");
+            table_refs.insert("d", "a");
+            table_refs.insert("c", "a");
+
+            let mut r = Vec::with_capacity(4);
+            let mut visited = HashSet::with_capacity(3);
+            db::get_deps(&"f", &table_refs, &mut r, &mut visited);
+
+            assert_eq!(r, [&"f"]);
+        }
+
+        #[test]
+        #[should_panic(expected = "The graph is looped, terminating")]
+        fn test_get_deps_looped_graph() {
+            let mut table_refs = HashMap::with_capacity(5);
+            table_refs.insert("a", "b");
+            table_refs.insert("b", "f");
+            table_refs.insert("d", "a");
+            table_refs.insert("c", "a");
+            table_refs.insert("f", "a");
+
+            let mut r = Vec::with_capacity(4);
+            let mut visited = HashSet::with_capacity(3);
+            db::get_deps(&"d", &table_refs, &mut r, &mut visited);
+        }
+
+        #[test]
+        fn test_table_deps_graph() {
+            let tables = vec![
+                "a", "d",
+                "f", "b",
+                "e", "c",
+            ];
+            let mut table_refs = HashMap::with_capacity(4);
+            table_refs.insert("a", "b");
+            table_refs.insert("b", "f");
+            table_refs.insert("d", "a");
+            table_refs.insert("c", "a");
+
+            let r = db::table_deps_graph(&tables, &table_refs);
+
+            let expected = vec![
+                (&"a", vec![&"f", &"b", &"a"]),
+                (&"d", vec![&"f", &"b", &"a", &"d"]),
+                (&"f", vec![&"f"]),
+                (&"b", vec![&"f", &"b"]),
+                (&"e", vec![&"e"]),
+                (&"c", vec![&"f", &"b", &"a", &"c"])
+            ];
+            assert_eq!(r, expected);
+        }
+
+        #[test]
+        fn test_table_deps_graph_empty_deps_and_tables() {
+            let tables: Vec<&str> = vec![];
+            let table_refs = HashMap::new();
+
+            let r = db::table_deps_graph(&tables, &table_refs);
+
+            assert!(r.is_empty(), "result must be empty");
+        }
+
+        #[test]
+        fn test_table_deps_graph_empty_deps() {
+            let tables = vec!["a", "c", "d", "f"];
+            let table_refs = HashMap::new();
+
+            let r = db::table_deps_graph(&tables, &table_refs);
+            let expected = vec![
+                (&"a", vec![&"a"]),
+                (&"c", vec![&"c"]),
+                (&"d", vec![&"d"]),
+                (&"f", vec![&"f"]),
+            ];
+
+            assert_eq!(r, expected);
         }
     }
 }
@@ -529,7 +781,7 @@ pub mod compression {
 
     use crate::{Compression, db::DBDump, Decompression, Res};
 
-    impl<'a, T> Compression<T> for DBDump<'a>
+    impl<T> Compression<T> for DBDump
         where T: AsRef<Path>
     {
         fn compress(&self, output: &T, level: i32) -> Res<()>{
@@ -540,7 +792,7 @@ pub mod compression {
         }
     }
 
-    impl<'a, T> Decompression<T> for DBDump<'a>
+    impl<T> Decompression<T> for DBDump
         where T: AsRef<Path>
     {
         fn decompress(_input: &T) -> Res<Box<Self>> {
@@ -797,7 +1049,7 @@ pub mod google_drive {
 
     #[async_trait::async_trait]
     impl Storage for GoogleDrive {
-        async fn upload(&self, path: &Path) -> Res<String> {
+        async fn upload(&self, path: &Path, folder_id: Option<String>) -> Res<String> {
             log::info!("Sending file {:?}", path);
             let start = time::Instant::now();
 
@@ -809,7 +1061,10 @@ pub mod google_drive {
             })?;
 
             let req = {
-                let folder_id = self.get_file_id("tracker").await?;
+                let folder_id = match folder_id {
+                    Some(v) => v,
+                    None => self.get_file_id("tracker").await?
+                };
                 // path must be convertable to str
                 let file_name = path.file_name().unwrap().to_str().unwrap();
                 GoogleDrive::build_file(file_name, Some(vec![folder_id]))
@@ -900,7 +1155,7 @@ mod test_settings {
     #[test]
     fn test_parse_ok() {
         assert!(Path::new(".env").exists(), ".env should exist");
-        Settings::load_env();
+        Settings::load_env(&Some(".env"));
 
         assert!(Settings::parse().is_ok());
     }
@@ -908,7 +1163,7 @@ mod test_settings {
     #[test]
     fn test_parse_without_a_var() {
         assert!(Path::new(".env").exists(), ".env should exist");
-        Settings::load_env();
+        Settings::load_env(&Some(".env"));
 
         std::env::remove_var("DB_NAME");
         assert!(std::env::var("DB_NAME").is_err());
@@ -920,7 +1175,7 @@ mod test_settings {
     #[test]
     fn test_parse_wrong_data_folder() {
         assert!(Path::new(".env").exists(), ".env should exist");
-        Settings::load_env();
+        Settings::load_env(&Some(".env"));
 
         std::env::set_var("DATA_FOLDER", "test/");
 
@@ -931,7 +1186,7 @@ mod test_settings {
     #[test]
     fn test_parse_not_int_port() {
         assert!(Path::new(".env").exists(), ".env should exist");
-        Settings::load_env();
+        Settings::load_env(&Some(".env"));
 
         std::env::set_var("DB_PORT", "3.1415926535");
 
@@ -942,7 +1197,7 @@ mod test_settings {
     #[test]
     fn test_parse_negative_port() {
         assert!(Path::new(".env").exists(), ".env should exist");
-        Settings::load_env();
+        Settings::load_env(&Some(".env"));
 
         std::env::set_var("DB_PORT", "-42");
 
@@ -953,7 +1208,7 @@ mod test_settings {
     #[test]
     fn test_parse_zero_port() {
         assert!(Path::new(".env").exists(), ".env should exist");
-        Settings::load_env();
+        Settings::load_env(&Some(".env"));
 
         std::env::set_var("DB_PORT", "0");
 
@@ -963,7 +1218,7 @@ mod test_settings {
 
     #[test]
     fn test_load_env() {
-        Settings::load_env();
+        Settings::load_env(&Some(".env"));
     }
 }
 
