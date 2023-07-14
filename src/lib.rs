@@ -26,7 +26,11 @@ pub trait DbConfig {
     fn db_name(&self) -> &String;
 }
 
-pub async fn send(store: &impl Storage, path: &Path, folder_id: Option<String>) -> Res<String> {
+pub async fn send<T>(store: &T,
+                     path: &Path,
+                     folder_id: Option<String>) -> Res<String>
+    where T: Storage
+{
     store.upload(path, folder_id).await
 }
 
