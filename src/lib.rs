@@ -159,6 +159,8 @@ pub mod logger {
 pub mod db {
     use std::{collections::HashMap, fmt::Display, sync::Arc};
     use std::{fs, time};
+    use std::collections::HashSet;
+    use std::hash::Hash;
     use std::path::Path;
 
     use chrono::{NaiveDate, NaiveDateTime};
@@ -317,6 +319,41 @@ pub mod db {
         order.into_iter()
             .map(|(k, _)| k)
             .collect::<Vec<String>>()
+    }
+
+    /// Go through the dependency graph and find
+    /// all values on which `target` depends
+    ///
+    /// # Arguments
+    ///
+    /// * `target` -- for which table should we find dependencies
+    /// * `deps` -- dependencies map, {from: to}
+    /// * `result` -- vector of dependencies
+    /// * `visited` -- to prevent infinite looping we
+    /// should store values where we even was
+    ///
+    /// # Panics
+    /// If the graph is looped
+    fn get_deps<'a, T>(target: &'a T,
+                       deps: &'a HashMap<T, T>,
+                       result: &mut Vec<&'a T>,
+                       visited: &mut HashSet<&'a T>)
+        where T: Hash + PartialEq + Eq
+    {
+        match deps.get(target) {
+            Some(link) => {
+                if visited.contains(link) {
+                    panic!("The graph is looped, terminating");
+                } else {
+                    visited.insert(link);
+                }
+                get_deps(link, deps, result, visited);
+                result.push(target);
+            }
+            None => {
+                result.push(target);
+            }
+        }
     }
 
     async fn dump_all(pool: Arc<PgPool>,
