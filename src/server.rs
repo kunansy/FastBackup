@@ -120,13 +120,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     thread::spawn(move || {
         for sig in signals.forever() {
             log::info!("Received signal '{:?}', reload the settings", sig);
-
-            unsafe {
-                CFG = Lazy::<Arc<Settings>>::new(|| {
-                    Settings::load_env(&None);
-                    Arc::new(Settings::parse().unwrap())
-                });
-            }
+            load_settings();
         }
     });
 
@@ -139,4 +133,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     Ok(())
+}
+
+fn load_settings() {
+    Settings::load_env(&None);
+    let cfg = Settings::parse().expect("Could not get settings");
+    unsafe {
+        CFG = Some(Arc::new(cfg));
+    }
 }
