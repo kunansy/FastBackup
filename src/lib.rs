@@ -594,6 +594,58 @@ pub mod db {
             let mut visited = HashSet::with_capacity(3);
             db::get_deps(&"d", &table_refs, &mut r, &mut visited);
         }
+
+        #[test]
+        fn test_table_deps_graph() {
+            let tables = vec![
+                "a", "d",
+                "f", "b",
+                "e", "c",
+            ];
+            let mut table_refs = HashMap::with_capacity(4);
+            table_refs.insert("a", "b");
+            table_refs.insert("b", "f");
+            table_refs.insert("d", "a");
+            table_refs.insert("c", "a");
+
+            let r = db::table_deps_graph(&tables, &table_refs);
+
+            let expected = vec![
+                (&"a", vec![&"f", &"b", &"a"]),
+                (&"d", vec![&"f", &"b", &"a", &"d"]),
+                (&"f", vec![&"f"]),
+                (&"b", vec![&"f", &"b"]),
+                (&"e", vec![&"e"]),
+                (&"c", vec![&"f", &"b", &"a", &"c"])
+            ];
+            assert_eq!(r, expected);
+        }
+
+        #[test]
+        fn test_table_deps_graph_empty_deps_and_tables() {
+            let tables: Vec<&str> = vec![];
+            let table_refs = HashMap::new();
+
+            let r = db::table_deps_graph(&tables, &table_refs);
+
+            assert!(r.is_empty(), "result must be empty");
+        }
+
+        #[test]
+        fn test_table_deps_graph_empty_deps() {
+            let tables = vec!["a", "c", "d", "f"];
+            let table_refs = HashMap::new();
+
+            let r = db::table_deps_graph(&tables, &table_refs);
+            let expected = vec![
+                (&"a", vec![&"a"]),
+                (&"c", vec![&"c"]),
+                (&"d", vec![&"d"]),
+                (&"f", vec![&"f"]),
+            ];
+
+            assert_eq!(r, expected);
+        }
     }
 }
 
