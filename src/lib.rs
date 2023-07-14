@@ -172,7 +172,7 @@ pub mod db {
 
     type RowDump = HashMap<String, Value>;
     type TableDump = Vec<RowDump>;
-    pub type DBDump<'a> = OMap<&'a String, TableDump>;
+    pub type DBDump = OMap<String, TableDump>;
 
     #[derive(sqlx::Type, Debug)]
     #[sqlx(type_name = "materialtypesenum", rename_all = "lowercase")]
@@ -319,15 +319,17 @@ pub mod db {
             .collect::<Vec<&String>>()
     }
 
-    async fn dump_all<'a>(pool: Arc<PgPool>,
-                          tables: Vec<&'a String>) -> Res<DBDump<'a>> {
+    async fn dump_all(pool: Arc<PgPool>,
+                      tables: Vec<String>) -> Res<DBDump> {
         // save order of the tables with OMap
         let mut table_dumps = OMap::with_capacity(tables.len());
 
         let tasks = tables
             .into_iter()
             .map(|table| {
-                (table, tokio::spawn(dump_table(pool.clone(), table.clone())))
+                // clone is not escapable here
+                let cp = table.clone();
+                (table, tokio::spawn(dump_table(pool.clone(), cp)))
             });
 
         // run all tasks concurrently
@@ -541,7 +543,7 @@ pub mod compression {
 
     use crate::{Compression, db::DBDump, Decompression, Res};
 
-    impl<'a, T> Compression<T> for DBDump<'a>
+    impl<T> Compression<T> for DBDump
         where T: AsRef<Path>
     {
         fn compress(&self, output: &T, level: i32) -> Res<()>{
@@ -552,7 +554,7 @@ pub mod compression {
         }
     }
 
-    impl<'a, T> Decompression<T> for DBDump<'a>
+    impl<T> Decompression<T> for DBDump
         where T: AsRef<Path>
     {
         fn decompress(_input: &T) -> Res<Box<Self>> {
