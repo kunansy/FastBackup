@@ -341,6 +341,8 @@ pub mod db {
 
     fn define_tables_order(tables: Vec<String>,
                            table_refs: HashMap<String, String>) -> Vec<String> {
+        // TODO: create dependency graph to define the order
+
         let mut weights = HashMap::new();
         // how many links to the table
         for table_name in table_refs.into_values() {
