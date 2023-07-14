@@ -31,4 +31,4 @@ jobs:
           context: .
           platforms: linux/amd64
           push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/fast-backup:0.3.0
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/fast-backup:0.3.1
