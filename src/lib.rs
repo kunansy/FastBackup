@@ -213,7 +213,7 @@ pub mod db {
             get_table_refs(&pool)
         );
         let (tables, table_refs) = (tables?, table_refs?);
-        let tables_order = define_tables_order(&tables, &table_refs);
+        let tables_order = define_tables_order(tables, table_refs);
 
         let json = dump_all(pool.clone(), tables_order).await?;
         let filename = create_filename(db_name, data_folder);
@@ -294,11 +294,11 @@ pub mod db {
         Ok(refs)
     }
 
-    fn define_tables_order<'a>(tables: &'a Vec<String>,
-                               table_refs: &'a HashMap<String, String>) -> Vec<&'a String> {
+    fn define_tables_order(tables: Vec<String>,
+                           table_refs: HashMap<String, String>) -> Vec<String> {
         let mut weights = HashMap::new();
         // how many links to the table
-        for table_name in table_refs.values() {
+        for table_name in table_refs.into_values() {
             *weights.entry(table_name).or_insert(0) += 1;
         }
         // there might be tables without links, add them
@@ -309,14 +309,14 @@ pub mod db {
         let mut order = weights
             .into_iter()
             .map(|(k, v)| (k, v))
-            .collect::<Vec<(&String, i32)>>();
+            .collect::<Vec<(String, i32)>>();
 
         // descending order by refs count
         order.sort_by(|(_, v), (_, v2)| v2.cmp(v));
 
         order.into_iter()
             .map(|(k, _)| k)
-            .collect::<Vec<&String>>()
+            .collect::<Vec<String>>()
     }
 
     async fn dump_all(pool: Arc<PgPool>,
