@@ -417,10 +417,9 @@ pub mod db {
     {
         match deps.get(target) {
             Some(link) => {
-                if visited.contains(link) {
-                    panic!("The graph is looped, terminating");
-                } else {
-                    visited.insert(link);
+                match visited.contains(link) {
+                    true => panic!("The graph is looped, terminating"),
+                    false => { visited.insert(link); }
                 }
 
                 get_deps(link, deps, result, visited);
