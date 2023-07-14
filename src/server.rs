@@ -2,7 +2,6 @@ use std::path::Path;
 use std::sync::Arc;
 use std::thread;
 
-use once_cell::sync::Lazy;
 use signal_hook::{consts::SIGHUP, iterator::Signals};
 use tonic::{Request, Response, Status, transport::Server};
 
@@ -64,17 +63,18 @@ impl DbConfig for RestoreRequest {
 
 // I ensure that the var could not be accessed
 // from the different threads to read/modify it
-static mut CFG: Lazy<Arc<Settings>> = Lazy::new(|| {
-    Settings::load_env(&None);
-    Arc::new(Settings::parse().unwrap())
-});
+static mut CFG: Option<Arc<Settings>> = None;
 
 #[tonic::async_trait]
 impl GoogleDrive for Backup {
     async fn backup(&self, request: Request<BackupRequest>) -> Result<Response<BackupReply>, Status> {
         log::info!("Request to backup: {:?}", request);
-        let cfg = unsafe {
-            CFG.clone()
+        let cfg = match unsafe { CFG.clone() } {
+            None => {
+                let err = Status::internal(&"Settings not loaded".to_string());
+                return Err(err);
+            },
+            Some(cfg) => cfg
         };
 
         let params = request.into_inner();
