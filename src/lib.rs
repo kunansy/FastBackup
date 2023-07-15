@@ -76,7 +76,7 @@ pub mod settings {
                 .map_err(|e: ParseIntError|
                     Errors::EnvError(format!("DB_PORT must be int: {}", e.to_string())))?;
             let comp_level = std::env::var("COMPRESSION_LEVEL")
-                .unwrap_or("3".to_string())
+                .unwrap_or(zstd::DEFAULT_COMPRESSION_LEVEL.to_string())
                 .parse::<i32>()
                 .map_err(|e: ParseIntError|
                     Errors::EnvError(format!("COMPRESSION_LEVEL must be int: {}", e.to_string())))?;
