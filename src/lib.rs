@@ -1,17 +1,18 @@
-use std::path::Path;
 pub use errors::Errors;
 
 pub type Res<T> = Result<T, Errors>;
 
 #[async_trait::async_trait]
 pub trait Storage {
-    async fn upload(&self, path: &Path, folder_id: Option<String>) -> Res<String>;
+    async fn upload(&self, buf: &Vec<u8>, filename: &str, folder_id: Option<String>) -> Res<String>;
 
     async fn download(&self, file_id: &str, path: &str) -> Res<String>;
 }
 
-pub trait Compression<T> {
-    fn compress(&self, output: &T, level: i32) -> Res<()>;
+pub trait Compression {
+    type Out;
+
+    fn compress(&self, level: i32) -> Self::Out;
 }
 
 pub trait Decompression<I> {
@@ -24,14 +25,6 @@ pub trait DbConfig {
     fn db_username(&self) -> &String;
     fn db_password(&self) -> &String;
     fn db_name(&self) -> &String;
-}
-
-pub async fn send<T>(store: &T,
-                     path: &Path,
-                     folder_id: Option<String>) -> Res<String>
-    where T: Storage
-{
-    store.upload(path, folder_id).await
 }
 
 pub mod settings {
@@ -74,14 +67,15 @@ pub mod settings {
                 .map_err(|e: ParseIntError|
                     Errors::EnvError(format!("DB_PORT must be int: {}", e.to_string())))?;
             let comp_level = std::env::var("COMPRESSION_LEVEL")
-                .unwrap_or("3".to_string())
+                .unwrap_or(zstd::DEFAULT_COMPRESSION_LEVEL.to_string())
                 .parse::<i32>()
                 .map_err(|e: ParseIntError|
                     Errors::EnvError(format!("COMPRESSION_LEVEL must be int: {}", e.to_string())))?;
 
-            assert!((0..=22).contains(&comp_level),
-                    "Compression level must be in [0; 22], {} found",
-                    comp_level);
+            let comp_level_range = zstd::compression_level_range();
+            assert!(comp_level_range.contains(&comp_level),
+                    "Compression level must be in {:?}, {} found",
+                    comp_level_range, comp_level);
 
             log::debug!("Settings parsed");
             Ok(Self { db_host, db_port, db_username, db_password, db_name,
@@ -180,7 +174,6 @@ pub mod db {
     use tokio::join;
 
     use crate::{Compression, DbConfig, ordered_map::OMap, Res};
-    use crate::google_drive::{DriveAuth, GoogleDrive};
 
     type RowDump = HashMap<String, Value>;
     type TableDump = Vec<RowDump>;
@@ -210,48 +203,36 @@ pub mod db {
     }
 
     pub async fn prepare_dump<T>(cfg: &T,
-                                 data_folder: &Option<String>,
-                                 comp_level: i32) -> Res<String>
+                                 comp_level: i32) -> Res<(Vec<u8>, String)>
         where T: DbConfig
     {
         log::info!("Prepare db, dump it");
-        let pool = init_pool(cfg).await?;
-        let arc_pool = Arc::new(pool);
 
-        let path = dump(arc_pool, data_folder, comp_level).await;
+        let arc_pool = {
+            let pool = init_pool(cfg).await?;
+            Arc::new(pool)
+        };
+
+        let dump = dump(arc_pool.clone(), comp_level).await?;
+
+        let filename = {
+            let db_name = arc_pool
+                .connect_options()
+                .get_database()
+                .unwrap_or("undefined");
+
+            create_filename(db_name, &None)
+        };
+
         log::info!("DB dumped");
 
-        path
-    }
-
-    pub async fn prepare_drive(creds: &String, folder_id: &Option<String>) -> Res<(GoogleDrive, String)> {
-        log::info!("Prepare drive");
-        let drive = {
-            let mut d = DriveAuth::new(creds);
-            d.build_auth().await?;
-            d.build_hub()
-        };
-
-        // TODO: cache folder_id
-        let folder_id = match folder_id {
-            Some(v) => v.clone(),
-            None => drive.get_file_id("tracker").await?
-        };
-
-        log::info!("Drive prepared");
-        Ok((drive, folder_id))
+        Ok((dump, filename))
     }
 
     pub async fn dump(pool: Arc<PgPool>,
-                      data_folder: &Option<String>,
-                      compression_level: i32) -> Res<String> {
+                      compression_level: i32) -> Res<Vec<u8>> {
         log::info!("Start dumping");
         let start = time::Instant::now();
-
-        let db_name = pool
-            .connect_options()
-            .get_database()
-            .unwrap_or("undefined");
 
         let (tables, table_refs) = join!(
             get_tables(&pool),
@@ -260,13 +241,15 @@ pub mod db {
         let (tables, table_refs) = (tables?, table_refs?);
         let tables_order = define_tables_order(tables, table_refs);
 
-        let json = dump_all(pool.clone(), tables_order).await?;
-        let filename = create_filename(db_name, data_folder);
+        let dump = dump_all(pool.clone(), tables_order).await?;
 
-        json.compress(&filename, compression_level)?;
+        log::debug!("Dump completed, compressing");
+        let start_comp = time::Instant::now();
+        let compressed = dump.compress(compression_level)?;
+        log::debug!("Compression completed for {:?}", start_comp.elapsed());
 
         log::info!("Dump completed for {:?}", start.elapsed());
-        Ok(filename)
+        Ok(compressed)
     }
 
     pub async fn init_pool<T>(cfg: &T) -> Res<Pool<Postgres>>
@@ -781,14 +764,18 @@ pub mod compression {
 
     use crate::{Compression, db::DBDump, Decompression, Res};
 
-    impl<T> Compression<T> for DBDump
-        where T: AsRef<Path>
-    {
-        fn compress(&self, output: &T, level: i32) -> Res<()>{
+    // 3Mb, it should be adjusted for raw db data size;
+    // TODO: allow custom buf size
+    const BUF_SIZE: usize = 1024 * 1024 * 3;
+
+    impl Compression for DBDump {
+        type Out = Res<Vec<u8>>;
+
+        fn compress(&self, level: i32) -> Self::Out {
             // deref to access to the hashmap
             let input = serde_json::to_string_pretty(&*self)?;
-            compress(input.as_bytes(), output, level)?;
-            Ok(())
+
+            compress(input.as_bytes(), level)
         }
     }
 
@@ -800,21 +787,18 @@ pub mod compression {
         }
     }
 
-    const BUF_SIZE: usize = 1024 * 1024 * 8;
+    fn compress(inp: &[u8], level: i32) -> Res<Vec<u8>> {
+        let mut out = Vec::with_capacity(inp.len());
+        {
+            let mut src = BufReader::with_capacity(BUF_SIZE, inp);
+            let mut dst = BufWriter::new(&mut out);
 
-    fn compress<T>(input: &[u8], output_file: &T, level: i32) -> Res<()>
-        where T: AsRef<Path>
-    {
-        let output_file = File::create(output_file)?;
+            copy_encode(&mut src, &mut dst, level)?;
 
-        let mut src = BufReader::with_capacity(BUF_SIZE, input);
-        let mut dst = BufWriter::new(output_file);
+            dst.flush()?;
+        }
 
-        copy_encode(&mut src, &mut dst, level)?;
-
-        dst.flush()?;
-
-        Ok(())
+        Ok(out)
     }
 
     fn _decompress<I, O>(input_file: &I, output_file: &O) -> Res<()>
@@ -838,6 +822,7 @@ pub mod compression {
 
 pub mod google_drive {
     use std::{fs, io, path::Path, time};
+    use std::io::{Cursor, Read, Seek};
 
     use google_drive3::{DriveHub, hyper::client::HttpConnector, hyper_rustls};
     use google_drive3::api::File;
@@ -954,10 +939,12 @@ pub mod google_drive {
             file
         }
 
-        pub async fn upload_file(&self, req: File, src_file: fs::File) -> Res<(Response<Body>, File)> {
+        pub async fn upload_buf<T>(&self, req: File, buf: T) -> Res<(Response<Body>, File)>
+            where T: Read + Seek + Send
+        {
             self.hub.files()
                 .create(req)
-                .upload(src_file, "application/octet-stream".parse().unwrap())
+                .upload(buf, "application/octet-stream".parse().unwrap())
                 .await
                 .map_err(|e| {
                     let msg = format!("Sending failed: {:?}", e);
@@ -1047,30 +1034,44 @@ pub mod google_drive {
         }
     }
 
+    pub async fn prepare_drive(creds: &String, folder_id: &Option<String>) -> Res<(GoogleDrive, String)> {
+        log::info!("Prepare drive");
+        let drive = {
+            let mut d = DriveAuth::new(creds);
+            d.build_auth().await?;
+            d.build_hub()
+        };
+
+        // TODO: cache folder_id
+        let folder_id = match folder_id {
+            Some(v) => v.clone(),
+            None => drive.get_file_id("tracker").await?
+        };
+
+        log::info!("Drive prepared");
+        Ok((drive, folder_id))
+    }
+
     #[async_trait::async_trait]
     impl Storage for GoogleDrive {
-        async fn upload(&self, path: &Path, folder_id: Option<String>) -> Res<String> {
-            log::info!("Sending file {:?}", path);
+        async fn upload(&self,
+                        buf: &Vec<u8>,
+                        filename: &str,
+                        folder_id: Option<String>) -> Res<String> {
+            log::info!("Sending file '{}'", filename);
             let start = time::Instant::now();
-
-            assert!(path.exists(), "File {:?} not found", path);
-            // here we know that the file exists,
-            // there might be permission error
-            let src_file = fs::File::open(path).map_err(|e| {
-                Errors::StorageError(format!("Error opening file '{:?}': {}", path, e))
-            })?;
 
             let req = {
                 let folder_id = match folder_id {
                     Some(v) => v,
+                    // TODO: remove migic constant
                     None => self.get_file_id("tracker").await?
                 };
-                // path must be convertable to str
-                let file_name = path.file_name().unwrap().to_str().unwrap();
-                GoogleDrive::build_file(file_name, Some(vec![folder_id]))
+                GoogleDrive::build_file(filename, Some(vec![folder_id]))
             };
 
-            let (resp, file) = self.upload_file(req, src_file).await?;
+            let buf = Cursor::new(buf);
+            let (resp, file) = self.upload_buf(req, buf).await?;
 
             if !resp.status().is_success() {
                 let msg = format!("Sending failed: {}, {:?}", resp.status(), resp.body());
