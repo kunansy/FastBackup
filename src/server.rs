@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::sync::Arc;
 use std::thread;
 
@@ -7,7 +6,7 @@ use tonic::{Request, Response, Status, transport::Server};
 
 use backup::{BackupReply, BackupRequest, RestoreRequest};
 use backup::google_drive_server::{GoogleDrive, GoogleDriveServer};
-use backuper::{db, DbConfig, logger, settings::Settings};
+use backuper::{db, DbConfig, google_drive, logger, settings::Settings, Storage};
 
 pub mod backup {
     tonic::include_proto!("backup");
@@ -80,19 +79,18 @@ impl GoogleDrive for Backup {
             let cfg = unsafe {CFG.clone()}.unwrap();
             let params = request.into_inner();
 
-            db::prepare_dump(&params, &cfg.data_folder, cfg.comp_level).await
+            db::prepare_dump(&params, cfg.comp_level).await
         });
         let drive_hdl = tokio::spawn(async move {
             // TODO: cache folder_id
-            db::prepare_drive(&cfg.drive_creds, &cfg.drive_folder_id).await
+            google_drive::prepare_drive(&cfg.drive_creds, &cfg.drive_folder_id).await
         });
 
         // TODO: manage errors
-        let path = dump_hdl.await.unwrap().unwrap();
+        let (dump, filename) = dump_hdl.await.unwrap().unwrap();
         let (drive, folder_id) = drive_hdl.await.unwrap().unwrap();
-        let path = Path::new(&path);
 
-        let file_id = backuper::send(&drive, path, Some(folder_id))
+        let file_id = drive.upload(&dump, &filename, Some(folder_id))
             .await
             .map_err(|e| Status::aborted(e.to_string()))?;
 
