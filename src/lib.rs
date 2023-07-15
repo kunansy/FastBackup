@@ -212,18 +212,30 @@ pub mod db {
     }
 
     pub async fn prepare_dump<T>(cfg: &T,
-                                 data_folder: &Option<String>,
-                                 comp_level: i32) -> Res<String>
+                                 comp_level: i32) -> Res<(Vec<u8>, String)>
         where T: DbConfig
     {
         log::info!("Prepare db, dump it");
-        let pool = init_pool(cfg).await?;
-        let arc_pool = Arc::new(pool);
 
-        let path = dump(arc_pool, data_folder, comp_level).await;
+        let arc_pool = {
+            let pool = init_pool(cfg).await?;
+            Arc::new(pool)
+        };
+
+        let dump = dump(arc_pool.clone(), comp_level).await?;
+
+        let filename = {
+            let db_name = arc_pool
+                .connect_options()
+                .get_database()
+                .unwrap_or("undefined");
+
+            create_filename(db_name, &None)
+        };
+
         log::info!("DB dumped");
 
-        path
+        Ok((dump, filename))
     }
 
     pub async fn dump(pool: Arc<PgPool>,
