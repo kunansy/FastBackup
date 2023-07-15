@@ -11,7 +11,9 @@ pub trait Storage {
 }
 
 pub trait Compression<T> {
-    fn compress(&self, output: &T, level: i32) -> Res<()>;
+    type Out;
+
+    fn compress(&self, output: &T, level: i32) -> Self::Out;
 }
 
 pub trait Decompression<I> {
