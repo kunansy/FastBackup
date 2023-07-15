@@ -764,7 +764,7 @@ pub mod compression {
 
     use crate::{Compression, db::DBDump, Decompression, Res};
 
-    // 3Mb, it should be adjusted for row db data size;
+    // 3Mb, it should be adjusted for raw db data size;
     // TODO: allow custom buf size
     const BUF_SIZE: usize = 1024 * 1024 * 3;
 
