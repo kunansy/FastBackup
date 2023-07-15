@@ -1,11 +1,10 @@
-use std::path::Path;
 pub use errors::Errors;
 
 pub type Res<T> = Result<T, Errors>;
 
 #[async_trait::async_trait]
 pub trait Storage {
-    async fn upload(&self, path: &Path, folder_id: Option<String>) -> Res<String>;
+    async fn upload(&self, buf: &Vec<u8>, filename: &str, folder_id: Option<String>) -> Res<String>;
 
     async fn download(&self, file_id: &str, path: &str) -> Res<String>;
 }
@@ -831,7 +830,7 @@ pub mod compression {
 
 pub mod google_drive {
     use std::{fs, io, path::Path, time};
-    use std::io::{Read, Seek};
+    use std::io::{Cursor, Read, Seek};
 
     use google_drive3::{DriveHub, hyper::client::HttpConnector, hyper_rustls};
     use google_drive3::api::File;
@@ -1063,28 +1062,23 @@ pub mod google_drive {
 
     #[async_trait::async_trait]
     impl Storage for GoogleDrive {
-        async fn upload(&self, path: &Path, folder_id: Option<String>) -> Res<String> {
-            log::info!("Sending file {:?}", path);
+        async fn upload(&self,
+                        buf: &Vec<u8>,
+                        filename: &str,
+                        folder_id: Option<String>) -> Res<String> {
+            log::info!("Sending file '{}'", filename);
             let start = time::Instant::now();
-
-            assert!(path.exists(), "File {:?} not found", path);
-            // here we know that the file exists,
-            // there might be permission error
-            let src_file = fs::File::open(path).map_err(|e| {
-                Errors::StorageError(format!("Error opening file '{:?}': {}", path, e))
-            })?;
 
             let req = {
                 let folder_id = match folder_id {
                     Some(v) => v,
                     None => self.get_file_id("tracker").await?
                 };
-                // path must be convertable to str
-                let file_name = path.file_name().unwrap().to_str().unwrap();
-                GoogleDrive::build_file(file_name, Some(vec![folder_id]))
+                GoogleDrive::build_file(filename, Some(vec![folder_id]))
             };
 
-            let (resp, file) = self.upload_buf(req, src_file).await?;
+            let buf = Cursor::new(buf);
+            let (resp, file) = self.upload_buf(req, buf).await?;
 
             if !resp.status().is_success() {
                 let msg = format!("Sending failed: {}, {:?}", resp.status(), resp.body());
