@@ -783,6 +783,10 @@ pub mod compression {
 
     use crate::{Compression, db::DBDump, Decompression, Res};
 
+    // 3Mb, it should be adjusted for row db data size;
+    // TODO: allow custom buf size
+    const BUF_SIZE: usize = 1024 * 1024 * 3;
+
     impl Compression for DBDump {
         type Out = Res<Vec<u8>>;
 
@@ -801,8 +805,6 @@ pub mod compression {
             todo!()
         }
     }
-
-    const BUF_SIZE: usize = 1024 * 1024 * 8;
 
     fn compress(inp: &[u8], level: i32) -> Res<Vec<u8>> {
         let mut out = Vec::with_capacity(inp.len());
