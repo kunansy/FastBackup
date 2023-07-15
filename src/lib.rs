@@ -10,10 +10,10 @@ pub trait Storage {
     async fn download(&self, file_id: &str, path: &str) -> Res<String>;
 }
 
-pub trait Compression<T> {
+pub trait Compression {
     type Out;
 
-    fn compress(&self, output: &T, level: i32) -> Self::Out;
+    fn compress(&self, level: i32) -> Self::Out;
 }
 
 pub trait Decompression<I> {
@@ -783,14 +783,14 @@ pub mod compression {
 
     use crate::{Compression, db::DBDump, Decompression, Res};
 
-    impl<T> Compression<T> for DBDump
-        where T: AsRef<Path>
-    {
-        fn compress(&self, output: &T, level: i32) -> Res<()>{
+    impl Compression for DBDump {
+        type Out = Res<Vec<u8>>;
+
+        fn compress(&self, level: i32) -> Self::Out {
             // deref to access to the hashmap
             let input = serde_json::to_string_pretty(&*self)?;
-            compress(input.as_bytes(), output, level)?;
-            Ok(())
+
+            compress(input.as_bytes(), level)
         }
     }
 
