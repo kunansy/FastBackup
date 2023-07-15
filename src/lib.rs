@@ -804,19 +804,18 @@ pub mod compression {
 
     const BUF_SIZE: usize = 1024 * 1024 * 8;
 
-    fn compress<T>(input: &[u8], output_file: &T, level: i32) -> Res<()>
-        where T: AsRef<Path>
-    {
-        let output_file = File::create(output_file)?;
+    fn compress(inp: &[u8], level: i32) -> Res<Vec<u8>> {
+        let mut out = Vec::with_capacity(inp.len());
+        {
+            let mut src = BufReader::with_capacity(BUF_SIZE, inp);
+            let mut dst = BufWriter::new(&mut out);
 
-        let mut src = BufReader::with_capacity(BUF_SIZE, input);
-        let mut dst = BufWriter::new(output_file);
+            copy_encode(&mut src, &mut dst, level)?;
 
-        copy_encode(&mut src, &mut dst, level)?;
+            dst.flush()?;
+        }
 
-        dst.flush()?;
-
-        Ok(())
+        Ok(out)
     }
 
     fn _decompress<I, O>(input_file: &I, output_file: &O) -> Res<()>
