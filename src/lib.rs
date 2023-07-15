@@ -81,9 +81,10 @@ pub mod settings {
                 .map_err(|e: ParseIntError|
                     Errors::EnvError(format!("COMPRESSION_LEVEL must be int: {}", e.to_string())))?;
 
-            assert!((0..=22).contains(&comp_level),
-                    "Compression level must be in [0; 22], {} found",
-                    comp_level);
+            let comp_level_range = zstd::compression_level_range();
+            assert!(comp_level_range.contains(&comp_level),
+                    "Compression level must be in {:?}, {} found",
+                    comp_level_range, comp_level);
 
             log::debug!("Settings parsed");
             Ok(Self { db_host, db_port, db_username, db_password, db_name,
