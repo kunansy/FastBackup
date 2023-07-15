@@ -831,6 +831,7 @@ pub mod compression {
 
 pub mod google_drive {
     use std::{fs, io, path::Path, time};
+    use std::io::{Read, Seek};
 
     use google_drive3::{DriveHub, hyper::client::HttpConnector, hyper_rustls};
     use google_drive3::api::File;
@@ -947,10 +948,12 @@ pub mod google_drive {
             file
         }
 
-        pub async fn upload_file(&self, req: File, src_file: fs::File) -> Res<(Response<Body>, File)> {
+        pub async fn upload_buf<T>(&self, req: File, buf: T) -> Res<(Response<Body>, File)>
+            where T: Read + Seek + Send
+        {
             self.hub.files()
                 .create(req)
-                .upload(src_file, "application/octet-stream".parse().unwrap())
+                .upload(buf, "application/octet-stream".parse().unwrap())
                 .await
                 .map_err(|e| {
                     let msg = format!("Sending failed: {:?}", e);
@@ -1081,7 +1084,7 @@ pub mod google_drive {
                 GoogleDrive::build_file(file_name, Some(vec![folder_id]))
             };
 
-            let (resp, file) = self.upload_file(req, src_file).await?;
+            let (resp, file) = self.upload_buf(req, src_file).await?;
 
             if !resp.status().is_success() {
                 let msg = format!("Sending failed: {}, {:?}", resp.status(), resp.body());
