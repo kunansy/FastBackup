@@ -245,15 +245,9 @@ pub mod db {
     }
 
     pub async fn dump(pool: Arc<PgPool>,
-                      data_folder: &Option<String>,
-                      compression_level: i32) -> Res<String> {
+                      compression_level: i32) -> Res<Vec<u8>> {
         log::info!("Start dumping");
         let start = time::Instant::now();
-
-        let db_name = pool
-            .connect_options()
-            .get_database()
-            .unwrap_or("undefined");
 
         let (tables, table_refs) = join!(
             get_tables(&pool),
@@ -262,13 +256,15 @@ pub mod db {
         let (tables, table_refs) = (tables?, table_refs?);
         let tables_order = define_tables_order(tables, table_refs);
 
-        let json = dump_all(pool.clone(), tables_order).await?;
-        let filename = create_filename(db_name, data_folder);
+        let dump = dump_all(pool.clone(), tables_order).await?;
 
-        json.compress(&filename, compression_level)?;
+        log::debug!("Dump completed, compressing");
+        let start_comp = time::Instant::now();
+        let compressed = dump.compress(compression_level)?;
+        log::debug!("Compression completed for {:?}", start_comp.elapsed());
 
         log::info!("Dump completed for {:?}", start.elapsed());
-        Ok(filename)
+        Ok(compressed)
     }
 
     pub async fn init_pool<T>(cfg: &T) -> Res<Pool<Postgres>>
