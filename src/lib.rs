@@ -882,7 +882,7 @@ pub mod google_drive {
         hub: Hub
     }
     impl GoogleDrive {
-        pub async fn get_file_id(&self, file_name: &str) -> Res<String> {
+        async fn get_file_id(&self, file_name: &str) -> Res<String> {
             log::debug!("Getting file id: '{}'", file_name);
 
             let q = format!("name = '{}'", file_name);
@@ -1083,8 +1083,7 @@ pub mod google_drive {
             Ok(file_id)
         }
 
-        async fn download(&self, folder_name: &str, prefix: &str) -> Res<String> {
-            let folder_id = self.get_file_id(folder_name).await?;
+        async fn download(&self, folder_id: &str, prefix: &str) -> Res<String> {
             let (file_id, file_name) = self.get_last_dump_id(&folder_id).await?;
 
             let path = format!("{}{}", prefix, file_name);
