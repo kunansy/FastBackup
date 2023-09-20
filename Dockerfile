@@ -1,5 +1,7 @@
 FROM rust:1.71-slim-buster as builder
 
+ARG ARCH_TARGET=aarch64-apple-darwin
+
 RUN apt-get update  \
     && apt-get upgrade -y  \
     && apt-get install protobuf-compiler ca-certificates -y
@@ -13,7 +15,7 @@ COPY build.rs ./
 COPY vendor vendor/
 COPY .cargo/config.toml .cargo/config.toml
 
-RUN cargo build --release --bin backup-server --offline -vv -j $(nproc)
+RUN cargo build --release --bin backup-server --offline --target ${ARCH_TARGET} -j $(nproc)
 
 FROM ubuntu:22.04
 
