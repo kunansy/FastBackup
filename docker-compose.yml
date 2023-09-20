@@ -2,7 +2,7 @@ version: '3'
 
 services:
   backup:
-    image: kunansy/fast-backup:0.4.0
+    image: kunansy/fast-backup:0.4.1
     restart: always
     container_name: backup
     env_file: .env
