@@ -15,7 +15,7 @@ COPY build.rs ./
 COPY vendor vendor/
 COPY .cargo/config.toml .cargo/config.toml
 
-RUN cargo build --release --bin backup-server --offline --target ${ARCH_TARGET} -j $(nproc)
+RUN cargo build --release --bin backup-server --offline --target ${ARCH_TARGET} --jobs $(nproc) -vv
 
 FROM ubuntu:22.04
 
