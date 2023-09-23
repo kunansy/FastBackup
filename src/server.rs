@@ -4,7 +4,7 @@ use std::thread;
 use signal_hook::{consts::SIGHUP, iterator::Signals};
 use tonic::{Request, Response, Status, transport::Server};
 
-use backup::{BackupReply, BackupRequest, RestoreRequest};
+use backup::{BackupReply, BackupRequest, RestoreRequest, HealthcheckReply};
 use backup::google_drive_server::{GoogleDrive, GoogleDriveServer};
 use backuper::{db, DbConfig, google_drive, logger, settings::Settings, Storage};
 
@@ -95,6 +95,13 @@ impl GoogleDrive for Backup {
             .map_err(|e| Status::aborted(e.to_string()))?;
 
         Ok(Response::new(BackupReply { file_id }))
+    }
+
+    async fn healthcheck(&self, request: Request<BackupRequest>) -> Result<Response<HealthcheckReply>, Status> {
+        let params = request.into_inner();
+        let is_ok = db::healthcheck(&params).await;
+
+        Ok(Response::new(HealthcheckReply { is_ok }))
     }
 }
 
