@@ -229,6 +229,27 @@ pub mod db {
         Ok((dump, filename))
     }
 
+    pub async fn healthcheck<T>(cfg: &T) -> bool
+        where T: DbConfig
+    {
+        let pool = match init_pool(cfg).await {
+            Ok(pool) => pool,
+            Err(e) => {
+                log::warn!("Could not init pool: {:?}", e);
+                return false;
+            }
+        };
+
+        _healthcheck(&pool).await
+    }
+
+    async fn _healthcheck(pool: &PgPool) -> bool {
+        sqlx::query("SELECT 1 + 1 = 2 AS res")
+            .fetch_one(pool)
+            .await
+            .map_or(false, |e| e.get("res"))
+    }
+
     pub async fn dump(pool: Arc<PgPool>,
                       compression_level: i32) -> Res<Vec<u8>> {
         log::info!("Start dumping");
