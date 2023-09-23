@@ -4,7 +4,7 @@ use std::thread;
 use signal_hook::{consts::SIGHUP, iterator::Signals};
 use tonic::{Request, Response, Status, transport::Server};
 
-use backup::{BackupReply, BackupRequest, RestoreRequest, HealthcheckReply};
+use backup::{DbRequest, BackupReply, HealthcheckReply};
 use backup::google_drive_server::{GoogleDrive, GoogleDriveServer};
 use backuper::{db, DbConfig, google_drive, logger, settings::Settings, Storage};
 
@@ -15,29 +15,7 @@ pub mod backup {
 #[derive(Debug, Default)]
 pub struct Backup {}
 
-impl DbConfig for BackupRequest {
-    fn db_host(&self) -> &String {
-        &self.db_host
-    }
-
-    fn db_port(&self) -> u16 {
-        self.db_port as u16
-    }
-
-    fn db_username(&self) -> &String {
-        &self.db_username
-    }
-
-    fn db_password(&self) -> &String {
-        &self.db_password
-    }
-
-    fn db_name(&self) -> &String {
-        &self.db_name
-    }
-}
-
-impl DbConfig for RestoreRequest {
+impl DbConfig for DbRequest {
     fn db_host(&self) -> &String {
         &self.db_host
     }
@@ -65,7 +43,7 @@ static mut CFG: Option<Arc<Settings>> = None;
 
 #[tonic::async_trait]
 impl GoogleDrive for Backup {
-    async fn backup(&self, request: Request<BackupRequest>) -> Result<Response<BackupReply>, Status> {
+    async fn backup(&self, request: Request<DbRequest>) -> Result<Response<BackupReply>, Status> {
         log::info!("Request to backup");
         let cfg = match unsafe { CFG.clone() } {
             None => {
@@ -97,7 +75,7 @@ impl GoogleDrive for Backup {
         Ok(Response::new(BackupReply { file_id }))
     }
 
-    async fn healthcheck(&self, request: Request<BackupRequest>) -> Result<Response<HealthcheckReply>, Status> {
+    async fn healthcheck(&self, request: Request<DbRequest>) -> Result<Response<HealthcheckReply>, Status> {
         let params = request.into_inner();
         let is_ok = db::healthcheck(&params).await;
 

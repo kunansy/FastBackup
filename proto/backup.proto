@@ -4,12 +4,12 @@ package backup;
 
 // work with google drive through this service
 service GoogleDrive {
-    rpc Backup (BackupRequest) returns (BackupReply);
-    rpc Healthcheck (BackupRequest) returns (HealthcheckReply);
+    rpc Backup (DBRequest) returns (BackupReply);
+    rpc Healthcheck (DBRequest) returns (HealthcheckReply);
 //    rpc Restore (RestoreRequest) returns (RestoreReply);
 }
 
-message BackupRequest {
+message DBRequest {
     string db_host = 1;
     uint32 db_port = 2;
     string db_username = 3;
@@ -19,15 +19,6 @@ message BackupRequest {
 
 message BackupReply {
     string file_id = 1;
-}
-
-message RestoreRequest {
-    string db_host = 1;
-    uint32 db_port = 2;
-    string db_username = 3;
-    string db_password = 4;
-    string db_name = 5;
-    string folder_name = 6;
 }
 
 message RestoreReply {
