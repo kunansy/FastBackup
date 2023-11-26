@@ -531,7 +531,7 @@ pub mod db {
                 },
                 "DATE" => {
                     match row.get::<Option<NaiveDate>, _>(name) {
-                        Some(v) => Value::String(v.to_string()),
+                        Some(v) => Value::String(v.format("%d-%m-%Y").to_string()),
                         None => Value::Null
                     }
                 },
