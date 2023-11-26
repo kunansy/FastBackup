@@ -6,7 +6,6 @@ package backup;
 service GoogleDrive {
     rpc Backup (DBRequest) returns (BackupReply);
     rpc Healthcheck (DBRequest) returns (HealthcheckReply);
-//    rpc Restore (RestoreRequest) returns (RestoreReply);
 }
 
 message DBRequest {
@@ -18,10 +17,6 @@ message DBRequest {
 }
 
 message BackupReply {
-    string file_id = 1;
-}
-
-message RestoreReply {
     string file_id = 1;
 }
 
