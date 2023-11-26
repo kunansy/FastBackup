@@ -1,4 +1,6 @@
+use std::path::Path;
 use std::time;
+use std::fs;
 
 use backuper::{db, google_drive, logger, Res, settings::Settings, Storage};
 
@@ -27,5 +29,20 @@ async fn main() -> Res<()> {
     drive.upload(&dump, &filename, Some(folder_id)).await?;
 
     log::info!("App completed for {:?}", start.elapsed());
+    Ok(())
+}
+
+async fn download(cfg: &Settings) -> Res<()> {
+    let (drive, folder_id) = google_drive::prepare_drive(
+        &cfg.drive_creds, &cfg.drive_folder_id).await?;
+
+    let (content, file_name) = drive.download(&folder_id).await?;
+
+    let path = Path::new(&file_name);
+    println!("Downloaded {:?}", path);
+
+    let dst = path.with_extension("json");
+    fs::write(dst, content)?;
+
     Ok(())
 }
