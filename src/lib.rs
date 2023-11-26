@@ -843,8 +843,9 @@ pub mod compression {
 }
 
 pub mod google_drive {
-    use std::{fs, io, path::Path, time};
+    use std::{io, time};
     use std::io::{Cursor, Read, Seek};
+    use bytes::Bytes;
 
     use google_drive3::{DriveHub, hyper::client::HttpConnector, hyper_rustls};
     use google_drive3::api::File;
@@ -974,8 +975,8 @@ pub mod google_drive {
                 })
         }
 
-        pub async fn download_file(&self, file_id: &str, path: &Path) -> Res<()> {
-            log::info!("Downloading file id '{}' to {:?}", file_id, path);
+        async fn download_file(&self, file_id: &str) -> Res<Bytes> {
+            log::info!("Downloading file id '{file_id}'");
             let start = time::Instant::now();
 
             let (resp, _) = self.hub
@@ -996,15 +997,13 @@ pub mod google_drive {
                 return Err(Errors::StorageError(msg));
             }
 
-            let d = body::to_bytes(resp.into_body()).await.map_err(|e| {
+            let file_content = body::to_bytes(resp.into_body()).await.map_err(|e| {
                 let msg = format!("Could not convert resp body to bytes: {:?}", e);
                 Errors::StorageError(msg)
             })?;
 
-            fs::write(path, d)?;
-
             log::info!("File got for {:?}", start.elapsed());
-            Ok(())
+            Ok(file_content)
         }
 
         /// Get id of the newest file in the folder.
