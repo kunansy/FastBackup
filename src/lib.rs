@@ -6,7 +6,7 @@ pub type Res<T> = Result<T, Errors>;
 pub trait Storage {
     async fn upload(&self, buf: &Vec<u8>, filename: &str, folder_id: Option<String>) -> Res<String>;
 
-    async fn download(&self, file_id: &str, path: &str) -> Res<String>;
+    async fn download(&self, file_id: &str) -> Res<(Vec<u8>, String)>;
 }
 
 pub trait Compression {
@@ -852,7 +852,7 @@ pub mod google_drive {
     use google_drive3::hyper_rustls::HttpsConnector;
     use google_drive3::oauth2::{authenticator::Authenticator, parse_service_account_key, ServiceAccountAuthenticator as ServiceAuth, ServiceAccountKey};
 
-    use crate::{errors::Errors, Res, Storage};
+    use crate::{errors::Errors, Res, Storage, compression::decompress};
 
     type Hub = DriveHub<HttpsConnector<HttpConnector>>;
 
@@ -1103,13 +1103,13 @@ pub mod google_drive {
             Ok(file_id)
         }
 
-        async fn download(&self, folder_id: &str, prefix: &str) -> Res<String> {
+        async fn download(&self, folder_id: &str) -> Res<(Vec<u8>, String)> {
             let (file_id, file_name) = self.get_last_dump_id(&folder_id).await?;
 
-            let path = format!("{}{}", prefix, file_name);
-            self.download_file(&file_id, Path::new(&path)).await?;
+            let compressed_file = self.download_file(&file_id).await?;
+            let file_content = decompress(&compressed_file)?;
 
-            Ok(path)
+            Ok((file_content, file_name))
         }
     }
 }
