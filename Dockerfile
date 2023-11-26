@@ -1,4 +1,4 @@
-FROM rust:1.71-slim-buster as builder
+FROM rust:1.74-slim-buster as builder
 
 RUN apt-get update  \
     && apt-get upgrade -y  \
