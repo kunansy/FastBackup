@@ -103,12 +103,13 @@ pub mod settings {
                 .filter(|&line| !(line.is_empty() && line.starts_with(';')));
 
             for line in lines {
-                let (name, value) = match line.split_once("=") {
-                    Some(pair) => pair,
-                    None => continue
+                match line.split_once("=") {
+                    Some((name, value)) => {
+                        // there might be spaces around the '=', so trim the strings
+                        std::env::set_var(name.trim(), value.trim());
+                    },
+                    None => {}
                 };
-                // there might be spaces around the '=', so trim the strings
-                std::env::set_var(name.trim(), value.trim());
             }
         }
     }
