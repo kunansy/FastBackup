@@ -779,12 +779,12 @@ pub mod ordered_map {
 }
 
 pub mod compression {
-    use std::{fs::File, path::Path};
-    use std::io::{BufReader, BufWriter, Write};
+    use std::{io, path::Path};
+    use std::io::{BufReader, BufWriter, Cursor, Write};
 
     use zstd::stream::{copy_decode, copy_encode};
 
-    use crate::{Compression, db::DBDump, Decompression, Res};
+    use crate::{Compression, db::DBDump, Decompression, Errors, Res};
 
     // 3Mb, it should be adjusted for raw db data size;
     // TODO: allow custom buf size
@@ -823,22 +823,21 @@ pub mod compression {
         Ok(out)
     }
 
-    fn _decompress<I, O>(input_file: &I, output_file: &O) -> Res<()>
-        where
-            I: AsRef<Path>,
-            O: AsRef<Path>
+    pub fn decompress<T>(src: &T) -> Res<Vec<u8>>
+        where T: AsRef<[u8]>
     {
-        let input_file = File::open(input_file)?;
-        let output_file = File::create(output_file)?;
+        let mut cur = Cursor::new(src);
+        let mut dst = BufWriter::with_capacity(BUF_SIZE, Vec::with_capacity(BUF_SIZE));
 
-        let mut src = BufReader::with_capacity(BUF_SIZE, input_file);
-        let mut dst = BufWriter::new(output_file);
-
-        copy_decode(&mut src, &mut dst)?;
+        copy_decode(&mut cur, &mut dst)?;
 
         dst.flush()?;
+        let dst = dst.into_inner().map_err(|e| {
+            let msg = format!("Could not decompress file body: {e}");
+            Errors::StorageError(msg)
+        })?;
 
-        Ok(())
+        Ok(dst)
     }
 }
 
