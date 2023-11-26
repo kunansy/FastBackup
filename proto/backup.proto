@@ -5,6 +5,7 @@ package backup;
 // work with google drive through this service
 service GoogleDrive {
     rpc Backup (DBRequest) returns (BackupReply);
+    rpc DownloadLatestBackup (DBRequest) returns (DownloadReply);
     rpc Healthcheck (DBRequest) returns (HealthcheckReply);
 }
 
@@ -18,6 +19,10 @@ message DBRequest {
 
 message BackupReply {
     string file_id = 1;
+}
+
+message DownloadReply {
+    bytes file_content = 1;
 }
 
 message HealthcheckReply {
