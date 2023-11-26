@@ -136,6 +136,7 @@ name = "backuper"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "bytes",
  "chrono",
  "env_logger",
  "google-drive3",
