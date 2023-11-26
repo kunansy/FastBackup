@@ -4,7 +4,7 @@ use std::thread;
 use signal_hook::{consts::SIGHUP, iterator::Signals};
 use tonic::{Request, Response, Status, transport::Server};
 
-use backup::{DbRequest, BackupReply, DownloadReply, HealthcheckReply};
+use backup::{DbRequest, BackupReply, DownloadReply, HealthcheckReply, Empty};
 use backup::google_drive_server::{GoogleDrive, GoogleDriveServer};
 use backuper::{db, DbConfig, google_drive, logger, settings::Settings, Storage};
 
@@ -75,8 +75,19 @@ impl GoogleDrive for Backup {
         Ok(Response::new(BackupReply { file_id }))
     }
 
-    async fn download_latest_backup(&self, request: Request<DbRequest>) -> Result<Response<DownloadReply>, Status> {
-        Ok(Response::new(DownloadReply { file_content: "".into() }))
+    async fn download_latest_backup(&self, _request: Request<Empty>) -> Result<Response<DownloadReply>, Status> {
+        let cfg = match unsafe { CFG.clone() } {
+            None => {
+                let err = Status::internal(&"Settings not loaded".to_string());
+                return Err(err);
+            },
+            Some(cfg) => cfg
+        };
+
+        let (drive, folder_id) = google_drive::prepare_drive(&cfg.drive_creds, &cfg.drive_folder_id).await.unwrap();
+        let (file_content, _) = drive.download(&folder_id).await.unwrap();
+
+        Ok(Response::new(DownloadReply { file_content }))
     }
 
     async fn healthcheck(&self, request: Request<DbRequest>) -> Result<Response<HealthcheckReply>, Status> {
