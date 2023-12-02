@@ -1,7 +1,9 @@
+use std::process::{exit};
 use std::sync::Arc;
 use std::thread;
 
-use signal_hook::{consts::SIGHUP, iterator::Signals};
+use signal_hook::{iterator::Signals};
+use signal_hook::consts::{SIGINT, SIGQUIT, SIGTERM, SIGHUP};
 use tonic::{Request, Response, Status, transport::Server};
 
 use backup::{DbRequest, BackupReply, DownloadReply, HealthcheckReply, Empty};
@@ -100,14 +102,18 @@ impl GoogleDrive for Backup {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut signals = Signals::new(&[SIGHUP])?;
+    let mut signals = Signals::new(&[SIGHUP, SIGTERM, SIGQUIT, SIGINT])?;
 
     // reload the settings on SIGHUP
     thread::spawn(move || {
         for sig in signals.forever() {
-            log::info!("Received signal '{:?}', reload the settings", sig);
-            load_settings();
-            logger::init();
+            if sig == SIGHUP {
+                log::info!("Received signal '{:?}', reload the settings", sig);
+                load_settings();
+            } else if vec![SIGINT, SIGQUIT, SIGTERM].contains(&sig) {
+                log::info!("Received signal '{:?}', terminating", sig);
+                exit(0);
+            }
         }
     });
 
