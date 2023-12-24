@@ -522,7 +522,7 @@ pub mod db {
                 },
                 "TIMESTAMP" => {
                     match row.get::<Option<NaiveDateTime>, _>(name) {
-                        Some(v) => Value::String(v.to_string()),
+                        Some(v) => Value::String(v.format("%Y-%m-%d %H:%M:%S").to_string()),
                         None => Value::Null
                     }
                 },
