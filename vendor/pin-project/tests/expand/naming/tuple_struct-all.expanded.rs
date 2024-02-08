@@ -13,6 +13,7 @@ struct TupleStruct<T, U>(#[pin] T, U);
 #[allow(clippy::type_repetition_in_bounds)]
 #[allow(dead_code)]
 #[allow(clippy::mut_mut)]
+#[allow(clippy::missing_docs_in_private_items)]
 struct Proj<'pin, T, U>(
     ::pin_project::__private::Pin<&'pin mut (T)>,
     &'pin mut (U),
@@ -31,6 +32,7 @@ where
 #[allow(clippy::type_repetition_in_bounds)]
 #[allow(dead_code)]
 #[allow(clippy::ref_option_ref)]
+#[allow(clippy::missing_docs_in_private_items)]
 struct ProjRef<'pin, T, U>(
     ::pin_project::__private::Pin<&'pin (T)>,
     &'pin (U),
@@ -48,6 +50,7 @@ where
 #[allow(clippy::redundant_pub_crate)]
 #[allow(clippy::type_repetition_in_bounds)]
 #[allow(dead_code)]
+#[allow(clippy::missing_docs_in_private_items)]
 struct ProjOwn<T, U>(::pin_project::__private::PhantomData<T>, U);
 #[allow(box_pointers)]
 #[allow(deprecated)]
@@ -68,6 +71,7 @@ const _: () = {
     extern crate pin_project as _pin_project;
     impl<T, U> TupleStruct<T, U> {
         #[allow(dead_code)]
+        #[inline]
         fn project<'pin>(
             self: _pin_project::__private::Pin<&'pin mut Self>,
         ) -> Proj<'pin, T, U> {
@@ -78,6 +82,7 @@ const _: () = {
         }
         #[allow(dead_code)]
         #[allow(clippy::missing_const_for_fn)]
+        #[inline]
         fn project_ref<'pin>(
             self: _pin_project::__private::Pin<&'pin Self>,
         ) -> ProjRef<'pin, T, U> {
@@ -87,6 +92,7 @@ const _: () = {
             }
         }
         #[allow(dead_code)]
+        #[inline]
         fn project_replace(
             self: _pin_project::__private::Pin<&mut Self>,
             __replacement: Self,

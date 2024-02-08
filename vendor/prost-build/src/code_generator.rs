@@ -29,6 +29,7 @@ enum Syntax {
 pub struct CodeGenerator<'a> {
     config: &'a mut Config,
     package: String,
+    type_path: Vec<String>,
     source_info: Option<SourceCodeInfo>,
     syntax: Syntax,
     message_graph: &'a MessageGraph,
@@ -69,6 +70,7 @@ impl<'a> CodeGenerator<'a> {
         let mut code_gen = CodeGenerator {
             config,
             package: file.package.unwrap_or_default(),
+            type_path: Vec::new(),
             source_info,
             syntax,
             message_graph,
@@ -121,10 +123,16 @@ impl<'a> CodeGenerator<'a> {
 
         let message_name = message.name().to_string();
         let fq_message_name = format!(
-            "{}{}.{}",
-            if self.package.is_empty() { "" } else { "." },
-            self.package,
-            message.name()
+            "{}{}{}{}.{}",
+            if self.package.is_empty() && self.type_path.is_empty() {
+                ""
+            } else {
+                "."
+            },
+            self.package.trim_matches('.'),
+            if self.type_path.is_empty() { "" } else { "." },
+            self.type_path.join("."),
+            message_name,
         );
 
         // Skip external types.
@@ -188,6 +196,7 @@ impl<'a> CodeGenerator<'a> {
             "#[derive(Clone, PartialEq, {}::Message)]\n",
             self.config.prost_path.as_deref().unwrap_or("::prost")
         ));
+        self.append_skip_debug(&fq_message_name);
         self.push_indent();
         self.buf.push_str("pub struct ");
         self.buf.push_str(&to_upper_camel(&message_name));
@@ -260,6 +269,53 @@ impl<'a> CodeGenerator<'a> {
 
             self.pop_mod();
         }
+
+        if self.config.enable_type_names {
+            self.append_type_name(&message_name, &fq_message_name);
+        }
+    }
+
+    fn append_type_name(&mut self, message_name: &str, fq_message_name: &str) {
+        self.buf.push_str(&format!(
+            "impl {}::Name for {} {{\n",
+            self.config.prost_path.as_deref().unwrap_or("::prost"),
+            to_upper_camel(&message_name)
+        ));
+        self.depth += 1;
+
+        self.buf.push_str(&format!(
+            "const NAME: &'static str = \"{}\";\n",
+            message_name,
+        ));
+        self.buf.push_str(&format!(
+            "const PACKAGE: &'static str = \"{}\";\n",
+            self.package,
+        ));
+
+        let prost_path = self.config.prost_path.as_deref().unwrap_or("::prost");
+        let string_path = format!("{}::alloc::string::String", prost_path);
+        let format_path = format!("{}::alloc::format", prost_path);
+
+        self.buf.push_str(&format!(
+            r#"fn full_name() -> {string_path} {{
+                {format_path}!("{}{}{}{}{{}}", Self::NAME)
+            }}"#,
+            self.package.trim_matches('.'),
+            if self.package.is_empty() { "" } else { "." },
+            self.type_path.join("."),
+            if self.type_path.is_empty() { "" } else { "." },
+        ));
+
+        if let Some(domain_name) = self.config.type_name_domains.get_first(fq_message_name) {
+            self.buf.push_str(&format!(
+                r#"fn type_url() -> {string_path} {{
+                    {format_path}!("{domain_name}/{{}}", Self::full_name())
+                }}"#,
+            ));
+        }
+
+        self.depth -= 1;
+        self.buf.push_str("}\n");
     }
 
     fn append_type_attributes(&mut self, fq_message_name: &str) {
@@ -276,6 +332,19 @@ impl<'a> CodeGenerator<'a> {
         for attribute in self.config.message_attributes.get(fq_message_name) {
             push_indent(self.buf, self.depth);
             self.buf.push_str(attribute);
+            self.buf.push('\n');
+        }
+    }
+
+    fn should_skip_debug(&self, fq_message_name: &str) -> bool {
+        assert_eq!(b'.', fq_message_name.as_bytes()[0]);
+        self.config.skip_debug.get(fq_message_name).next().is_some()
+    }
+
+    fn append_skip_debug(&mut self, fq_message_name: &str) {
+        if self.should_skip_debug(fq_message_name) {
+            push_indent(self.buf, self.depth);
+            self.buf.push_str("#[prost(skip_debug)]");
             self.buf.push('\n');
         }
     }
@@ -536,6 +605,7 @@ impl<'a> CodeGenerator<'a> {
             "#[derive(Clone, PartialEq, {}::Oneof)]\n",
             self.config.prost_path.as_deref().unwrap_or("::prost")
         ));
+        self.append_skip_debug(&fq_message_name);
         self.push_indent();
         self.buf.push_str("pub enum ");
         self.buf.push_str(&to_upper_camel(oneof.name()));
@@ -630,11 +700,18 @@ impl<'a> CodeGenerator<'a> {
 
         let enum_values = &desc.value;
         let fq_proto_enum_name = format!(
-            "{}{}.{}",
-            if self.package.is_empty() { "" } else { "." },
-            self.package,
-            proto_enum_name
+            "{}{}{}{}.{}",
+            if self.package.is_empty() && self.type_path.is_empty() {
+                ""
+            } else {
+                "."
+            },
+            self.package.trim_matches('.'),
+            if self.type_path.is_empty() { "" } else { "." },
+            self.type_path.join("."),
+            proto_enum_name,
         );
+
         if self
             .extern_paths
             .resolve_ident(&fq_proto_enum_name)
@@ -647,9 +724,16 @@ impl<'a> CodeGenerator<'a> {
         self.append_type_attributes(&fq_proto_enum_name);
         self.append_enum_attributes(&fq_proto_enum_name);
         self.push_indent();
-        self.buf.push_str(
-            &format!("#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, {}::Enumeration)]\n",self.config.prost_path.as_deref().unwrap_or("::prost")),
-        );
+        let dbg = if self.should_skip_debug(&fq_proto_enum_name) {
+            ""
+        } else {
+            "Debug, "
+        };
+        self.buf.push_str(&format!(
+            "#[derive(Clone, Copy, {}PartialEq, Eq, Hash, PartialOrd, Ord, {}::Enumeration)]\n",
+            dbg,
+            self.config.prost_path.as_deref().unwrap_or("::prost"),
+        ));
         self.push_indent();
         self.buf.push_str("#[repr(i32)]\n");
         self.push_indent();
@@ -845,8 +929,7 @@ impl<'a> CodeGenerator<'a> {
         self.buf.push_str(&to_snake(module));
         self.buf.push_str(" {\n");
 
-        self.package.push('.');
-        self.package.push_str(module);
+        self.type_path.push(module.into());
 
         self.depth += 1;
     }
@@ -854,8 +937,7 @@ impl<'a> CodeGenerator<'a> {
     fn pop_mod(&mut self) {
         self.depth -= 1;
 
-        let idx = self.package.rfind('.').unwrap();
-        self.package.truncate(idx);
+        self.type_path.pop();
 
         self.push_indent();
         self.buf.push_str("}\n");
@@ -893,7 +975,11 @@ impl<'a> CodeGenerator<'a> {
             return proto_ident;
         }
 
-        let mut local_path = self.package.split('.').peekable();
+        let mut local_path = self
+            .package
+            .split('.')
+            .chain(self.type_path.iter().map(String::as_str))
+            .peekable();
 
         // If no package is specified the start of the package name will be '.'
         // and split will return an empty string ("") which breaks resolution

@@ -10,9 +10,10 @@
 # See Cargo.toml.orig for the original contents.
 
 [package]
-edition = "2018"
+edition = "2021"
+rust-version = "1.63"
 name = "which"
-version = "4.4.0"
+version = "4.4.2"
 authors = ["Harry Fei <tiziyuanfang@gmail.com>"]
 description = "A Rust equivalent of Unix command \"which\". Locate installed executable in cross platforms."
 documentation = "https://docs.rs/which/"
@@ -36,15 +37,23 @@ all-features = true
 [dependencies.either]
 version = "1.6.1"
 
-[dependencies.libc]
-version = "0.2.121"
-
 [dependencies.regex]
 version = "1.5.5"
 optional = true
 
+[dependencies.rustix]
+version = "0.38.10"
+features = [
+    "fs",
+    "std",
+]
+default-features = false
+
 [dev-dependencies.tempfile]
 version = "3.3.0"
+
+[target."cfg(any(windows, unix, target_os = \"redox\"))".dependencies.home]
+version = "0.5.5"
 
 [target."cfg(windows)".dependencies.once_cell]
 version = "1"

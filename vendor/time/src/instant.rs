@@ -6,6 +6,7 @@ use core::ops::{Add, Sub};
 use core::time::Duration as StdDuration;
 use std::time::Instant as StdInstant;
 
+use crate::internal_macros::{impl_add_assign, impl_sub_assign};
 use crate::Duration;
 
 /// A measurement of a monotonically non-decreasing clock. Opaque and useful only with [`Duration`].
@@ -128,6 +129,9 @@ impl From<Instant> for StdInstant {
 impl Sub for Instant {
     type Output = Duration;
 
+    /// # Panics
+    ///
+    /// This may panic if an overflow occurs.
     fn sub(self, other: Self) -> Self::Output {
         match self.0.cmp(&other.0) {
             Ordering::Equal => Duration::ZERO,

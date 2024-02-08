@@ -1,4 +1,4 @@
-use super::super::c;
+use crate::backend::c;
 use bitflags::bitflags;
 
 bitflags! {
@@ -6,7 +6,9 @@ bitflags! {
     ///
     /// For `PROT_NONE`, use `ProtFlags::empty()`.
     ///
-    /// [`mmap`]: crate::io::mmap
+    /// [`mmap`]: crate::mm::mmap
+    #[repr(transparent)]
+    #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
     pub struct ProtFlags: u32 {
         /// `PROT_READ`
         const READ = linux_raw_sys::general::PROT_READ;
@@ -14,6 +16,9 @@ bitflags! {
         const WRITE = linux_raw_sys::general::PROT_WRITE;
         /// `PROT_EXEC`
         const EXEC = linux_raw_sys::general::PROT_EXEC;
+
+        /// <https://docs.rs/bitflags/*/bitflags/#externally-defined-flags>
+        const _ = !0;
     }
 }
 
@@ -22,7 +27,9 @@ bitflags! {
     ///
     /// For `PROT_NONE`, use `MprotectFlags::empty()`.
     ///
-    /// [`mprotect`]: crate::io::mprotect
+    /// [`mprotect`]: crate::mm::mprotect
+    #[repr(transparent)]
+    #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
     pub struct MprotectFlags: u32 {
         /// `PROT_READ`
         const READ = linux_raw_sys::general::PROT_READ;
@@ -34,6 +41,23 @@ bitflags! {
         const GROWSUP = linux_raw_sys::general::PROT_GROWSUP;
         /// `PROT_GROWSDOWN`
         const GROWSDOWN = linux_raw_sys::general::PROT_GROWSDOWN;
+        /// `PROT_SEM`
+        const SEM = linux_raw_sys::general::PROT_SEM;
+        /// `PROT_BTI`
+        #[cfg(target_arch = "aarch64")]
+        const BTI = linux_raw_sys::general::PROT_BTI;
+        /// `PROT_MTE`
+        #[cfg(target_arch = "aarch64")]
+        const MTE = linux_raw_sys::general::PROT_MTE;
+        /// `PROT_SAO`
+        #[cfg(any(target_arch = "powerpc", target_arch = "powerpc64"))]
+        const SAO = linux_raw_sys::general::PROT_SAO;
+        /// `PROT_ADI`
+        #[cfg(any(target_arch = "sparc", target_arch = "sparc64"))]
+        const ADI = linux_raw_sys::general::PROT_ADI;
+
+        /// <https://docs.rs/bitflags/*/bitflags/#externally-defined-flags>
+        const _ = !0;
     }
 }
 
@@ -42,8 +66,10 @@ bitflags! {
     ///
     /// For `MAP_ANONYMOUS` (aka `MAP_ANON`), see [`mmap_anonymous`].
     ///
-    /// [`mmap`]: crate::io::mmap
-    /// [`mmap_anonymous`]: crates::io::mmap_anonymous
+    /// [`mmap`]: crate::mm::mmap
+    /// [`mmap_anonymous`]: crates::mm::mmap_anonymous
+    #[repr(transparent)]
+    #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
     pub struct MapFlags: u32 {
         /// `MAP_SHARED`
         const SHARED = linux_raw_sys::general::MAP_SHARED;
@@ -74,11 +100,14 @@ bitflags! {
         /// `MAP_STACK`
         const STACK = linux_raw_sys::general::MAP_STACK;
         /// `MAP_SYNC` (since Linux 4.15)
-        #[cfg(not(any(target_arch = "mips", target_arch = "mips64")))]
+        #[cfg(not(any(target_arch = "mips", target_arch = "mips32r6", target_arch = "mips64", target_arch = "mips64r6")))]
         const SYNC = linux_raw_sys::general::MAP_SYNC;
         /// `MAP_UNINITIALIZED`
-        #[cfg(not(any(target_arch = "mips", target_arch = "mips64")))]
+        #[cfg(not(any(target_arch = "mips", target_arch = "mips32r6", target_arch = "mips64", target_arch = "mips64r6")))]
         const UNINITIALIZED = linux_raw_sys::general::MAP_UNINITIALIZED;
+
+        /// <https://docs.rs/bitflags/*/bitflags/#externally-defined-flags>
+        const _ = !0;
     }
 }
 
@@ -87,30 +116,27 @@ bitflags! {
     ///
     /// For `MREMAP_FIXED`, see [`mremap_fixed`].
     ///
-    /// [`mremap`]: crate::io::mremap
-    /// [`mremap_fixed`]: crate::io::mremap_fixed
+    /// [`mremap`]: crate::mm::mremap
+    /// [`mremap_fixed`]: crate::mm::mremap_fixed
+    #[repr(transparent)]
+    #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
     pub struct MremapFlags: u32 {
         /// `MREMAP_MAYMOVE`
         const MAYMOVE = linux_raw_sys::general::MREMAP_MAYMOVE;
         /// `MREMAP_DONTUNMAP` (since Linux 5.7)
         const DONTUNMAP = linux_raw_sys::general::MREMAP_DONTUNMAP;
-    }
-}
 
-bitflags! {
-    /// `MLOCK_*` flags for use with [`mlock_with`].
-    ///
-    /// [`mlock_with`]: crate::io::mlock_with
-    pub struct MlockFlags: u32 {
-        /// `MLOCK_ONFAULT`
-        const ONFAULT = linux_raw_sys::general::MLOCK_ONFAULT;
+        /// <https://docs.rs/bitflags/*/bitflags/#externally-defined-flags>
+        const _ = !0;
     }
 }
 
 bitflags! {
     /// `MS_*` flags for use with [`msync`].
     ///
-    /// [`msync`]: crate::io::msync
+    /// [`msync`]: crate::mm::msync
+    #[repr(transparent)]
+    #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
     pub struct MsyncFlags: u32 {
         /// `MS_SYNC`—Requests an update and waits for it to complete.
         const SYNC = linux_raw_sys::general::MS_SYNC;
@@ -121,18 +147,24 @@ bitflags! {
         /// file (so that they can be updated with the fresh values just
         /// written).
         const INVALIDATE = linux_raw_sys::general::MS_INVALIDATE;
+
+        /// <https://docs.rs/bitflags/*/bitflags/#externally-defined-flags>
+        const _ = !0;
     }
 }
 
 bitflags! {
-    /// `O_*` flags for use with [`userfaultfd`].
+    /// `MLOCK_*` flags for use with [`mlock_with`].
     ///
-    /// [`userfaultfd`]: crate::io::userfaultfd
-    pub struct UserfaultfdFlags: c::c_uint {
-        /// `O_CLOEXEC`
-        const CLOEXEC = linux_raw_sys::general::O_CLOEXEC;
-        /// `O_NONBLOCK`
-        const NONBLOCK = linux_raw_sys::general::O_NONBLOCK;
+    /// [`mlock_with`]: crate::mm::mlock_with
+    #[repr(transparent)]
+    #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+    pub struct MlockFlags: u32 {
+        /// `MLOCK_ONFAULT`
+        const ONFAULT = linux_raw_sys::general::MLOCK_ONFAULT;
+
+        /// <https://docs.rs/bitflags/*/bitflags/#externally-defined-flags>
+        const _ = !0;
     }
 }
 
@@ -169,15 +201,20 @@ pub enum Advice {
     /// `MADV_HWPOISON`
     LinuxHwPoison = linux_raw_sys::general::MADV_HWPOISON,
     /// `MADV_SOFT_OFFLINE`
-    #[cfg(not(any(target_arch = "mips", target_arch = "mips64")))]
+    #[cfg(not(any(
+        target_arch = "mips",
+        target_arch = "mips32r6",
+        target_arch = "mips64",
+        target_arch = "mips64r6"
+    )))]
     LinuxSoftOffline = linux_raw_sys::general::MADV_SOFT_OFFLINE,
     /// `MADV_MERGEABLE`
     LinuxMergeable = linux_raw_sys::general::MADV_MERGEABLE,
     /// `MADV_UNMERGEABLE`
     LinuxUnmergeable = linux_raw_sys::general::MADV_UNMERGEABLE,
-    /// `MADV_HUGEPAGE` (since Linux 2.6.38)
+    /// `MADV_HUGEPAGE`
     LinuxHugepage = linux_raw_sys::general::MADV_HUGEPAGE,
-    /// `MADV_NOHUGEPAGE` (since Linux 2.6.38)
+    /// `MADV_NOHUGEPAGE`
     LinuxNoHugepage = linux_raw_sys::general::MADV_NOHUGEPAGE,
     /// `MADV_DONTDUMP` (since Linux 3.4)
     LinuxDontDump = linux_raw_sys::general::MADV_DONTDUMP,
@@ -203,8 +240,56 @@ pub enum Advice {
 impl Advice {
     /// `POSIX_MADV_DONTNEED`
     ///
-    /// On Linux, this is mapped to `POSIX_MADV_NORMAL` because
-    /// Linux's `MADV_DONTNEED` differs from `POSIX_MADV_DONTNEED`. See
-    /// `LinuxDontNeed` for the Linux behavior.
+    /// On Linux, this is mapped to `POSIX_MADV_NORMAL` because Linux's
+    /// `MADV_DONTNEED` differs from `POSIX_MADV_DONTNEED`. See `LinuxDontNeed`
+    /// for the Linux behavior.
     pub const DontNeed: Self = Self::Normal;
+}
+
+bitflags! {
+    /// `O_*` flags for use with [`userfaultfd`].
+    ///
+    /// [`userfaultfd`]: crate::mm::userfaultfd
+    #[repr(transparent)]
+    #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+    pub struct UserfaultfdFlags: c::c_uint {
+        /// `O_CLOEXEC`
+        const CLOEXEC = linux_raw_sys::general::O_CLOEXEC;
+        /// `O_NONBLOCK`
+        const NONBLOCK = linux_raw_sys::general::O_NONBLOCK;
+
+        /// <https://docs.rs/bitflags/*/bitflags/#externally-defined-flags>
+        const _ = !0;
+    }
+}
+
+bitflags! {
+    /// `MCL_*` flags for use with [`mlockall`].
+    ///
+    /// [`mlockall`]: crate::mm::mlockall
+    #[repr(transparent)]
+    #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+    pub struct MlockAllFlags: u32 {
+        /// Used together with `MCL_CURRENT`, `MCL_FUTURE`, or both. Mark all
+        /// current (with `MCL_CURRENT`) or future (with `MCL_FUTURE`) mappings
+        /// to lock pages when they are faulted in. When used with
+        /// `MCL_CURRENT`, all present pages are locked, but `mlockall` will
+        /// not fault in non-present pages. When used with `MCL_FUTURE`, all
+        /// future mappings will be marked to lock pages when they are faulted
+        /// in, but they will not be populated by the lock when the mapping is
+        /// created. `MCL_ONFAULT` must be used with either `MCL_CURRENT` or
+        /// `MCL_FUTURE` or both.
+        const ONFAULT = linux_raw_sys::general::MCL_ONFAULT;
+        /// Lock all pages which will become mapped into the address space of
+        /// the process in the future. These could be, for instance, new pages
+        /// required by a growing heap and stack as well as new memory-mapped
+        /// files or shared memory regions.
+        const FUTURE = linux_raw_sys::general::MCL_FUTURE;
+        /// Lock all pages which are currently mapped into the address space of
+        /// the process.
+        const CURRENT = linux_raw_sys::general::MCL_CURRENT;
+
+        /// <https://docs.rs/bitflags/*/bitflags/#externally-defined-flags>
+        const _ = !0;
+    }
 }

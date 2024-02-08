@@ -16,13 +16,20 @@
 #![cfg_attr(feature = "__internal_bench", allow(missing_docs))]
 
 use crate::Weekday;
-use core::{fmt, i32};
+use core::fmt;
 
 /// The internal date representation: `year << 13 | Of`
 pub(super) type DateImpl = i32;
 
-pub(super) const MAX_YEAR: DateImpl = i32::MAX >> 13;
-pub(super) const MIN_YEAR: DateImpl = i32::MIN >> 13;
+/// MAX_YEAR is one year less than the type is capable of representing. Internally we may sometimes
+/// use the headroom, notably to handle cases where the offset of a `DateTime` constructed with
+/// `NaiveDate::MAX` pushes it beyond the valid, representable range.
+pub(super) const MAX_YEAR: DateImpl = (i32::MAX >> 13) - 1;
+
+/// MIN_YEAR is one year more than the type is capable of representing. Internally we may sometimes
+/// use the headroom, notably to handle cases where the offset of a `DateTime` constructed with
+/// `NaiveDate::MIN` pushes it beyond the valid, representable range.
+pub(super) const MIN_YEAR: DateImpl = (i32::MIN >> 13) + 1;
 
 /// The year flags (aka the dominical letter).
 ///
@@ -504,8 +511,6 @@ const fn weekday_from_u32_mod7(n: u32) -> Weekday {
 
 #[cfg(test)]
 mod tests {
-    use std::u32;
-
     use super::weekday_from_u32_mod7;
     use super::{Mdf, Of};
     use super::{YearFlags, A, AG, B, BA, C, CB, D, DC, E, ED, F, FE, G, GF};

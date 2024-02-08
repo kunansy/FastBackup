@@ -1,9 +1,5 @@
 use crate::finder::Checker;
-#[cfg(unix)]
-use std::ffi::CString;
 use std::fs;
-#[cfg(unix)]
-use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
 pub struct ExecutableChecker;
@@ -15,11 +11,10 @@ impl ExecutableChecker {
 }
 
 impl Checker for ExecutableChecker {
-    #[cfg(unix)]
+    #[cfg(any(unix, target_os = "wasi"))]
     fn is_valid(&self, path: &Path) -> bool {
-        CString::new(path.as_os_str().as_bytes())
-            .map(|c| unsafe { libc::access(c.as_ptr(), libc::X_OK) == 0 })
-            .unwrap_or(false)
+        use rustix::fs as rfs;
+        rfs::access(path, rfs::Access::EXEC_OK).is_ok()
     }
 
     #[cfg(windows)]

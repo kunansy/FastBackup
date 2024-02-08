@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::{env, vec};
 use tempfile::TempDir;
 
+#[derive(Debug)]
 struct TestFixture {
     /// Temp directory.
     pub tempdir: TempDir,
@@ -21,14 +22,19 @@ struct TestFixture {
 const SUBDIRS: &[&str] = &["a", "b", "c"];
 const BIN_NAME: &str = "bin";
 
+#[allow(clippy::unnecessary_cast)]
 #[cfg(unix)]
 fn mk_bin(dir: &Path, path: &str, extension: &str) -> io::Result<PathBuf> {
     use std::os::unix::fs::OpenOptionsExt;
     let bin = dir.join(path).with_extension(extension);
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    let mode = rustix::fs::Mode::XUSR.bits() as u32;
+    let mode = 0o666 | mode;
     fs::OpenOptions::new()
         .write(true)
         .create(true)
-        .mode(0o666 | (libc::S_IXUSR as u32))
+        .mode(mode)
         .open(&bin)
         .and_then(|_f| bin.canonicalize())
 }
@@ -65,6 +71,33 @@ impl TestFixture {
             bins.push(mk_bin(&p, BIN_NAME, "").unwrap());
             bins.push(mk_bin(&p, BIN_NAME, "exe").unwrap());
             bins.push(mk_bin(&p, BIN_NAME, "cmd").unwrap());
+            paths.push(p);
+        }
+        let p = tempdir.path().join("win-bin");
+        builder.create(&p).unwrap();
+        bins.push(mk_bin(&p, "win-bin", "exe").unwrap());
+        paths.push(p);
+        TestFixture {
+            tempdir,
+            paths: env::join_paths(paths).unwrap(),
+            bins,
+        }
+    }
+
+    #[cfg(unix)]
+    pub fn new_with_tilde_path() -> TestFixture {
+        let tempdir = tempfile::tempdir().unwrap();
+        let mut builder = fs::DirBuilder::new();
+        builder.recursive(true);
+        let mut paths = vec![];
+        let mut bins = vec![];
+        for d in SUBDIRS.iter() {
+            let p = PathBuf::from("~").join(d);
+            let p_bin = tempdir.path().join(d);
+            builder.create(&p_bin).unwrap();
+            bins.push(mk_bin(&p_bin, BIN_NAME, "").unwrap());
+            bins.push(mk_bin(&p_bin, BIN_NAME, "exe").unwrap());
+            bins.push(mk_bin(&p_bin, BIN_NAME, "cmd").unwrap());
             paths.push(p);
         }
         let p = tempdir.path().join("win-bin");
@@ -120,15 +153,35 @@ fn it_works() {
 #[cfg(unix)]
 fn test_which() {
     let f = TestFixture::new();
-    assert_eq!(_which(&f, &BIN_NAME).unwrap(), f.bins[0])
+    assert_eq!(_which(&f, BIN_NAME).unwrap(), f.bins[0])
 }
 
 #[test]
 #[cfg(windows)]
 fn test_which() {
     let f = TestFixture::new();
-    assert_eq!(_which(&f, &BIN_NAME).unwrap(), f.bins[1])
+    assert_eq!(_which(&f, BIN_NAME).unwrap(), f.bins[1])
 }
+
+#[test]
+#[cfg(unix)]
+fn test_which_tilde() {
+    let old_home = env::var_os("HOME");
+    let f = TestFixture::new_with_tilde_path();
+    env::set_var("HOME", f.tempdir.path().as_os_str());
+    assert_eq!(_which(&f, BIN_NAME).unwrap(), f.bins[0]);
+    if let Some(old_home) = old_home {
+        env::set_var("HOME", old_home);
+    } else {
+        env::remove_var("HOME");
+    }
+}
+
+// Windows test_which_tilde intentionally omitted because
+// we don't want to pollute the home directory.
+// It's non-trivial to adjust which directory Windows thinks
+// is the home directory. At this time, tilde expansion has
+// no Windows specific behavior. It works as normal on Windows.
 
 #[test]
 #[cfg(all(unix, feature = "regex"))]
@@ -138,10 +191,7 @@ fn test_which_re_in_with_matches() {
     f.mk_bin("b/bin_1", "").unwrap();
     let re = Regex::new(r"bin_\d").unwrap();
 
-    let result: Vec<PathBuf> = which::which_re_in(re, Some(f.paths))
-        .unwrap()
-        .into_iter()
-        .collect();
+    let result: Vec<PathBuf> = which::which_re_in(re, Some(f.paths)).unwrap().collect();
 
     let temp = f.tempdir;
 
@@ -157,10 +207,7 @@ fn test_which_re_in_without_matches() {
     let f = TestFixture::new();
     let re = Regex::new(r"bi[^n]").unwrap();
 
-    let result: Vec<PathBuf> = which::which_re_in(re, Some(f.paths))
-        .unwrap()
-        .into_iter()
-        .collect();
+    let result: Vec<PathBuf> = which::which_re_in(re, Some(f.paths)).unwrap().collect();
 
     assert_eq!(result, Vec::<PathBuf>::new())
 }
@@ -187,7 +234,7 @@ fn test_which_re_accepts_owned_and_borrow() {
 fn test_which_extension() {
     let f = TestFixture::new();
     let b = Path::new(&BIN_NAME).with_extension("");
-    assert_eq!(_which(&f, &b).unwrap(), f.bins[0])
+    assert_eq!(_which(&f, b).unwrap(), f.bins[0])
 }
 
 #[test]
@@ -195,7 +242,7 @@ fn test_which_extension() {
 fn test_which_extension() {
     let f = TestFixture::new();
     let b = Path::new(&BIN_NAME).with_extension("cmd");
-    assert_eq!(_which(&f, &b).unwrap(), f.bins[2])
+    assert_eq!(_which(&f, b).unwrap(), f.bins[2])
 }
 
 #[test]
@@ -203,7 +250,7 @@ fn test_which_extension() {
 fn test_which_no_extension() {
     let f = TestFixture::new();
     let b = Path::new("win-bin");
-    let which_result = which::which_in(&b, Some(&f.paths), ".").unwrap();
+    let which_result = which::which_in(b, Some(&f.paths), ".").unwrap();
     // Make sure the extension is the correct case.
     assert_eq!(which_result.extension(), f.bins[9].extension());
     assert_eq!(fs::canonicalize(&which_result).unwrap(), f.bins[9])
@@ -273,7 +320,7 @@ fn test_which_absolute_path_case() {
     // is accepted.
     let f = TestFixture::new();
     let p = &f.bins[4];
-    assert_eq!(_which(&f, &p).unwrap(), f.bins[4].canonicalize().unwrap());
+    assert_eq!(_which(&f, p).unwrap(), f.bins[4].canonicalize().unwrap());
 }
 
 #[test]
@@ -281,8 +328,8 @@ fn test_which_absolute_path_case() {
 fn test_which_absolute_extension() {
     let f = TestFixture::new();
     // Don't append EXE_EXTENSION here.
-    let b = f.bins[3].parent().unwrap().join(&BIN_NAME);
-    assert_eq!(_which(&f, &b).unwrap(), f.bins[3].canonicalize().unwrap());
+    let b = f.bins[3].parent().unwrap().join(BIN_NAME);
+    assert_eq!(_which(&f, b).unwrap(), f.bins[3].canonicalize().unwrap());
 }
 
 #[test]
@@ -290,8 +337,8 @@ fn test_which_absolute_extension() {
 fn test_which_absolute_extension() {
     let f = TestFixture::new();
     // Don't append EXE_EXTENSION here.
-    let b = f.bins[4].parent().unwrap().join(&BIN_NAME);
-    assert_eq!(_which(&f, &b).unwrap(), f.bins[4].canonicalize().unwrap());
+    let b = f.bins[4].parent().unwrap().join(BIN_NAME);
+    assert_eq!(_which(&f, b).unwrap(), f.bins[4].canonicalize().unwrap());
 }
 
 #[test]
@@ -321,7 +368,7 @@ fn test_which_relative_extension() {
     // so test a relative path with an extension here.
     let f = TestFixture::new();
     let b = Path::new("b/bin").with_extension(env::consts::EXE_EXTENSION);
-    assert_eq!(_which(&f, &b).unwrap(), f.bins[3].canonicalize().unwrap());
+    assert_eq!(_which(&f, b).unwrap(), f.bins[3].canonicalize().unwrap());
 }
 
 #[test]
@@ -331,7 +378,7 @@ fn test_which_relative_extension() {
     // so test a relative path with an extension here.
     let f = TestFixture::new();
     let b = Path::new("b/bin").with_extension("cmd");
-    assert_eq!(_which(&f, &b).unwrap(), f.bins[5].canonicalize().unwrap());
+    assert_eq!(_which(&f, b).unwrap(), f.bins[5].canonicalize().unwrap());
 }
 
 #[test]
@@ -341,7 +388,7 @@ fn test_which_relative_extension_case() {
     // is accepted.
     let f = TestFixture::new();
     let b = Path::new("b/bin").with_extension("EXE");
-    assert_eq!(_which(&f, &b).unwrap(), f.bins[4].canonicalize().unwrap());
+    assert_eq!(_which(&f, b).unwrap(), f.bins[4].canonicalize().unwrap());
 }
 
 #[test]
@@ -379,7 +426,7 @@ fn test_which_absolute_non_executable() {
     // Shouldn't return non-executable files, even if given an absolute path.
     let f = TestFixture::new();
     let b = f.touch("b/another", "").unwrap();
-    assert!(_which(&f, &b).is_err());
+    assert!(_which(&f, b).is_err());
 }
 
 #[test]

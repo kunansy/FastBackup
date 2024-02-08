@@ -1,7 +1,7 @@
 //! inotify support for working with inotifies
 
-use super::super::c;
-use super::super::conv::{borrowed_fd, c_str, ret, ret_c_int, ret_owned_fd};
+use crate::backend::c;
+use crate::backend::conv::{borrowed_fd, c_str, ret, ret_c_int, ret_owned_fd};
 use crate::fd::{BorrowedFd, OwnedFd};
 use crate::io;
 use bitflags::bitflags;
@@ -10,11 +10,16 @@ bitflags! {
     /// `IN_*` for use with [`inotify_init`].
     ///
     /// [`inotify_init`]: crate::fs::inotify::inotify_init
-    pub struct CreateFlags: c::c_int {
+    #[repr(transparent)]
+    #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+    pub struct CreateFlags: u32 {
         /// `IN_CLOEXEC`
-        const CLOEXEC = c::IN_CLOEXEC;
+        const CLOEXEC = bitcast!(c::IN_CLOEXEC);
         /// `IN_NONBLOCK`
-        const NONBLOCK = c::IN_NONBLOCK;
+        const NONBLOCK = bitcast!(c::IN_NONBLOCK);
+
+        /// <https://docs.rs/bitflags/*/bitflags/#externally-defined-flags>
+        const _ = !0;
     }
 }
 
@@ -22,7 +27,8 @@ bitflags! {
     /// `IN*` for use with [`inotify_add_watch`].
     ///
     /// [`inotify_add_watch`]: crate::fs::inotify::inotify_add_watch
-    #[derive(Default)]
+    #[repr(transparent)]
+    #[derive(Default, Copy, Clone, Eq, PartialEq, Hash, Debug)]
     pub struct WatchFlags: u32 {
         /// `IN_ACCESS`
         const ACCESS = c::IN_ACCESS;
@@ -32,7 +38,7 @@ bitflags! {
         const CLOSE_NOWRITE = c::IN_CLOSE_NOWRITE;
         /// `IN_CLOSE_WRITE`
         const CLOSE_WRITE = c::IN_CLOSE_WRITE;
-        /// `IN_CREATE `
+        /// `IN_CREATE`
         const CREATE = c::IN_CREATE;
         /// `IN_DELETE`
         const DELETE = c::IN_DELETE;
@@ -68,6 +74,9 @@ bitflags! {
         const ONESHOT = c::IN_ONESHOT;
         /// `IN_ONLYDIR`
         const ONLYDIR = c::IN_ONLYDIR;
+
+        /// <https://docs.rs/bitflags/*/bitflags/#externally-defined-flags>
+        const _ = !0;
     }
 }
 
@@ -78,39 +87,39 @@ bitflags! {
 #[doc(alias = "inotify_init1")]
 pub fn inotify_init(flags: CreateFlags) -> io::Result<OwnedFd> {
     // SAFETY: `inotify_init1` has no safety preconditions.
-    unsafe { ret_owned_fd(c::inotify_init1(flags.bits())) }
+    unsafe { ret_owned_fd(c::inotify_init1(bitflags_bits!(flags))) }
 }
 
-/// `inotify_add_watch(self, path, flags)`—Adds a watch to inotify
+/// `inotify_add_watch(self, path, flags)`—Adds a watch to inotify.
 ///
-/// This registers or updates a watch for the filesystem path `path`
-/// and returns a watch descriptor corresponding to this watch.
+/// This registers or updates a watch for the filesystem path `path` and
+/// returns a watch descriptor corresponding to this watch.
 ///
-/// Note: Due to the existence of hardlinks, providing two
-/// different paths to this method may result in it returning
-/// the same watch descriptor. An application should keep track of this
-/// externally to avoid logic errors.
+/// Note: Due to the existence of hardlinks, providing two different paths to
+/// this method may result in it returning the same watch descriptor. An
+/// application should keep track of this externally to avoid logic errors.
 pub fn inotify_add_watch<P: crate::path::Arg>(
     inot: BorrowedFd<'_>,
     path: P,
     flags: WatchFlags,
 ) -> io::Result<i32> {
-    let path = path.as_cow_c_str().unwrap();
-    // SAFETY: The fd and path we are passing is guaranteed valid by the type
-    // system.
-    unsafe {
-        ret_c_int(c::inotify_add_watch(
-            borrowed_fd(inot),
-            c_str(&path),
-            flags.bits(),
-        ))
-    }
+    path.into_with_c_str(|path| {
+        // SAFETY: The fd and path we are passing is guaranteed valid by the
+        // type system.
+        unsafe {
+            ret_c_int(c::inotify_add_watch(
+                borrowed_fd(inot),
+                c_str(path),
+                flags.bits(),
+            ))
+        }
+    })
 }
 
-/// `inotify_rm_watch(self, wd)`—Removes a watch from this inotify
+/// `inotify_rm_watch(self, wd)`—Removes a watch from this inotify.
 ///
-/// The watch descriptor provided should have previously been returned
-/// by [`inotify_add_watch`] and not previously have been removed.
+/// The watch descriptor provided should have previously been returned by
+/// [`inotify_add_watch`] and not previously have been removed.
 #[doc(alias = "inotify_rm_watch")]
 pub fn inotify_remove_watch(inot: BorrowedFd<'_>, wd: i32) -> io::Result<()> {
     // Android's `inotify_rm_watch` takes `u32` despite that

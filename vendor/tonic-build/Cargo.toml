@@ -12,13 +12,13 @@
 [package]
 edition = "2021"
 name = "tonic-build"
-version = "0.9.2"
+version = "0.10.2"
 authors = ["Lucio Franco <luciofranco14@gmail.com>"]
 description = """
 Codegen module of `tonic` gRPC implementation.
 """
 homepage = "https://github.com/hyperium/tonic"
-documentation = "https://docs.rs/tonic-build/0.9.2"
+documentation = "https://docs.rs/tonic-build/0.10.2"
 readme = "README.md"
 keywords = [
     "rpc",
@@ -38,23 +38,26 @@ repository = "https://github.com/hyperium/tonic"
 all-features = true
 
 [dependencies.prettyplease]
-version = "0.1"
+version = "0.2"
 
 [dependencies.proc-macro2]
 version = "1.0"
 
 [dependencies.prost-build]
-version = "0.11.9"
+version = "0.12"
 optional = true
 
 [dependencies.quote]
 version = "1.0"
 
 [dependencies.syn]
-version = "1.0"
+version = "2.0"
 
 [features]
-cleanup-markdown = ["prost-build/cleanup-markdown"]
+cleanup-markdown = [
+    "prost",
+    "prost-build/cleanup-markdown",
+]
 default = [
     "transport",
     "prost",

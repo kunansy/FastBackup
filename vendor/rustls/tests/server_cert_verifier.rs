@@ -1,18 +1,18 @@
 //! Tests for configuring and using a [`ServerCertVerifier`] for a client.
 
-#![cfg(feature = "dangerous_configuration")]
+#![cfg(any(feature = "ring", feature = "aws_lc_rs"))]
 
 mod common;
 use crate::common::{
     do_handshake, do_handshake_until_both_error, make_client_config_with_versions,
     make_pair_for_arc_configs, make_server_config, ErrorFromPeer, ALL_KEY_TYPES,
 };
-use rustls::client::{
-    HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier, WebPkiVerifier,
-};
-use rustls::internal::msgs::handshake::DigitallySignedStruct;
-use rustls::AlertDescription;
-use rustls::{Certificate, Error, SignatureScheme};
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::DigitallySignedStruct;
+use rustls::{AlertDescription, Error, InvalidMessage, SignatureScheme};
+
+use pki_types::{CertificateDer, ServerName, UnixTime};
+
 use std::sync::Arc;
 
 #[test]
@@ -39,7 +39,7 @@ fn client_can_override_certificate_verification() {
 fn client_can_override_certificate_verification_and_reject_certificate() {
     for kt in ALL_KEY_TYPES.iter() {
         let verifier = Arc::new(MockServerVerifier::rejects_certificate(
-            Error::CorruptMessage,
+            Error::InvalidMessage(InvalidMessage::HandshakePayloadTooLarge),
         ));
 
         let server_config = Arc::new(make_server_config(*kt));
@@ -56,9 +56,11 @@ fn client_can_override_certificate_verification_and_reject_certificate() {
             assert_eq!(
                 errs,
                 Err(vec![
-                    ErrorFromPeer::Client(Error::CorruptMessage),
-                    ErrorFromPeer::Server(Error::AlertReceived(AlertDescription::BadCertificate))
-                ])
+                    ErrorFromPeer::Client(Error::InvalidMessage(
+                        InvalidMessage::HandshakePayloadTooLarge,
+                    )),
+                    ErrorFromPeer::Server(Error::AlertReceived(AlertDescription::HandshakeFailure)),
+                ]),
             );
         }
     }
@@ -70,7 +72,7 @@ fn client_can_override_certificate_verification_and_reject_tls12_signatures() {
     for kt in ALL_KEY_TYPES.iter() {
         let mut client_config = make_client_config_with_versions(*kt, &[&rustls::version::TLS12]);
         let verifier = Arc::new(MockServerVerifier::rejects_tls12_signatures(
-            Error::CorruptMessage,
+            Error::InvalidMessage(InvalidMessage::HandshakePayloadTooLarge),
         ));
 
         client_config
@@ -85,9 +87,11 @@ fn client_can_override_certificate_verification_and_reject_tls12_signatures() {
         assert_eq!(
             errs,
             Err(vec![
-                ErrorFromPeer::Client(Error::CorruptMessage),
-                ErrorFromPeer::Server(Error::AlertReceived(AlertDescription::BadCertificate))
-            ])
+                ErrorFromPeer::Client(Error::InvalidMessage(
+                    InvalidMessage::HandshakePayloadTooLarge,
+                )),
+                ErrorFromPeer::Server(Error::AlertReceived(AlertDescription::HandshakeFailure)),
+            ]),
         );
     }
 }
@@ -97,7 +101,7 @@ fn client_can_override_certificate_verification_and_reject_tls13_signatures() {
     for kt in ALL_KEY_TYPES.iter() {
         let mut client_config = make_client_config_with_versions(*kt, &[&rustls::version::TLS13]);
         let verifier = Arc::new(MockServerVerifier::rejects_tls13_signatures(
-            Error::CorruptMessage,
+            Error::InvalidMessage(InvalidMessage::HandshakePayloadTooLarge),
         ));
 
         client_config
@@ -112,9 +116,11 @@ fn client_can_override_certificate_verification_and_reject_tls13_signatures() {
         assert_eq!(
             errs,
             Err(vec![
-                ErrorFromPeer::Client(Error::CorruptMessage),
-                ErrorFromPeer::Server(Error::AlertReceived(AlertDescription::BadCertificate))
-            ])
+                ErrorFromPeer::Client(Error::InvalidMessage(
+                    InvalidMessage::HandshakePayloadTooLarge,
+                )),
+                ErrorFromPeer::Server(Error::AlertReceived(AlertDescription::HandshakeFailure)),
+            ]),
         );
     }
 }
@@ -138,8 +144,8 @@ fn client_can_override_certificate_verification_and_offer_no_signature_schemes()
             assert_eq!(
                 errs,
                 Err(vec![
-                    ErrorFromPeer::Server(Error::PeerIncompatibleError(
-                        "no overlapping sigschemes".into()
+                    ErrorFromPeer::Server(Error::PeerIncompatible(
+                        rustls::PeerIncompatible::NoSignatureSchemesInCommon
                     )),
                     ErrorFromPeer::Client(Error::AlertReceived(AlertDescription::HandshakeFailure)),
                 ])
@@ -148,28 +154,26 @@ fn client_can_override_certificate_verification_and_offer_no_signature_schemes()
     }
 }
 
+#[derive(Debug)]
 pub struct MockServerVerifier {
     cert_rejection_error: Option<Error>,
     tls12_signature_error: Option<Error>,
     tls13_signature_error: Option<Error>,
-    wants_scts: bool,
     signature_schemes: Vec<SignatureScheme>,
 }
 
 impl ServerCertVerifier for MockServerVerifier {
     fn verify_server_cert(
         &self,
-        end_entity: &rustls::Certificate,
-        intermediates: &[rustls::Certificate],
-        server_name: &rustls::ServerName,
-        scts: &mut dyn Iterator<Item = &[u8]>,
+        end_entity: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        server_name: &ServerName<'_>,
         oscp_response: &[u8],
-        now: std::time::SystemTime,
+        now: UnixTime,
     ) -> Result<ServerCertVerified, Error> {
-        let scts: Vec<Vec<u8>> = scts.map(|x| x.to_owned()).collect();
         println!(
-            "verify_server_cert({:?}, {:?}, {:?}, {:?}, {:?}, {:?})",
-            end_entity, intermediates, server_name, scts, oscp_response, now
+            "verify_server_cert({:?}, {:?}, {:?}, {:?}, {:?})",
+            end_entity, intermediates, server_name, oscp_response, now
         );
         if let Some(error) = &self.cert_rejection_error {
             Err(error.clone())
@@ -181,7 +185,7 @@ impl ServerCertVerifier for MockServerVerifier {
     fn verify_tls12_signature(
         &self,
         message: &[u8],
-        cert: &Certificate,
+        cert: &CertificateDer<'_>,
         dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, Error> {
         println!(
@@ -198,7 +202,7 @@ impl ServerCertVerifier for MockServerVerifier {
     fn verify_tls13_signature(
         &self,
         message: &[u8],
-        cert: &Certificate,
+        cert: &CertificateDer<'_>,
         dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, Error> {
         println!(
@@ -214,11 +218,6 @@ impl ServerCertVerifier for MockServerVerifier {
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
         self.signature_schemes.clone()
-    }
-
-    fn request_scts(&self) -> bool {
-        println!("request_scts? {:?}", self.wants_scts);
-        self.wants_scts
     }
 }
 
@@ -265,8 +264,14 @@ impl Default for MockServerVerifier {
             cert_rejection_error: None,
             tls12_signature_error: None,
             tls13_signature_error: None,
-            wants_scts: false,
-            signature_schemes: WebPkiVerifier::verification_schemes(),
+            signature_schemes: vec![
+                SignatureScheme::RSA_PSS_SHA256,
+                SignatureScheme::RSA_PKCS1_SHA256,
+                SignatureScheme::ED25519,
+                SignatureScheme::ECDSA_NISTP256_SHA256,
+                SignatureScheme::ECDSA_NISTP384_SHA384,
+                SignatureScheme::ECDSA_NISTP521_SHA512,
+            ],
         }
     }
 }

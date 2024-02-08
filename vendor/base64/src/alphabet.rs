@@ -1,7 +1,7 @@
 //! Provides [Alphabet] and constants for alphabets commonly used in the wild.
 
 use crate::PAD_BYTE;
-use core::fmt;
+use core::{convert, fmt};
 #[cfg(any(feature = "std", test))]
 use std::error;
 
@@ -12,12 +12,44 @@ const ALPHABET_SIZE: usize = 64;
 /// Common alphabets are provided as constants, and custom alphabets
 /// can be made via `from_str` or the `TryFrom<str>` implementation.
 ///
+/// # Examples
+///
+/// Building and using a custom Alphabet:
+///
 /// ```
 /// let custom = base64::alphabet::Alphabet::new("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/").unwrap();
 ///
 /// let engine = base64::engine::GeneralPurpose::new(
 ///     &custom,
 ///     base64::engine::general_purpose::PAD);
+/// ```
+///
+/// Building a const:
+///
+/// ```
+/// use base64::alphabet::Alphabet;
+///
+/// static CUSTOM: Alphabet = {
+///     // Result::unwrap() isn't const yet, but panic!() is OK
+///     match Alphabet::new("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/") {
+///         Ok(x) => x,
+///         Err(_) => panic!("creation of alphabet failed"),
+///     }
+/// };
+/// ```
+///
+/// Building lazily:
+///
+/// ```
+/// use base64::{
+///     alphabet::Alphabet,
+///     engine::{general_purpose::GeneralPurpose, GeneralPurposeConfig},
+/// };
+/// use once_cell::sync::Lazy;
+///
+/// static CUSTOM: Lazy<Alphabet> = Lazy::new(||
+///     Alphabet::new("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/").unwrap()
+/// );
 /// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Alphabet {
@@ -91,9 +123,14 @@ impl Alphabet {
 
         Ok(Self::from_str_unchecked(alphabet))
     }
+
+    /// Create a `&str` from the symbols in the `Alphabet`
+    pub fn as_str(&self) -> &str {
+        core::str::from_utf8(&self.symbols).unwrap()
+    }
 }
 
-impl TryFrom<&str> for Alphabet {
+impl convert::TryFrom<&str> for Alphabet {
     type Error = ParseAlphabetError;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
@@ -128,21 +165,21 @@ impl fmt::Display for ParseAlphabetError {
 #[cfg(any(feature = "std", test))]
 impl error::Error for ParseAlphabetError {}
 
-/// The standard alphabet (uses `+` and `/`).
+/// The standard alphabet (with `+` and `/`) specified in [RFC 4648][].
 ///
-/// See [RFC 3548](https://tools.ietf.org/html/rfc3548#section-3).
+/// [RFC 4648]: https://datatracker.ietf.org/doc/html/rfc4648#section-4
 pub const STANDARD: Alphabet = Alphabet::from_str_unchecked(
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/",
 );
 
-/// The URL safe alphabet (uses `-` and `_`).
+/// The URL-safe alphabet (with `-` and `_`) specified in [RFC 4648][].
 ///
-/// See [RFC 3548](https://tools.ietf.org/html/rfc3548#section-4).
+/// [RFC 4648]: https://datatracker.ietf.org/doc/html/rfc4648#section-5
 pub const URL_SAFE: Alphabet = Alphabet::from_str_unchecked(
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_",
 );
 
-/// The `crypt(3)` alphabet (uses `.` and `/` as the first two values).
+/// The `crypt(3)` alphabet (with `.` and `/` as the _first_ two characters).
 ///
 /// Not standardized, but folk wisdom on the net asserts that this alphabet is what crypt uses.
 pub const CRYPT: Alphabet = Alphabet::from_str_unchecked(
@@ -154,7 +191,7 @@ pub const BCRYPT: Alphabet = Alphabet::from_str_unchecked(
     "./ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789",
 );
 
-/// The alphabet used in IMAP-modified UTF-7 (uses `+` and `,`).
+/// The alphabet used in IMAP-modified UTF-7 (with `+` and `,`).
 ///
 /// See [RFC 3501](https://tools.ietf.org/html/rfc3501#section-5.1.3)
 pub const IMAP_MUTF7: Alphabet = Alphabet::from_str_unchecked(
@@ -171,7 +208,7 @@ pub const BIN_HEX: Alphabet = Alphabet::from_str_unchecked(
 #[cfg(test)]
 mod tests {
     use crate::alphabet::*;
-    use std::convert::TryFrom as _;
+    use core::convert::TryFrom as _;
 
     #[test]
     fn detects_duplicate_start() {
@@ -237,5 +274,12 @@ mod tests {
             Alphabet::try_from("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/")
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn str_same_as_input() {
+        let alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let a = Alphabet::try_from(alphabet).unwrap();
+        assert_eq!(alphabet, a.as_str())
     }
 }

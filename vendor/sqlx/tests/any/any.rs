@@ -4,6 +4,8 @@ use sqlx_test::new;
 
 #[sqlx_macros::test]
 async fn it_connects() -> anyhow::Result<()> {
+    sqlx::any::install_default_drivers();
+
     let mut conn = new::<Any>().await?;
 
     let value = sqlx::query("select 1 + 5")
@@ -20,6 +22,8 @@ async fn it_connects() -> anyhow::Result<()> {
 
 #[sqlx_macros::test]
 async fn it_pings() -> anyhow::Result<()> {
+    sqlx::any::install_default_drivers();
+
     let mut conn = new::<Any>().await?;
 
     conn.ping().await?;
@@ -29,6 +33,8 @@ async fn it_pings() -> anyhow::Result<()> {
 
 #[sqlx_macros::test]
 async fn it_executes_with_pool() -> anyhow::Result<()> {
+    sqlx::any::install_default_drivers();
+
     let pool = sqlx_test::pool::<Any>().await?;
 
     let rows = pool.fetch_all("SELECT 1; SElECT 2").await?;
@@ -41,6 +47,9 @@ async fn it_executes_with_pool() -> anyhow::Result<()> {
 #[sqlx_macros::test]
 async fn it_does_not_stop_stream_after_decoding_error() -> anyhow::Result<()> {
     use futures::stream::StreamExt;
+
+    sqlx::any::install_default_drivers();
+
     // see https://github.com/launchbadge/sqlx/issues/1884
     let pool = sqlx_test::pool::<Any>().await?;
 
@@ -69,6 +78,8 @@ async fn it_does_not_stop_stream_after_decoding_error() -> anyhow::Result<()> {
 
 #[sqlx_macros::test]
 async fn it_gets_by_name() -> anyhow::Result<()> {
+    sqlx::any::install_default_drivers();
+
     let mut conn = new::<Any>().await?;
 
     let row = conn.fetch_one("SELECT 1 as _1").await?;
@@ -81,6 +92,8 @@ async fn it_gets_by_name() -> anyhow::Result<()> {
 
 #[sqlx_macros::test]
 async fn it_can_fail_and_recover() -> anyhow::Result<()> {
+    sqlx::any::install_default_drivers();
+
     let mut conn = new::<Any>().await?;
 
     for i in 0..10 {
@@ -93,7 +106,7 @@ async fn it_can_fail_and_recover() -> anyhow::Result<()> {
 
         // now try and use the connection
         let val: i32 = conn
-            .fetch_one(&*format!("SELECT {}", i))
+            .fetch_one(&*format!("SELECT {i}"))
             .await?
             .get_unchecked(0);
 
@@ -105,6 +118,8 @@ async fn it_can_fail_and_recover() -> anyhow::Result<()> {
 
 #[sqlx_macros::test]
 async fn it_can_fail_and_recover_with_pool() -> anyhow::Result<()> {
+    sqlx::any::install_default_drivers();
+
     let pool = sqlx_test::pool::<Any>().await?;
 
     for i in 0..10 {
@@ -117,7 +132,7 @@ async fn it_can_fail_and_recover_with_pool() -> anyhow::Result<()> {
 
         // now try and use the connection
         let val: i32 = pool
-            .fetch_one(&*format!("SELECT {}", i))
+            .fetch_one(&*format!("SELECT {i}"))
             .await?
             .get_unchecked(0);
 

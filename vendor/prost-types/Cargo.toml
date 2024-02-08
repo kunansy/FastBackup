@@ -13,7 +13,7 @@
 edition = "2021"
 rust-version = "1.60"
 name = "prost-types"
-version = "0.11.9"
+version = "0.12.3"
 authors = [
     "Dan Burkert <dan@danburkert.com>",
     "Lucio Franco <luciofranco14@gmail.com",
@@ -29,7 +29,7 @@ repository = "https://github.com/tokio-rs/prost"
 doctest = false
 
 [dependencies.prost]
-version = "0.11.9"
+version = "0.12.3"
 features = ["prost-derive"]
 default-features = false
 

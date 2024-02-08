@@ -1,6 +1,6 @@
 use futures::TryStreamExt;
+use sqlx::postgres::types::PgRange;
 use sqlx::{Connection, Executor, FromRow, Postgres};
-use sqlx_core::postgres::types::PgRange;
 use sqlx_test::{new, test_type};
 use std::fmt::Debug;
 use std::ops::Bound;
@@ -9,6 +9,13 @@ use std::ops::Bound;
 #[derive(PartialEq, Debug, sqlx::Type)]
 #[sqlx(transparent)]
 struct Transparent(i32);
+
+#[derive(PartialEq, Debug, sqlx::Type)]
+// https://github.com/launchbadge/sqlx/issues/2611
+// Previously, the derive would generate a `PgHasArrayType` impl that errored on an
+// impossible-to-satisfy `where` bound. This attribute allows the user to opt-out.
+#[sqlx(transparent, no_pg_array)]
+struct TransparentArray(Vec<i64>);
 
 #[sqlx_macros::test]
 async fn test_transparent_slice_to_array() -> anyhow::Result<()> {
@@ -139,6 +146,11 @@ test_type!(transparent<Transparent>(Postgres,
     "23523" == Transparent(23523)
 ));
 
+test_type!(transparent_array<TransparentArray>(Postgres,
+    "'{}'::int8[]" == TransparentArray(vec![]),
+    "'{ 23523, 123456, 789 }'::int8[]" == TransparentArray(vec![23523, 123456, 789])
+));
+
 test_type!(weak_enum<Weak>(Postgres,
     "0::int4" == Weak::One,
     "2::int4" == Weak::Two,
@@ -235,7 +247,7 @@ SELECT id, mood FROM people WHERE id = $1
     conn.close().await?;
     let mut conn = new::<Postgres>().await?;
 
-    let stmt = format!("SELECT id, mood FROM people WHERE id = {}", people_id);
+    let stmt = format!("SELECT id, mood FROM people WHERE id = {people_id}");
     dbg!(&stmt);
 
     let mut cursor = conn.fetch(&*stmt);
@@ -376,6 +388,41 @@ SELECT $1 = ROW('fuzzy dice', 42, 199)::inventory_item, $1
 
 #[cfg(feature = "macros")]
 #[sqlx_macros::test]
+async fn test_new_type() {
+    struct NewType(i32);
+
+    impl From<i32> for NewType {
+        fn from(value: i32) -> Self {
+            NewType(value)
+        }
+    }
+
+    let mut conn = new::<Postgres>().await.unwrap();
+
+    struct NewTypeRow {
+        id: NewType,
+    }
+
+    let res = sqlx::query_as!(NewTypeRow, r#"SELECT 1 as "id!""#)
+        .fetch_one(&mut conn)
+        .await
+        .unwrap();
+    assert_eq!(res.id.0, 1);
+
+    struct NormalRow {
+        id: i32,
+    }
+
+    let res = sqlx::query_as!(NormalRow, r#"SELECT 1 as "id!""#)
+        .fetch_one(&mut conn)
+        .await
+        .unwrap();
+
+    assert_eq!(res.id, 1);
+}
+
+#[cfg(feature = "macros")]
+#[sqlx_macros::test]
 async fn test_from_row() -> anyhow::Result<()> {
     let mut conn = new::<Postgres>().await?;
 
@@ -437,7 +484,7 @@ async fn test_from_row_with_keyword() -> anyhow::Result<()> {
     )
     .fetch_one(&mut conn)
     .await?;
-    println!("{:?}", account);
+    println!("{account:?}");
 
     assert_eq!(1, account.r#type);
     assert_eq!("foo", account.r#static);
@@ -475,7 +522,7 @@ async fn test_from_row_with_rename() -> anyhow::Result<()> {
     )
     .fetch_one(&mut conn)
     .await?;
-    println!("{:?}", account);
+    println!("{account:?}");
 
     assert_eq!(1, account.own_type);
     assert_eq!("foo", account.my_static);
@@ -504,7 +551,7 @@ async fn test_from_row_with_rename_all() -> anyhow::Result<()> {
     )
     .fetch_one(&mut conn)
     .await?;
-    println!("{:?}", account);
+    println!("{account:?}");
 
     assert_eq!(1, account.user_id);
     assert_eq!("foo", account.user_name);
@@ -566,10 +613,45 @@ async fn test_default() -> anyhow::Result<()> {
     let has_default: HasDefault = sqlx::query_as(r#"SELECT 1 AS not_default"#)
         .fetch_one(&mut conn)
         .await?;
-    println!("{:?}", has_default);
+    println!("{has_default:?}");
 
     assert_eq!(has_default.not_default, 1);
     assert_eq!(has_default.default, None);
+
+    Ok(())
+}
+
+#[cfg(feature = "macros")]
+#[sqlx_macros::test]
+async fn test_struct_default() -> anyhow::Result<()> {
+    #[derive(Debug, sqlx::FromRow)]
+    #[sqlx(default)]
+    struct HasDefault {
+        not_default: Option<i32>,
+        default_a: Option<String>,
+        default_b: Option<i32>,
+    }
+
+    impl Default for HasDefault {
+        fn default() -> HasDefault {
+            HasDefault {
+                not_default: None,
+                default_a: None,
+                default_b: Some(0),
+            }
+        }
+    }
+
+    let mut conn = new::<Postgres>().await?;
+
+    let has_default: HasDefault = sqlx::query_as(r#"SELECT 1 AS not_default"#)
+        .fetch_one(&mut conn)
+        .await?;
+    println!("{has_default:?}");
+
+    assert_eq!(has_default.not_default, Some(1));
+    assert_eq!(has_default.default_a, None);
+    assert_eq!(has_default.default_b, Some(0));
 
     Ok(())
 }
@@ -605,11 +687,39 @@ async fn test_flatten() -> anyhow::Result<()> {
     )
     .fetch_one(&mut conn)
     .await?;
-    println!("{:?}", account);
+    println!("{account:?}");
 
     assert_eq!(1, account.id);
     assert_eq!("foo", account.info.name);
     assert_eq!("bar", account.info.surname);
+    assert_eq!(None, account.default.default);
+
+    Ok(())
+}
+
+#[cfg(feature = "macros")]
+#[sqlx_macros::test]
+async fn test_skip() -> anyhow::Result<()> {
+    #[derive(Debug, Default, sqlx::FromRow)]
+    struct AccountDefault {
+        default: Option<i32>,
+    }
+
+    #[derive(Debug, sqlx::FromRow)]
+    struct AccountKeyword {
+        id: i32,
+        #[sqlx(skip)]
+        default: AccountDefault,
+    }
+
+    let mut conn = new::<Postgres>().await?;
+
+    let account: AccountKeyword = sqlx::query_as(r#"SELECT * from (VALUES (1)) accounts("id")"#)
+        .fetch_one(&mut conn)
+        .await?;
+    println!("{account:?}");
+
+    assert_eq!(1, account.id);
     assert_eq!(None, account.default.default);
 
     Ok(())

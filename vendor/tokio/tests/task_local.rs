@@ -1,5 +1,5 @@
-#![cfg(all(feature = "full", not(tokio_wasi)))] // Wasi doesn't support threads
-#![allow(clippy::declare_interior_mutable_const)]
+#![cfg(all(feature = "full", not(target_os = "wasi")))] // Wasi doesn't support threads
+
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};

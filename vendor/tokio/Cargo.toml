@@ -11,9 +11,9 @@
 
 [package]
 edition = "2021"
-rust-version = "1.56"
+rust-version = "1.63"
 name = "tokio"
-version = "1.28.2"
+version = "1.36.0"
 authors = ["Tokio Contributors <team@tokio.rs>"]
 description = """
 An event-driven, non-blocking I/O platform for writing asynchronous I/O
@@ -33,19 +33,29 @@ categories = [
 ]
 license = "MIT"
 repository = "https://github.com/tokio-rs/tokio"
-resolver = "1"
+
+[package.metadata.cargo_check_external_types]
+allowed_external_types = [
+    "bytes::buf::buf_impl::Buf",
+    "bytes::buf::buf_mut::BufMut",
+    "tokio_macros::*",
+]
 
 [package.metadata.docs.rs]
 all-features = true
 rustc-args = [
     "--cfg",
     "tokio_unstable",
+    "--cfg",
+    "tokio_taskdump",
 ]
 rustdoc-args = [
     "--cfg",
     "docsrs",
     "--cfg",
     "tokio_unstable",
+    "--cfg",
+    "tokio_taskdump",
 ]
 
 [package.metadata.playground]
@@ -59,7 +69,7 @@ version = "1.0.0"
 optional = true
 
 [dependencies.mio]
-version = "0.8.4"
+version = "0.8.9"
 optional = true
 default-features = false
 
@@ -72,10 +82,10 @@ version = "0.12.0"
 optional = true
 
 [dependencies.pin-project-lite]
-version = "0.2.0"
+version = "0.2.11"
 
 [dependencies.tokio-macros]
-version = "~2.1.0"
+version = "~2.2.0"
 optional = true
 
 [dev-dependencies.async-stream]
@@ -93,9 +103,6 @@ version = "0.1"
 
 [dev-dependencies.tokio-test]
 version = "0.4.0"
-
-[build-dependencies.autocfg]
-version = "1.1"
 
 [features]
 default = []
@@ -154,7 +161,6 @@ signal = [
     "windows-sys/Win32_Foundation",
     "windows-sys/Win32_System_Console",
 ]
-stats = []
 sync = []
 test-util = [
     "rt",
@@ -163,40 +169,36 @@ test-util = [
 ]
 time = []
 
-[target."cfg(all(any(target_arch = \"wasm32\", target_arch = \"wasm64\"), not(target_os = \"wasi\")))".dev-dependencies.wasm-bindgen-test]
+[target."cfg(all(target_family = \"wasm\", not(target_os = \"wasi\")))".dev-dependencies.wasm-bindgen-test]
 version = "0.3.0"
 
-[target."cfg(docsrs)".dependencies.windows-sys]
-version = "0.48"
-features = [
-    "Win32_Foundation",
-    "Win32_Security_Authorization",
-]
-
 [target."cfg(loom)".dev-dependencies.loom]
-version = "0.5.2"
+version = "0.7"
 features = [
     "futures",
     "checkpoint",
 ]
 
-[target."cfg(not(all(any(target_arch = \"wasm32\", target_arch = \"wasm64\"), target_os = \"unknown\")))".dev-dependencies.rand]
+[target."cfg(not(all(target_family = \"wasm\", target_os = \"unknown\")))".dev-dependencies.rand]
 version = "0.8.0"
 
-[target."cfg(not(any(target_arch = \"wasm32\", target_arch = \"wasm64\")))".dependencies.socket2]
-version = "0.4.9"
+[target."cfg(not(target_family = \"wasm\"))".dependencies.socket2]
+version = "0.5.5"
 features = ["all"]
 optional = true
 
-[target."cfg(not(any(target_arch = \"wasm32\", target_arch = \"wasm64\")))".dev-dependencies.socket2]
-version = "0.4.9"
+[target."cfg(not(target_family = \"wasm\"))".dev-dependencies.socket2]
+version = "0.5.5"
 
-[target."cfg(not(any(target_arch = \"wasm32\", target_arch = \"wasm64\")))".dev-dependencies.tempfile]
+[target."cfg(not(target_family = \"wasm\"))".dev-dependencies.tempfile]
 version = "3.1.0"
 
 [target."cfg(target_os = \"freebsd\")".dev-dependencies.mio-aio]
-version = "0.7.0"
+version = "0.8.0"
 features = ["tokio"]
+
+[target."cfg(tokio_taskdump)".dependencies.backtrace]
+version = "0.3.58"
 
 [target."cfg(tokio_unstable)".dependencies.tracing]
 version = "0.1.25"
@@ -205,7 +207,7 @@ optional = true
 default-features = false
 
 [target."cfg(unix)".dependencies.libc]
-version = "0.2.42"
+version = "0.2.149"
 optional = true
 
 [target."cfg(unix)".dependencies.signal-hook-registry]
@@ -213,10 +215,10 @@ version = "1.1.1"
 optional = true
 
 [target."cfg(unix)".dev-dependencies.libc]
-version = "0.2.42"
+version = "0.2.149"
 
 [target."cfg(unix)".dev-dependencies.nix]
-version = "0.26"
+version = "0.27.1"
 features = [
     "fs",
     "socket",
@@ -226,3 +228,10 @@ default-features = false
 [target."cfg(windows)".dependencies.windows-sys]
 version = "0.48"
 optional = true
+
+[target."cfg(windows)".dev-dependencies.windows-sys]
+version = "0.48"
+features = [
+    "Win32_Foundation",
+    "Win32_Security_Authorization",
+]

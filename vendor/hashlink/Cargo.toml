@@ -12,12 +12,15 @@
 [package]
 edition = "2018"
 name = "hashlink"
-version = "0.8.3"
+version = "0.8.4"
 authors = ["kyren <kerriganw@gmail.com>"]
 description = "HashMap-like containers that hold their key-value pairs in a user controllable order"
 documentation = "https://docs.rs/hashlink"
 readme = "README.md"
-keywords = ["data-structures"]
+keywords = [
+    "data-structures",
+    "no_std",
+]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/kyren/hashlink"
 
@@ -27,6 +30,7 @@ version = "0.14"
 [dependencies.serde]
 version = "1.0"
 optional = true
+default-features = false
 
 [dev-dependencies.rustc-hash]
 version = "1.1"

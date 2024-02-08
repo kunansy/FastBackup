@@ -2,15 +2,15 @@ use super::compression::{decompress, CompressionEncoding};
 use super::{DecodeBuf, Decoder, DEFAULT_MAX_RECV_MESSAGE_SIZE, HEADER_SIZE};
 use crate::{body::BoxBody, metadata::MetadataMap, Code, Status};
 use bytes::{Buf, BufMut, BytesMut};
-use futures_core::Stream;
-use futures_util::{future, ready};
 use http::StatusCode;
 use http_body::Body;
 use std::{
-    fmt,
+    fmt, future,
     pin::Pin,
+    task::ready,
     task::{Context, Poll},
 };
+use tokio_stream::Stream;
 use tracing::{debug, trace};
 
 const BUFFER_SIZE: usize = 8 * 1024;
@@ -253,7 +253,7 @@ impl StreamingInner {
         } else {
             // FIXME: improve buf usage.
             if self.buf.has_remaining() {
-                trace!("unexpected EOF decoding stream");
+                trace!("unexpected EOF decoding stream, state: {:?}", self.state);
                 Err(Status::new(
                     Code::Internal,
                     "Unexpected EOF decoding stream.".to_string(),

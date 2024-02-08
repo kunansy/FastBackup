@@ -2,6 +2,8 @@
 
 use core::time::Duration as StdDuration;
 
+use num_conv::prelude::*;
+
 use crate::convert::*;
 use crate::Duration;
 
@@ -117,31 +119,31 @@ impl NumericalDuration for f64 {
     }
 
     fn microseconds(self) -> Duration {
-        Duration::nanoseconds((self * Nanosecond.per(Microsecond) as Self) as _)
+        Duration::nanoseconds((self * Nanosecond::per(Microsecond) as Self) as _)
     }
 
     fn milliseconds(self) -> Duration {
-        Duration::nanoseconds((self * Nanosecond.per(Millisecond) as Self) as _)
+        Duration::nanoseconds((self * Nanosecond::per(Millisecond) as Self) as _)
     }
 
     fn seconds(self) -> Duration {
-        Duration::nanoseconds((self * Nanosecond.per(Second) as Self) as _)
+        Duration::nanoseconds((self * Nanosecond::per(Second) as Self) as _)
     }
 
     fn minutes(self) -> Duration {
-        Duration::nanoseconds((self * Nanosecond.per(Minute) as Self) as _)
+        Duration::nanoseconds((self * Nanosecond::per(Minute) as Self) as _)
     }
 
     fn hours(self) -> Duration {
-        Duration::nanoseconds((self * Nanosecond.per(Hour) as Self) as _)
+        Duration::nanoseconds((self * Nanosecond::per(Hour) as Self) as _)
     }
 
     fn days(self) -> Duration {
-        Duration::nanoseconds((self * Nanosecond.per(Day) as Self) as _)
+        Duration::nanoseconds((self * Nanosecond::per(Day) as Self) as _)
     }
 
     fn weeks(self) -> Duration {
-        Duration::nanoseconds((self * Nanosecond.per(Week) as Self) as _)
+        Duration::nanoseconds((self * Nanosecond::per(Week) as Self) as _)
     }
 }
 // endregion NumericalDuration
@@ -219,62 +221,137 @@ impl NumericalStdDuration for u64 {
         StdDuration::from_secs(self)
     }
 
+    /// # Panics
+    ///
+    /// This may panic if an overflow occurs.
     fn std_minutes(self) -> StdDuration {
-        StdDuration::from_secs(self * Second.per(Minute) as Self)
+        StdDuration::from_secs(
+            self.checked_mul(Second::per(Minute).extend())
+                .expect("overflow constructing `time::Duration`"),
+        )
     }
 
+    /// # Panics
+    ///
+    /// This may panic if an overflow occurs.
     fn std_hours(self) -> StdDuration {
-        StdDuration::from_secs(self * Second.per(Hour) as Self)
+        StdDuration::from_secs(
+            self.checked_mul(Second::per(Hour).extend())
+                .expect("overflow constructing `time::Duration`"),
+        )
     }
 
+    /// # Panics
+    ///
+    /// This may panic if an overflow occurs.
     fn std_days(self) -> StdDuration {
-        StdDuration::from_secs(self * Second.per(Day) as Self)
+        StdDuration::from_secs(
+            self.checked_mul(Second::per(Day).extend())
+                .expect("overflow constructing `time::Duration`"),
+        )
     }
 
+    /// # Panics
+    ///
+    /// This may panic if an overflow occurs.
     fn std_weeks(self) -> StdDuration {
-        StdDuration::from_secs(self * Second.per(Week) as Self)
+        StdDuration::from_secs(
+            self.checked_mul(Second::per(Week).extend())
+                .expect("overflow constructing `time::Duration`"),
+        )
     }
 }
 
 impl NumericalStdDuration for f64 {
+    /// # Panics
+    ///
+    /// This will panic if self is negative.
     fn std_nanoseconds(self) -> StdDuration {
         assert!(self >= 0.);
         StdDuration::from_nanos(self as _)
     }
 
+    /// # Panics
+    ///
+    /// This will panic if self is negative.
     fn std_microseconds(self) -> StdDuration {
         assert!(self >= 0.);
-        StdDuration::from_nanos((self * Nanosecond.per(Microsecond) as Self) as _)
+        StdDuration::from_nanos((self * Nanosecond::per(Microsecond) as Self) as _)
     }
 
+    /// # Panics
+    ///
+    /// This will panic if self is negative.
     fn std_milliseconds(self) -> StdDuration {
         assert!(self >= 0.);
-        StdDuration::from_nanos((self * Nanosecond.per(Millisecond) as Self) as _)
+        StdDuration::from_nanos((self * Nanosecond::per(Millisecond) as Self) as _)
     }
 
+    /// # Panics
+    ///
+    /// This will panic if self is negative.
     fn std_seconds(self) -> StdDuration {
         assert!(self >= 0.);
-        StdDuration::from_nanos((self * Nanosecond.per(Second) as Self) as _)
+        StdDuration::from_nanos((self * Nanosecond::per(Second) as Self) as _)
     }
 
+    /// # Panics
+    ///
+    /// This will panic if self is negative.
     fn std_minutes(self) -> StdDuration {
         assert!(self >= 0.);
-        StdDuration::from_nanos((self * Nanosecond.per(Minute) as Self) as _)
+        StdDuration::from_nanos((self * Nanosecond::per(Minute) as Self) as _)
     }
 
+    /// # Panics
+    ///
+    /// This will panic if self is negative.
     fn std_hours(self) -> StdDuration {
         assert!(self >= 0.);
-        StdDuration::from_nanos((self * Nanosecond.per(Hour) as Self) as _)
+        StdDuration::from_nanos((self * Nanosecond::per(Hour) as Self) as _)
     }
 
+    /// # Panics
+    ///
+    /// This will panic if self is negative.
     fn std_days(self) -> StdDuration {
         assert!(self >= 0.);
-        StdDuration::from_nanos((self * Nanosecond.per(Day) as Self) as _)
+        StdDuration::from_nanos((self * Nanosecond::per(Day) as Self) as _)
     }
 
+    /// # Panics
+    ///
+    /// This will panic if self is negative.
     fn std_weeks(self) -> StdDuration {
         assert!(self >= 0.);
-        StdDuration::from_nanos((self * Nanosecond.per(Week) as Self) as _)
+        StdDuration::from_nanos((self * Nanosecond::per(Week) as Self) as _)
     }
 }
 // endregion NumericalStdDuration
+
+// region: DigitCount
+/// A trait that indicates the formatted width of the value can be determined.
+///
+/// Note that this should not be implemented for any signed integers. This forces the caller to
+/// write the sign if desired.
+pub(crate) trait DigitCount {
+    /// The number of digits in the stringified value.
+    fn num_digits(self) -> u8;
+}
+
+/// A macro to generate implementations of `DigitCount` for unsigned integers.
+macro_rules! impl_digit_count {
+    ($($t:ty),* $(,)?) => {
+        $(impl DigitCount for $t {
+            fn num_digits(self) -> u8 {
+                match self.checked_ilog10() {
+                    Some(n) => n.truncate::<u8>() + 1,
+                    None => 1,
+                }
+            }
+        })*
+    };
+}
+
+impl_digit_count!(u8, u16, u32);
+// endregion DigitCount

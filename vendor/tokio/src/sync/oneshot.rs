@@ -59,7 +59,7 @@
 //! }
 //! ```
 //!
-//! To use a oneshot channel in a `tokio::select!` loop, add `&mut` in front of
+//! To use a `oneshot` channel in a `tokio::select!` loop, add `&mut` in front of
 //! the channel.
 //!
 //! ```
@@ -330,7 +330,7 @@ pub struct Receiver<T> {
 }
 
 pub mod error {
-    //! Oneshot error types.
+    //! `Oneshot` error types.
 
     use std::fmt;
 
@@ -473,6 +473,7 @@ pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
         let location = std::panic::Location::caller();
 
         let resource_span = tracing::trace_span!(
+            parent: None,
             "runtime.resource",
             concrete_type = "Sender|Receiver",
             kind = "Sync",
@@ -554,8 +555,8 @@ impl<T> Sender<T> {
     /// Attempts to send a value on this channel, returning it back if it could
     /// not be sent.
     ///
-    /// This method consumes `self` as only one value may ever be sent on a oneshot
-    /// channel. It is not marked async because sending a message to an oneshot
+    /// This method consumes `self` as only one value may ever be sent on a `oneshot`
+    /// channel. It is not marked async because sending a message to an `oneshot`
     /// channel never requires any form of waiting.  Because of this, the `send`
     /// method can be used in both synchronous and asynchronous code without
     /// problems.
@@ -712,7 +713,7 @@ impl<T> Sender<T> {
         #[cfg(not(all(tokio_unstable, feature = "tracing")))]
         let closed = poll_fn(|cx| self.poll_closed(cx));
 
-        closed.await
+        closed.await;
     }
 
     /// Returns `true` if the associated [`Receiver`] handle has been dropped.
@@ -749,7 +750,7 @@ impl<T> Sender<T> {
         state.is_closed()
     }
 
-    /// Checks whether the oneshot channel has been closed, and if not, schedules the
+    /// Checks whether the `oneshot` channel has been closed, and if not, schedules the
     /// `Waker` in the provided `Context` to receive a notification when the channel is
     /// closed.
     ///
@@ -790,6 +791,8 @@ impl<T> Sender<T> {
     /// }
     /// ```
     pub fn poll_closed(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        ready!(crate::trace::trace_leaf(cx));
+
         // Keep track of task budget
         let coop = ready!(crate::runtime::coop::poll_proceed(cx));
 
@@ -799,7 +802,7 @@ impl<T> Sender<T> {
 
         if state.is_closed() {
             coop.made_progress();
-            return Poll::Ready(());
+            return Ready(());
         }
 
         if state.is_tx_task_set() {
@@ -1130,6 +1133,7 @@ impl<T> Inner<T> {
     }
 
     fn poll_recv(&self, cx: &mut Context<'_>) -> Poll<Result<T, RecvError>> {
+        ready!(crate::trace::trace_leaf(cx));
         // Keep track of task budget
         let coop = ready!(crate::runtime::coop::poll_proceed(cx));
 

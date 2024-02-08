@@ -17,7 +17,7 @@ use crate::types::Type;
 /// Returned from [`query_scalar`].
 #[must_use = "query must be executed to affect database"]
 pub struct QueryScalar<'q, DB: Database, O, A> {
-    inner: QueryAs<'q, DB, (O,), A>,
+    pub(crate) inner: QueryAs<'q, DB, (O,), A>,
 }
 
 impl<'q, DB: Database, O: Send, A: Send> Execute<'q, DB> for QueryScalar<'q, DB, O, A>
@@ -188,7 +188,7 @@ where
 }
 
 // Make a SQL query from a statement, that is mapped to a concrete value.
-pub(crate) fn query_statement_scalar<'q, DB, O>(
+pub fn query_statement_scalar<'q, DB, O>(
     statement: &'q <DB as HasStatement<'q>>::Statement,
 ) -> QueryScalar<'q, DB, O, <DB as HasArguments<'_>>::Arguments>
 where
@@ -201,7 +201,7 @@ where
 }
 
 // Make a SQL query from a statement, with the given arguments, that is mapped to a concrete value.
-pub(crate) fn query_statement_scalar_with<'q, DB, O, A>(
+pub fn query_statement_scalar_with<'q, DB, O, A>(
     statement: &'q <DB as HasStatement<'q>>::Statement,
     arguments: A,
 ) -> QueryScalar<'q, DB, O, A>

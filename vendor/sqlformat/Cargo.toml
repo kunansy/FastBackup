@@ -13,7 +13,7 @@
 edition = "2021"
 rust-version = "1.56"
 name = "sqlformat"
-version = "0.2.1"
+version = "0.2.3"
 authors = ["Josh Holmer <jholmer.in@gmail.com>"]
 description = "Formats whitespace in a SQL string to make it easier to read"
 homepage = "https://github.com/shssoichiro/sqlformat-rs"
@@ -29,7 +29,7 @@ name = "bench"
 harness = false
 
 [dependencies.itertools]
-version = "0.10"
+version = "0.12"
 
 [dependencies.nom]
 version = "7.0.0"
@@ -38,7 +38,7 @@ version = "7.0.0"
 version = "0.1.1"
 
 [dev-dependencies.criterion]
-version = "0.3"
+version = "0.5"
 
 [dev-dependencies.indoc]
-version = "1.0"
+version = "2.0"

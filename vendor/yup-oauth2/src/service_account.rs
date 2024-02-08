@@ -16,20 +16,17 @@
 use crate::error::Error;
 use crate::types::TokenInfo;
 
-use std::{io, path::PathBuf, error::Error as StdError};
+use std::{error::Error as StdError, io, path::PathBuf};
 
+use base64::Engine as _;
+use http::Uri;
 use hyper::client::connect::Connection;
 use hyper::header;
-use http::Uri;
-use rustls::{
-    self,
-    sign::{self, SigningKey},
-    PrivateKey,
-};
+use rustls::{self, crypto::ring::sign, pki_types::PrivateKeyDer, sign::SigningKey};
 use serde::{Deserialize, Serialize};
+use time::OffsetDateTime;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tower_service::Service;
-use time::OffsetDateTime;
 use url::form_urlencoded;
 
 const GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:jwt-bearer";
@@ -37,17 +34,17 @@ const GOOGLE_RS256_HEAD: &str = r#"{"alg":"RS256","typ":"JWT"}"#;
 
 /// Encodes s as Base64
 fn append_base64<T: AsRef<[u8]> + ?Sized>(s: &T, out: &mut String) {
-    base64::encode_config_buf(s, base64::URL_SAFE, out)
+    base64::engine::general_purpose::URL_SAFE.encode_string(s, out)
 }
 
 /// Decode a PKCS8 formatted RSA key.
-fn decode_rsa_key(pem_pkcs8: &str) -> Result<PrivateKey, io::Error> {
+fn decode_rsa_key(pem_pkcs8: &str) -> Result<PrivateKeyDer, io::Error> {
     let private_keys = rustls_pemfile::pkcs8_private_keys(&mut pem_pkcs8.as_bytes());
 
     match private_keys {
         Ok(mut keys) if !keys.is_empty() => {
             keys.truncate(1);
-            Ok(rustls::PrivateKey(keys.remove(0)))
+            Ok(PrivateKeyDer::Pkcs8(keys.remove(0).into()))
         }
         Ok(_) => Err(io::Error::new(
             io::ErrorKind::InvalidInput,

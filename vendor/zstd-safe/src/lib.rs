@@ -19,6 +19,8 @@
 //! `experimental` feature.
 #![cfg_attr(feature = "doc-cfg", feature(doc_cfg))]
 
+// TODO: Use alloc feature instead to implement stuff for Vec
+// TODO: What about Cursor?
 #[cfg(feature = "std")]
 extern crate std;
 
@@ -33,12 +35,7 @@ pub use zstd_sys::ZSTD_strategy as Strategy;
 
 /// Reset directive.
 // pub use zstd_sys::ZSTD_ResetDirective as ResetDirective;
-
-#[cfg(feature = "std")]
-use std::os::raw::{c_char, c_int, c_ulonglong, c_void};
-
-#[cfg(not(feature = "std"))]
-use libc::{c_char, c_int, c_ulonglong, c_void};
+use core::ffi::{c_char, c_int, c_ulonglong, c_void};
 
 use core::marker::PhantomData;
 use core::num::{NonZeroU32, NonZeroU64};
@@ -147,7 +144,7 @@ pub fn max_c_level() -> CompressionLevel {
 /// Wraps the `ZSTD_compress` function.
 ///
 /// This will try to compress `src` entirely and write the result to `dst`, returning the number of
-/// bytes written.
+/// bytes written. If `dst` is too small to hold the compressed content, an error will be returned.
 ///
 /// For streaming operations that don't require to store the entire input/ouput in memory, see
 /// `compress_stream`.
@@ -171,6 +168,13 @@ pub fn compress<C: WriteBuf + ?Sized>(
 }
 
 /// Wraps the `ZSTD_decompress` function.
+///
+/// This is a one-step decompression (not streaming).
+///
+/// You will need to make sure `dst` is large enough to store all the decompressed content, or an
+/// error will be returned.
+///
+/// If decompression was a success, the number of bytes written will be returned.
 pub fn decompress<C: WriteBuf + ?Sized>(
     dst: &mut C,
     src: &[u8],
@@ -817,22 +821,9 @@ unsafe impl<'a> Send for CCtx<'a> {}
 // CCtx can't be shared across threads, so it does not implement Sync.
 
 unsafe fn c_char_to_str(text: *const c_char) -> &'static str {
-    #[cfg(not(feature = "std"))]
-    {
-        // To be safe, we need to compute right now its length
-        let len = libc::strlen(text);
-        // Cast it to a slice
-        let slice = core::slice::from_raw_parts(text as *mut u8, len);
-        // And hope it's still text.
-        str::from_utf8(slice).expect("bad error message from zstd")
-    }
-
-    #[cfg(feature = "std")]
-    {
-        std::ffi::CStr::from_ptr(text)
-            .to_str()
-            .expect("bad error message from zstd")
-    }
+    core::ffi::CStr::from_ptr(text)
+        .to_str()
+        .expect("bad error message from zstd")
 }
 
 /// Returns the error string associated with an error code.
@@ -1665,7 +1656,7 @@ unsafe impl<'a> WriteBuf for OutBuffer<'a, [u8]> {
 ///
 /// `pos <= dst.capacity()`
 pub struct OutBuffer<'a, C: WriteBuf + ?Sized> {
-    pub dst: &'a mut C,
+    dst: &'a mut C,
     pos: usize,
 }
 
@@ -1720,8 +1711,16 @@ impl<'a, C: WriteBuf + ?Sized> OutBuffer<'a, C> {
     }
 
     /// Returns the current cursor position.
+    ///
+    /// Guaranteed to be <= self.capacity()
     pub fn pos(&self) -> usize {
+        assert!(self.pos <= self.dst.capacity());
         self.pos
+    }
+
+    /// Returns the capacity of the underlying buffer.
+    pub fn capacity(&self) -> usize {
+        self.dst.capacity()
     }
 
     /// Sets the new cursor position.
@@ -1761,6 +1760,11 @@ impl<'a, C: WriteBuf + ?Sized> OutBuffer<'a, C> {
     {
         let pos = self.pos;
         &self.dst.as_slice()[..pos]
+    }
+
+    /// Returns a pointer to the start of this buffer.
+    pub fn as_mut_ptr(&mut self) -> *mut u8 {
+        self.dst.as_mut_ptr()
     }
 }
 

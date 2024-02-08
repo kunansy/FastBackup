@@ -23,6 +23,7 @@ enum Enum<T, U> {
 #[allow(clippy::type_repetition_in_bounds)]
 #[allow(dead_code)]
 #[allow(clippy::mut_mut)]
+#[allow(clippy::missing_docs_in_private_items)]
 enum EnumProj<'pin, T, U>
 where
     Enum<T, U>: 'pin,
@@ -53,6 +54,7 @@ where
 #[allow(clippy::type_repetition_in_bounds)]
 #[allow(dead_code)]
 #[allow(clippy::ref_option_ref)]
+#[allow(clippy::missing_docs_in_private_items)]
 enum EnumProjRef<'pin, T, U>
 where
     Enum<T, U>: 'pin,
@@ -82,6 +84,7 @@ where
 #[allow(clippy::redundant_pub_crate)]
 #[allow(clippy::type_repetition_in_bounds)]
 #[allow(dead_code)]
+#[allow(clippy::missing_docs_in_private_items)]
 #[allow(variant_size_differences)]
 #[allow(clippy::large_enum_variant)]
 enum EnumProjOwn<T, U> {
@@ -118,6 +121,7 @@ const _: () = {
     extern crate pin_project as _pin_project;
     impl<T, U> Enum<T, U> {
         #[allow(dead_code)]
+        #[inline]
         fn project<'pin>(
             self: _pin_project::__private::Pin<&'pin mut Self>,
         ) -> EnumProj<'pin, T, U> {
@@ -149,6 +153,7 @@ const _: () = {
         }
         #[allow(dead_code)]
         #[allow(clippy::missing_const_for_fn)]
+        #[inline]
         fn project_ref<'pin>(
             self: _pin_project::__private::Pin<&'pin Self>,
         ) -> EnumProjRef<'pin, T, U> {
@@ -179,6 +184,7 @@ const _: () = {
             }
         }
         #[allow(dead_code)]
+        #[inline]
         fn project_replace(
             self: _pin_project::__private::Pin<&mut Self>,
             __replacement: Self,

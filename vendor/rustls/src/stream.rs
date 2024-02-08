@@ -1,7 +1,7 @@
 use crate::conn::{ConnectionCommon, SideData};
 
+use core::ops::{Deref, DerefMut};
 use std::io::{IoSlice, Read, Result, Write};
-use std::ops::{Deref, DerefMut};
 
 /// This type implements `io::Read` and `io::Write`, encapsulating
 /// a Connection `C` and an underlying transport `T`, such as a socket.
@@ -55,17 +55,9 @@ where
         // We call complete_io() in a loop since a single call may read only
         // a partial packet from the underlying transport. A full packet is
         // needed to get more plaintext, which we must do if EOF has not been
-        // hit. Otherwise, we will prematurely signal EOF by returning 0. We
-        // determine if EOF has actually been hit by checking if 0 bytes were
-        // read from the underlying transport.
+        // hit.
         while self.conn.wants_read() {
-            let at_eof = self.conn.complete_io(self.sock)?.0 == 0;
-            if at_eof {
-                if let Ok(io_state) = self.conn.process_new_packets() {
-                    if at_eof && io_state.plaintext_bytes_to_read() == 0 {
-                        return Ok(0);
-                    }
-                }
+            if self.conn.complete_io(self.sock)?.0 == 0 {
                 break;
             }
         }
@@ -74,23 +66,15 @@ where
     }
 
     #[cfg(read_buf)]
-    fn read_buf(&mut self, cursor: std::io::BorrowedCursor<'_>) -> Result<()> {
+    fn read_buf(&mut self, cursor: core::io::BorrowedCursor<'_>) -> Result<()> {
         self.complete_prior_io()?;
 
         // We call complete_io() in a loop since a single call may read only
         // a partial packet from the underlying transport. A full packet is
         // needed to get more plaintext, which we must do if EOF has not been
-        // hit. Otherwise, we will prematurely signal EOF by returning without
-        // writing anything. We determine if EOF has actually been hit by
-        // checking if 0 bytes were read from the underlying transport.
+        // hit.
         while self.conn.wants_read() {
-            let at_eof = self.conn.complete_io(self.sock)?.0 == 0;
-            if at_eof {
-                if let Ok(io_state) = self.conn.process_new_packets() {
-                    if at_eof && io_state.plaintext_bytes_to_read() == 0 {
-                        return Ok(());
-                    }
-                }
+            if self.conn.complete_io(self.sock)?.0 == 0 {
                 break;
             }
         }
@@ -183,6 +167,11 @@ where
     pub fn get_mut(&mut self) -> &mut T {
         &mut self.sock
     }
+
+    /// Extract the `conn` and `sock` parts from the `StreamOwned`
+    pub fn into_parts(self) -> (C, T) {
+        (self.conn, self.sock)
+    }
 }
 
 impl<'a, C, T, S> StreamOwned<C, T>
@@ -210,7 +199,7 @@ where
     }
 
     #[cfg(read_buf)]
-    fn read_buf(&mut self, cursor: std::io::BorrowedCursor<'_>) -> Result<()> {
+    fn read_buf(&mut self, cursor: core::io::BorrowedCursor<'_>) -> Result<()> {
         self.as_stream().read_buf(cursor)
     }
 }

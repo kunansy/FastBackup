@@ -47,7 +47,7 @@ cfg_io_driver! {
     /// This clears the readiness state until a new readiness event is received.
     ///
     /// This allows the caller to implement additional functions. For example,
-    /// [`TcpListener`] implements poll_accept by using [`poll_read_ready`] and
+    /// [`TcpListener`] implements `poll_accept` by using [`poll_read_ready`] and
     /// [`clear_readiness`].
     ///
     /// ## Platform-specific events
@@ -72,6 +72,9 @@ cfg_io_driver! {
 
 impl<E: Source> PollEvented<E> {
     /// Creates a new `PollEvented` associated with the default reactor.
+    ///
+    /// The returned `PollEvented` has readable and writable interests. For more control, use
+    /// [`Self::new_with_interest`].
     ///
     /// # Panics
     ///
@@ -121,7 +124,7 @@ impl<E: Source> PollEvented<E> {
     }
 
     /// Returns a reference to the registration.
-    #[cfg(any(feature = "net"))]
+    #[cfg(feature = "net")]
     pub(crate) fn registration(&self) -> &Registration {
         &self.registration
     }
@@ -132,6 +135,25 @@ impl<E: Source> PollEvented<E> {
         let mut inner = self.io.take().unwrap(); // As io shouldn't ever be None, just unwrap here.
         self.registration.deregister(&mut inner)?;
         Ok(inner)
+    }
+
+    #[cfg(all(feature = "process", target_os = "linux"))]
+    pub(crate) fn poll_read_ready(&self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.registration
+            .poll_read_ready(cx)
+            .map_err(io::Error::from)
+            .map_ok(|_| ())
+    }
+
+    /// Re-register under new runtime with `interest`.
+    #[cfg(all(feature = "process", target_os = "linux"))]
+    pub(crate) fn reregister(&mut self, interest: Interest) -> io::Result<()> {
+        let io = self.io.as_mut().unwrap(); // As io shouldn't ever be None, just unwrap here.
+        let _ = self.registration.deregister(io);
+        self.registration =
+            Registration::new_with_interest_and_handle(io, interest, scheduler::Handle::current())?;
+
+        Ok(())
     }
 }
 
@@ -162,8 +184,10 @@ feature! {
                 match self.io.as_ref().unwrap().read(b) {
                     Ok(n) => {
                         // if we read a partially full buffer, this is sufficient on unix to show
-                        // that the socket buffer has been drained
-                        if n > 0 && (!cfg!(windows) && n < len) {
+                        // that the socket buffer has been drained.  Unfortunately this assumption
+                        // fails for level-triggered selectors (like on Windows or poll even for
+                        // UNIX): https://github.com/tokio-rs/tokio/issues/5866
+                        if n > 0 && (!cfg!(windows) && !cfg!(mio_unsupported_force_poll_poll) && n < len) {
                             self.registration.clear_readiness(evt);
                         }
 
@@ -193,8 +217,10 @@ feature! {
                 match self.io.as_ref().unwrap().write(buf) {
                     Ok(n) => {
                         // if we write only part of our buffer, this is sufficient on unix to show
-                        // that the socket buffer is full
-                        if n > 0 && (!cfg!(windows) && n < buf.len()) {
+                        // that the socket buffer is full.  Unfortunately this assumption
+                        // fails for level-triggered selectors (like on Windows or poll even for
+                        // UNIX): https://github.com/tokio-rs/tokio/issues/5866
+                        if n > 0 && (!cfg!(windows) && !cfg!(mio_unsupported_force_poll_poll) && n < buf.len()) {
                             self.registration.clear_readiness(evt);
                         }
 

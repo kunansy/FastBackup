@@ -12,7 +12,7 @@ use std::task::{Context, Poll};
 use crate::runtime::Handle;
 #[cfg(tokio_unstable)]
 use crate::task::Id;
-use crate::task::{AbortHandle, JoinError, JoinHandle, LocalSet};
+use crate::task::{unconstrained, AbortHandle, JoinError, JoinHandle, LocalSet};
 use crate::util::IdleNotifiedSet;
 
 /// A collection of tasks spawned on a Tokio runtime.
@@ -306,6 +306,59 @@ impl<T: 'static> JoinSet<T> {
         crate::future::poll_fn(|cx| self.poll_join_next_with_id(cx)).await
     }
 
+    /// Tries to join one of the tasks in the set that has completed and return its output.
+    ///
+    /// Returns `None` if the set is empty.    
+    pub fn try_join_next(&mut self) -> Option<Result<T, JoinError>> {
+        // Loop over all notified `JoinHandle`s to find one that's ready, or until none are left.
+        loop {
+            let mut entry = self.inner.try_pop_notified()?;
+
+            let res = entry.with_value_and_context(|jh, ctx| {
+                // Since this function is not async and cannot be forced to yield, we should
+                // disable budgeting when we want to check for the `JoinHandle` readiness.
+                Pin::new(&mut unconstrained(jh)).poll(ctx)
+            });
+
+            if let Poll::Ready(res) = res {
+                let _entry = entry.remove();
+
+                return Some(res);
+            }
+        }
+    }
+
+    /// Tries to join one of the tasks in the set that has completed and return its output,
+    /// along with the [task ID] of the completed task.
+    ///
+    /// Returns `None` if the set is empty.
+    ///
+    /// When this method returns an error, then the id of the task that failed can be accessed
+    /// using the [`JoinError::id`] method.
+    ///
+    /// [task ID]: crate::task::Id
+    /// [`JoinError::id`]: fn@crate::task::JoinError::id
+    #[cfg(tokio_unstable)]
+    #[cfg_attr(docsrs, doc(cfg(tokio_unstable)))]
+    pub fn try_join_next_with_id(&mut self) -> Option<Result<(Id, T), JoinError>> {
+        // Loop over all notified `JoinHandle`s to find one that's ready, or until none are left.
+        loop {
+            let mut entry = self.inner.try_pop_notified()?;
+
+            let res = entry.with_value_and_context(|jh, ctx| {
+                // Since this function is not async and cannot be forced to yield, we should
+                // disable budgeting when we want to check for the `JoinHandle` readiness.
+                Pin::new(&mut unconstrained(jh)).poll(ctx)
+            });
+
+            if let Poll::Ready(res) = res {
+                let entry = entry.remove();
+
+                return Some(res.map(|output| (entry.id(), output)));
+            }
+        }
+    }
+
     /// Aborts all tasks and waits for them to finish shutting down.
     ///
     /// Calling this method is equivalent to calling [`abort_all`] and then calling [`join_next`] in
@@ -362,7 +415,7 @@ impl<T: 'static> JoinSet<T> {
     /// This can happen if the [coop budget] is reached.
     ///
     /// [coop budget]: crate::task#cooperative-scheduling
-    fn poll_join_next(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<T, JoinError>>> {
+    pub fn poll_join_next(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<T, JoinError>>> {
         // The call to `pop_notified` moves the entry to the `idle` list. It is moved back to
         // the `notified` list if the waker is notified in the `poll` call below.
         let mut entry = match self.inner.pop_notified(cx.waker()) {
@@ -419,7 +472,8 @@ impl<T: 'static> JoinSet<T> {
     /// [coop budget]: crate::task#cooperative-scheduling
     /// [task ID]: crate::task::Id
     #[cfg(tokio_unstable)]
-    fn poll_join_next_with_id(
+    #[cfg_attr(docsrs, doc(cfg(tokio_unstable)))]
+    pub fn poll_join_next_with_id(
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<(Id, T), JoinError>>> {

@@ -203,6 +203,12 @@ impl FromMeta for String {
     }
 }
 
+impl FromMeta for std::path::PathBuf {
+    fn from_string(s: &str) -> Result<Self> {
+        Ok(s.into())
+    }
+}
+
 /// Generate an impl of `FromMeta` that will accept strings which parse to numbers or
 /// integer literals.
 macro_rules! from_meta_num {
@@ -228,11 +234,13 @@ from_meta_num!(u8);
 from_meta_num!(u16);
 from_meta_num!(u32);
 from_meta_num!(u64);
+from_meta_num!(u128);
 from_meta_num!(usize);
 from_meta_num!(i8);
 from_meta_num!(i16);
 from_meta_num!(i32);
 from_meta_num!(i64);
+from_meta_num!(i128);
 from_meta_num!(isize);
 
 /// Generate an impl of `FromMeta` that will accept strings which parse to floats or
@@ -279,6 +287,9 @@ impl<T: syn::parse::Parse, P: syn::parse::Parse> FromMeta for syn::punctuated::P
 /// For backwards-compatibility to versions of `darling` based on `syn` 1,
 /// string literals will be "unwrapped" and their contents will be parsed
 /// as an expression.
+///
+/// See [`util::parse_expr`](crate::util::parse_expr) for functions to provide
+/// alternate parsing modes for this type.
 impl FromMeta for syn::Expr {
     fn from_expr(expr: &Expr) -> Result<Self> {
         if let syn::Expr::Lit(expr_lit) = expr {
@@ -300,6 +311,57 @@ impl FromMeta for syn::Expr {
                 .map_err(|_| Error::unknown_lit_str_value(v))
         } else {
             Err(Error::unexpected_lit_type(value))
+        }
+    }
+}
+
+/// Parser for paths that supports both quote-wrapped and bare values.
+impl FromMeta for syn::Path {
+    fn from_string(value: &str) -> Result<Self> {
+        syn::parse_str(value).map_err(|_| Error::unknown_value(value))
+    }
+
+    fn from_value(value: &::syn::Lit) -> Result<Self> {
+        if let ::syn::Lit::Str(ref v) = *value {
+            v.parse().map_err(|_| Error::unknown_lit_str_value(v))
+        } else {
+            Err(Error::unexpected_lit_type(value))
+        }
+    }
+
+    fn from_expr(expr: &Expr) -> Result<Self> {
+        match expr {
+            Expr::Lit(lit) => Self::from_value(&lit.lit),
+            Expr::Path(path) => Ok(path.path.clone()),
+            _ => Err(Error::unexpected_expr_type(expr)),
+        }
+    }
+}
+
+impl FromMeta for syn::Ident {
+    fn from_string(value: &str) -> Result<Self> {
+        syn::parse_str(value).map_err(|_| Error::unknown_value(value))
+    }
+
+    fn from_value(value: &syn::Lit) -> Result<Self> {
+        if let syn::Lit::Str(ref v) = *value {
+            v.parse().map_err(|_| Error::unknown_lit_str_value(v))
+        } else {
+            Err(Error::unexpected_lit_type(value))
+        }
+    }
+
+    fn from_expr(expr: &Expr) -> Result<Self> {
+        match expr {
+            Expr::Lit(lit) => Self::from_value(&lit.lit),
+            // All idents are paths, but not all paths are idents -
+            // the get_ident() method does additional validation to
+            // make sure the path is actually an ident.
+            Expr::Path(path) => match path.path.get_ident() {
+                Some(ident) => Ok(ident.clone()),
+                None => Err(Error::unexpected_expr_type(expr)),
+            },
+            _ => Err(Error::unexpected_expr_type(expr)),
         }
     }
 }
@@ -342,7 +404,8 @@ macro_rules! from_syn_expr_type {
 from_syn_expr_type!(syn::ExprArray, Array);
 from_syn_expr_type!(syn::ExprPath, Path);
 
-/// Adapter from `syn::parse::Parse` to `FromMeta`.
+/// Adapter from `syn::parse::Parse` to `FromMeta` for items that cannot
+/// be expressed in a [`syn::MetaNameValue`].
 ///
 /// This cannot be a blanket impl, due to the `syn::Lit` family's need to handle non-string values.
 /// Therefore, we use a macro and a lot of impls.
@@ -365,8 +428,6 @@ macro_rules! from_syn_parse {
     };
 }
 
-from_syn_parse!(syn::Ident);
-from_syn_parse!(syn::Path);
 from_syn_parse!(syn::Type);
 from_syn_parse!(syn::TypeArray);
 from_syn_parse!(syn::TypeBareFn);
@@ -741,6 +802,14 @@ mod tests {
     }
 
     #[test]
+    fn pathbuf_succeeds() {
+        assert_eq!(
+            fm::<std::path::PathBuf>(quote!(ignore = r#"C:\"#)),
+            std::path::PathBuf::from(r#"C:\"#)
+        );
+    }
+
+    #[test]
     #[allow(clippy::float_cmp)] // we want exact equality
     fn number_succeeds() {
         assert_eq!(fm::<u8>(quote!(ignore = "2")), 2u8);
@@ -902,10 +971,36 @@ mod tests {
     }
 
     #[test]
+    fn test_expr_without_quotes() {
+        fm::<syn::Expr>(quote!(ignore = x + y));
+        fm::<syn::Expr>(quote!(ignore = an_object.method_call()));
+        fm::<syn::Expr>(quote!(
+            ignore = {
+                a_statement();
+                in_a_block
+            }
+        ));
+    }
+
+    #[test]
     fn test_expr_path() {
         fm::<syn::ExprPath>(quote!(ignore = "std::mem::replace"));
         fm::<syn::ExprPath>(quote!(ignore = "x"));
         fm::<syn::ExprPath>(quote!(ignore = "example::<Test>"));
+    }
+
+    #[test]
+    fn test_expr_path_without_quotes() {
+        fm::<syn::ExprPath>(quote!(ignore = std::mem::replace));
+        fm::<syn::ExprPath>(quote!(ignore = x));
+        fm::<syn::ExprPath>(quote!(ignore = example::<Test>));
+    }
+
+    #[test]
+    fn test_path_without_quotes() {
+        fm::<syn::Path>(quote!(ignore = std::mem::replace));
+        fm::<syn::Path>(quote!(ignore = x));
+        fm::<syn::Path>(quote!(ignore = example::<Test>));
     }
 
     #[test]

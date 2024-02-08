@@ -83,15 +83,17 @@ use std::time::{Duration, Instant};
 mod executor;
 
 #[macro_use]
-mod maybe;
+pub mod maybe;
 
 mod connection;
 mod inner;
 mod options;
 
 pub use self::connection::PoolConnection;
-pub(crate) use self::maybe::MaybePoolConnection;
 pub use self::options::{PoolConnectionMetadata, PoolOptions};
+
+#[doc(hidden)]
+pub use self::maybe::MaybePoolConnection;
 
 /// An asynchronous pool of SQLx database connections.
 ///
@@ -139,6 +141,27 @@ pub use self::options::{PoolConnectionMetadata, PoolOptions};
 /// * [SqlitePool][crate::sqlite::SqlitePool] (SQLite)
 ///
 /// [web::Data]: https://docs.rs/actix-web/3/actix_web/web/struct.Data.html
+///
+/// ### Note: Drop Behavior
+/// Due to a lack of async `Drop`, dropping the last `Pool` handle may not immediately clean
+/// up connections by itself. The connections will be dropped locally, which is sufficient for
+/// SQLite, but for client/server databases like MySQL and Postgres, that only closes the
+/// client side of the connection. The server will not know the connection is closed until
+/// potentially much later: this is usually dictated by the TCP keepalive timeout in the server
+/// settings.
+///
+/// Because the connection may not be cleaned up immediately on the server side, you may run
+/// into errors regarding connection limits if you are creating and dropping many pools in short
+/// order.
+///
+/// We recommend calling [`.close().await`] to gracefully close the pool and its connections
+/// when you are done using it. This will also wake any tasks that are waiting on an `.acquire()`
+/// call, so for long-lived applications it's a good idea to call `.close()` during shutdown.
+///
+/// If you're writing tests, consider using `#[sqlx::test]` which handles the lifetime of
+/// the pool for you.
+///
+/// [`.close().await`]: Pool::close
 ///
 /// ### Why Use a Pool?
 ///
@@ -489,9 +512,26 @@ impl<DB: Database> Pool<DB> {
         self.0.num_idle()
     }
 
-    /// Get the connection options for this pool
-    pub fn connect_options(&self) -> &<DB::Connection as Connection>::Options {
-        &self.0.connect_options
+    /// Gets a clone of the connection options for this pool
+    pub fn connect_options(&self) -> Arc<<DB::Connection as Connection>::Options> {
+        self.0
+            .connect_options
+            .read()
+            .expect("write-lock holder panicked")
+            .clone()
+    }
+
+    /// Updates the connection options this pool will use when opening any future connections.  Any
+    /// existing open connection in the pool will be left as-is.
+    pub fn set_connect_options(&self, connect_options: <DB::Connection as Connection>::Options) {
+        // technically write() could also panic if the current thread already holds the lock,
+        // but because this method can't be re-entered by the same thread that shouldn't be a problem
+        let mut guard = self
+            .0
+            .connect_options
+            .write()
+            .expect("write-lock holder panicked");
+        *guard = Arc::new(connect_options);
     }
 
     /// Get the options for this pool
@@ -514,7 +554,11 @@ impl Pool<Any> {
     ///
     /// Determined by the connection URL.
     pub fn any_kind(&self) -> AnyKind {
-        self.0.connect_options.kind()
+        self.0
+            .connect_options
+            .read()
+            .expect("write-lock holder panicked")
+            .kind()
     }
 }
 

@@ -154,7 +154,7 @@ impl<L: Link> LinkedList<L, L::Target> {
             if let Some(prev) = L::pointers(last).as_ref().get_prev() {
                 L::pointers(prev).as_mut().set_next(None);
             } else {
-                self.head = None
+                self.head = None;
             }
 
             L::pointers(last).as_mut().set_prev(None);
@@ -250,7 +250,7 @@ impl<L: Link> Default for LinkedList<L, L::Target> {
 
 // ===== impl DrainFilter =====
 
-cfg_io_readiness! {
+cfg_io_driver_impl! {
     pub(crate) struct DrainFilter<'a, T: Link, F> {
         list: &'a mut LinkedList<T, T::Target>,
         filter: F,
@@ -260,7 +260,7 @@ cfg_io_readiness! {
     impl<T: Link> LinkedList<T, T::Target> {
         pub(crate) fn drain_filter<F>(&mut self, filter: F) -> DrainFilter<'_, T, F>
         where
-            F: FnMut(&mut T::Target) -> bool,
+            F: FnMut(&T::Target) -> bool,
         {
             let curr = self.head;
             DrainFilter {
@@ -274,7 +274,7 @@ cfg_io_readiness! {
     impl<'a, T, F> Iterator for DrainFilter<'a, T, F>
     where
         T: Link,
-        F: FnMut(&mut T::Target) -> bool,
+        F: FnMut(&T::Target) -> bool,
     {
         type Item = T::Handle;
 
@@ -290,6 +290,25 @@ cfg_io_readiness! {
             }
 
             None
+        }
+    }
+}
+
+cfg_taskdump! {
+    impl<T: Link> LinkedList<T, T::Target> {
+        pub(crate) fn for_each<F>(&mut self, mut f: F)
+        where
+            F: FnMut(&T::Handle),
+        {
+            let mut next = self.head;
+
+            while let Some(curr) = next {
+                unsafe {
+                    let handle = ManuallyDrop::new(T::from_raw(curr));
+                    f(&handle);
+                    next = T::pointers(curr).as_ref().get_next();
+                }
+            }
         }
     }
 }

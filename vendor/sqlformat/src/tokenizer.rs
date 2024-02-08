@@ -10,18 +10,21 @@ use nom::{AsChar, Err, IResult};
 use std::borrow::Cow;
 use unicode_categories::UnicodeCategories;
 
-pub(crate) fn tokenize(mut input: &str) -> Vec<Token<'_>> {
+pub(crate) fn tokenize(mut input: &str, named_placeholders: bool) -> Vec<Token<'_>> {
     let mut tokens: Vec<Token> = Vec::new();
+
+    let mut last_reserved_token = None;
 
     // Keep processing the string until it is empty
     while let Ok(result) = get_next_token(
         input,
         tokens.last().cloned(),
-        tokens
-            .iter()
-            .rfind(|token| token.kind == TokenKind::Reserved)
-            .cloned(),
+        last_reserved_token.clone(),
+        named_placeholders,
     ) {
+        if result.1.kind == TokenKind::Reserved {
+            last_reserved_token = Some(result.1.clone());
+        }
         input = result.0;
 
         tokens.push(result.1);
@@ -83,15 +86,16 @@ fn get_next_token<'a>(
     input: &'a str,
     previous_token: Option<Token<'a>>,
     last_reserved_token: Option<Token<'a>>,
+    named_placeholders: bool,
 ) -> IResult<&'a str, Token<'a>> {
     get_whitespace_token(input)
         .or_else(|_| get_comment_token(input))
         .or_else(|_| get_string_token(input))
         .or_else(|_| get_open_paren_token(input))
         .or_else(|_| get_close_paren_token(input))
-        .or_else(|_| get_placeholder_token(input))
         .or_else(|_| get_number_token(input))
         .or_else(|_| get_reserved_word_token(input, previous_token, last_reserved_token))
+        .or_else(|_| get_placeholder_token(input, named_placeholders))
         .or_else(|_| get_word_token(input))
         .or_else(|_| get_operator_token(input))
 }
@@ -288,12 +292,23 @@ fn get_close_paren_token(input: &str) -> IResult<&str, Token<'_>> {
     })
 }
 
-fn get_placeholder_token(input: &str) -> IResult<&str, Token<'_>> {
-    alt((
-        get_ident_named_placeholder_token,
-        get_string_named_placeholder_token,
-        get_indexed_placeholder_token,
-    ))(input)
+fn get_placeholder_token(input: &str, named_placeholders: bool) -> IResult<&str, Token<'_>> {
+    // The precedence changes based on 'named_placeholders' but not the exhaustiveness.
+    // This is to ensure the formatting is the same even if parameters aren't used.
+
+    if named_placeholders {
+        alt((
+            get_ident_named_placeholder_token,
+            get_string_named_placeholder_token,
+            get_indexed_placeholder_token,
+        ))(input)
+    } else {
+        alt((
+            get_indexed_placeholder_token,
+            get_ident_named_placeholder_token,
+            get_string_named_placeholder_token,
+        ))(input)
+    }
 }
 
 fn get_indexed_placeholder_token(input: &str) -> IResult<&str, Token<'_>> {
@@ -327,7 +342,7 @@ fn get_indexed_placeholder_token(input: &str) -> IResult<&str, Token<'_>> {
 
 fn get_ident_named_placeholder_token(input: &str) -> IResult<&str, Token<'_>> {
     recognize(tuple((
-        alt((char('@'), char(':'))),
+        alt((char('@'), char(':'), char('$'))),
         take_while1(|item: char| {
             item.is_alphanumeric() || item == '.' || item == '_' || item == '$'
         }),
@@ -393,7 +408,7 @@ fn scientific_notation(input: &str) -> IResult<&str, &str> {
     recognize(tuple((
         alt((decimal_number, digit1)),
         tag("e"),
-        alt((tag("-"), tag("+"))),
+        alt((tag("-"), tag("+"), tag(""))),
         digit1,
     )))(input)
 }
@@ -528,11 +543,14 @@ fn get_newline_reserved_token<'a>(
 fn get_top_level_reserved_token_no_indent(input: &str) -> IResult<&str, Token<'_>> {
     let uc_input = get_uc_words(input, 2);
     let result: IResult<&str, &str> = alt((
+        terminated(tag("BEGIN"), end_of_word),
+        terminated(tag("DECLARE"), end_of_word),
         terminated(tag("INTERSECT"), end_of_word),
         terminated(tag("INTERSECT ALL"), end_of_word),
         terminated(tag("MINUS"), end_of_word),
         terminated(tag("UNION"), end_of_word),
         terminated(tag("UNION ALL"), end_of_word),
+        terminated(tag("$$"), end_of_word),
     ))(&uc_input);
     if let Ok((_, token)) = result {
         let final_word = token.split(' ').last().unwrap();
@@ -568,7 +586,6 @@ fn get_plain_reserved_token(input: &str) -> IResult<&str, Token<'_>> {
         terminated(tag("AUTOCOMMIT"), end_of_word),
         terminated(tag("AUTO_INCREMENT"), end_of_word),
         terminated(tag("BACKUP"), end_of_word),
-        terminated(tag("BEGIN"), end_of_word),
         terminated(tag("BETWEEN"), end_of_word),
         terminated(tag("BINLOG"), end_of_word),
         terminated(tag("BOTH"), end_of_word),

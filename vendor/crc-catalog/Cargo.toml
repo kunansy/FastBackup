@@ -12,7 +12,7 @@
 [package]
 edition = "2018"
 name = "crc-catalog"
-version = "2.2.0"
+version = "2.4.0"
 authors = ["Akhil Velagapudi <akhilvelagapudi@gmail.com>"]
 exclude = ["generate_catalog.sh"]
 description = "Catalog of CRC algorithms (generated from http://reveng.sourceforge.net/crc-catalogue) expressed as simple Rust structs."

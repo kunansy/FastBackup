@@ -4,7 +4,7 @@
 //! the "fs", "time", and "process" cargo features.
 //!
 //! ```sh
-//! RUSTFLAGS=--cfg=criterion cargo bench --features=fs,time,process
+//! RUSTFLAGS=--cfg=criterion cargo bench --features=fs,time,process,stdio
 //! ```
 
 #[cfg(any(
@@ -12,13 +12,17 @@
     not(feature = "fs"),
     not(feature = "process"),
     not(feature = "time"),
+    not(feature = "stdio"),
     windows,
     target_os = "emscripten",
     target_os = "redox",
     target_os = "wasi",
 ))]
 fn main() {
-    unimplemented!("Add --cfg=criterion to RUSTFLAGS and enable the \"fs\", \"time\", and \"process\" cargo features.")
+    unimplemented!(
+        "Add --cfg=criterion to RUSTFLAGS and enable the \"fs\", \"time\", \"process\", and \"stdio\" cargo \
+         features."
+    )
 }
 
 #[cfg(not(any(
@@ -26,6 +30,7 @@ fn main() {
     not(feature = "fs"),
     not(feature = "process"),
     not(feature = "time"),
+    not(feature = "stdio"),
     windows,
     target_os = "emscripten",
     target_os = "redox",
@@ -38,6 +43,7 @@ use criterion::{criterion_group, criterion_main};
     not(feature = "fs"),
     not(feature = "process"),
     not(feature = "time"),
+    not(feature = "stdio"),
     windows,
     target_os = "emscripten",
     target_os = "redox",
@@ -47,11 +53,11 @@ mod suite {
     use criterion::Criterion;
 
     pub(super) fn simple_statat(c: &mut Criterion) {
-        use rustix::fs::{cwd, statat, AtFlags};
+        use rustix::fs::{statat, AtFlags, CWD};
 
         c.bench_function("simple statat", |b| {
             b.iter(|| {
-                statat(cwd(), "/", AtFlags::empty()).unwrap();
+                statat(CWD, "/", AtFlags::empty()).unwrap();
             })
         });
     }
@@ -95,11 +101,32 @@ mod suite {
     }
 
     pub(super) fn simple_statat_cstr(c: &mut Criterion) {
-        use rustix::fs::{cwd, statat, AtFlags};
+        use rustix::fs::{statat, AtFlags, CWD};
 
         c.bench_function("simple statat cstr", |b| {
             b.iter(|| {
-                statat(cwd(), rustix::cstr!("/"), AtFlags::empty()).unwrap();
+                statat(CWD, rustix::cstr!("/"), AtFlags::empty()).unwrap();
+            })
+        });
+    }
+
+    pub(super) fn simple_fstat(c: &mut Criterion) {
+        use rustix::fs::fstat;
+
+        c.bench_function("simple fstat", |b| {
+            b.iter(|| {
+                fstat(rustix::stdio::stdin()).unwrap();
+            })
+        });
+    }
+
+    pub(super) fn simple_fstat_libc(c: &mut Criterion) {
+        c.bench_function("simple fstat libc", |b| {
+            b.iter(|| {
+                let mut s = std::mem::MaybeUninit::<libc::stat>::uninit();
+                unsafe {
+                    assert_eq!(libc::fstat(libc::STDIN_FILENO, s.as_mut_ptr()), 0);
+                }
             })
         });
     }
@@ -157,6 +184,7 @@ mod suite {
     not(feature = "fs"),
     not(feature = "process"),
     not(feature = "time"),
+    not(feature = "stdio"),
     windows,
     target_os = "emscripten",
     target_os = "redox",
@@ -168,6 +196,8 @@ criterion_group!(
     suite::simple_statat_libc,
     suite::simple_statat_libc_cstr,
     suite::simple_statat_cstr,
+    suite::simple_fstat,
+    suite::simple_fstat_libc,
     suite::simple_clock_gettime,
     suite::simple_clock_gettime_libc,
     suite::simple_getpid,
@@ -178,6 +208,7 @@ criterion_group!(
     not(feature = "fs"),
     not(feature = "process"),
     not(feature = "time"),
+    not(feature = "stdio"),
     windows,
     target_os = "emscripten",
     target_os = "redox",

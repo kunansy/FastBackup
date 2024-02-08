@@ -1,9 +1,8 @@
 //! Encapsulation for system call arguments and return values.
 //!
-//! The inline-asm and outline-asm code paths do some amount of reordering
-//! of arguments; to ensure that we don't accidentally misroute an argument
-//! or return value, we use distinct types for each argument index and
-//! return value.
+//! The inline-asm code paths do some amount of reordering of arguments; to
+//! ensure that we don't accidentally misroute an argument or return value, we
+//! use distinct types for each argument index and return value.
 //!
 //! # Safety
 //!
@@ -24,8 +23,8 @@ pub(super) trait ToAsm: private::Sealed {
     ///
     /// # Safety
     ///
-    /// This should be used immediately before the syscall instruction, and
-    /// the returned value shouldn't be used for any other purpose.
+    /// This should be used immediately before the syscall instruction, and the
+    /// returned value shouldn't be used for any other purpose.
     #[must_use]
     unsafe fn to_asm(self) -> *mut Opaque;
 }
@@ -36,8 +35,8 @@ pub(super) trait FromAsm: private::Sealed {
     ///
     /// # Safety
     ///
-    /// This should be used immediately after the syscall instruction, and
-    /// the operand value shouldn't be used for any other purpose.
+    /// This should be used immediately after the syscall instruction, and the
+    /// operand value shouldn't be used for any other purpose.
     #[must_use]
     unsafe fn from_asm(raw: *mut Opaque) -> Self;
 }
@@ -46,6 +45,7 @@ pub(super) trait FromAsm: private::Sealed {
 /// pointer types. They need a type to point to, so we define a custom private
 /// type, to prevent it from being used for anything else.
 #[repr(transparent)]
+#[allow(dead_code)]
 pub(super) struct Opaque(c::c_void);
 
 // Argument numbers.
@@ -55,7 +55,7 @@ pub(super) struct A2(());
 pub(super) struct A3(());
 pub(super) struct A4(());
 pub(super) struct A5(());
-#[cfg(target_arch = "mips")]
+#[cfg(any(target_arch = "mips", target_arch = "mips32r6"))]
 pub(super) struct A6(());
 #[cfg(target_arch = "x86")]
 pub(super) struct SocketArg;
@@ -67,7 +67,7 @@ impl ArgNumber for A2 {}
 impl ArgNumber for A3 {}
 impl ArgNumber for A4 {}
 impl ArgNumber for A5 {}
-#[cfg(target_arch = "mips")]
+#[cfg(any(target_arch = "mips", target_arch = "mips32r6"))]
 impl ArgNumber for A6 {}
 #[cfg(target_arch = "x86")]
 impl ArgNumber for SocketArg {}
@@ -251,7 +251,7 @@ mod private {
     impl Sealed for super::A3 {}
     impl Sealed for super::A4 {}
     impl Sealed for super::A5 {}
-    #[cfg(target_arch = "mips")]
+    #[cfg(any(target_arch = "mips", target_arch = "mips32r6"))]
     impl Sealed for super::A6 {}
     #[cfg(target_arch = "x86")]
     impl Sealed for super::SocketArg {}

@@ -1,5 +1,5 @@
 //! `rustix` provides efficient memory-safe and [I/O-safe] wrappers to
-//! POSIX-like, Unix-like, Linux, and Winsock2 syscall-like APIs, with
+//! POSIX-like, Unix-like, Linux, and Winsock syscall-like APIs, with
 //! configurable backends.
 //!
 //! With rustix, you can write code like this:
@@ -19,7 +19,6 @@
 //! ```
 //! # #[cfg(feature = "net")]
 //! # fn read(sock: std::net::TcpStream, buf: &mut [u8]) -> std::io::Result<()> {
-//! # use std::convert::TryInto;
 //! # #[cfg(unix)]
 //! # use std::os::unix::io::AsRawFd;
 //! # #[cfg(target_os = "wasi")]
@@ -56,7 +55,8 @@
 //!  - Path arguments use [`Arg`], so they accept any string type.
 //!  - File descriptors are passed and returned via [`AsFd`] and [`OwnedFd`]
 //!    instead of bare integers, ensuring I/O safety.
-//!  - Constants use `enum`s and [`bitflags`] types.
+//!  - Constants use `enum`s and [`bitflags`] types, and enable [support for
+//!    externally defined flags].
 //!  - Multiplexed functions (eg. `fcntl`, `ioctl`, etc.) are de-multiplexed.
 //!  - Variadic functions (eg. `openat`, etc.) are presented as non-variadic.
 //!  - Functions that return strings automatically allocate sufficient memory
@@ -94,6 +94,7 @@
 //! [I/O-safe]: https://github.com/rust-lang/rfcs/blob/master/text/3128-io-safety.md
 //! [`Result`]: https://doc.rust-lang.org/stable/std/result/enum.Result.html
 //! [`Arg`]: https://docs.rs/rustix/*/rustix/path/trait.Arg.html
+//! [support for externally defined flags]: https://docs.rs/bitflags/*/bitflags/#externally-defined-flags
 
 #![deny(missing_docs)]
 #![allow(stable_features)]
@@ -101,43 +102,60 @@
 #![cfg_attr(rustc_attrs, feature(rustc_attrs))]
 #![cfg_attr(doc_cfg, feature(doc_cfg))]
 #![cfg_attr(all(wasi_ext, target_os = "wasi", feature = "std"), feature(wasi_ext))]
-#![cfg_attr(
-    all(linux_raw, naked_functions, target_arch = "x86"),
-    feature(naked_functions)
-)]
-#![cfg_attr(io_lifetimes_use_std, feature(io_safety))]
 #![cfg_attr(core_ffi_c, feature(core_ffi_c))]
 #![cfg_attr(core_c_str, feature(core_c_str))]
-#![cfg_attr(alloc_c_string, feature(alloc_ffi))]
-#![cfg_attr(alloc_c_string, feature(alloc_c_string))]
+#![cfg_attr(all(feature = "alloc", alloc_c_string), feature(alloc_c_string))]
+#![cfg_attr(all(feature = "alloc", alloc_ffi), feature(alloc_ffi))]
 #![cfg_attr(not(feature = "std"), no_std)]
 #![cfg_attr(feature = "rustc-dep-of-std", feature(ip))]
+#![cfg_attr(feature = "rustc-dep-of-std", allow(internal_features))]
 #![cfg_attr(
     any(feature = "rustc-dep-of-std", core_intrinsics),
     feature(core_intrinsics)
 )]
 #![cfg_attr(asm_experimental_arch, feature(asm_experimental_arch))]
 #![cfg_attr(not(feature = "all-apis"), allow(dead_code))]
-// Clamp depends on Rust 1.50 which is newer than our MSRV.
-#![allow(clippy::manual_clamp)]
-// It is common in linux and libc APIs for types to vary between platforms.
+// It is common in Linux and libc APIs for types to vary between platforms.
 #![allow(clippy::unnecessary_cast)]
-// It is common in linux and libc APIs for types to vary between platforms.
+// It is common in Linux and libc APIs for types to vary between platforms.
 #![allow(clippy::useless_conversion)]
-// Redox and WASI have enough differences that it isn't worth
-// precisely conditionallizing all the `use`s for them.
-#![cfg_attr(any(target_os = "redox", target_os = "wasi"), allow(unused_imports))]
+// Redox and WASI have enough differences that it isn't worth precisely
+// conditionalizing all the `use`s for them. Similar for if we don't have
+// "all-apis".
+#![cfg_attr(
+    any(target_os = "redox", target_os = "wasi", not(feature = "all-apis")),
+    allow(unused_imports)
+)]
 
-#[cfg(not(feature = "rustc-dep-of-std"))]
+#[cfg(all(feature = "alloc", not(feature = "rustc-dep-of-std")))]
 extern crate alloc;
 
+// Use `static_assertions` macros if we have them, or a polyfill otherwise.
+#[cfg(all(test, static_assertions))]
+#[macro_use]
+#[allow(unused_imports)]
+extern crate static_assertions;
+#[cfg(all(test, not(static_assertions)))]
+#[macro_use]
+#[allow(unused_imports)]
+mod static_assertions;
+
 // Internal utilities.
+mod buffer;
 #[cfg(not(windows))]
 #[macro_use]
 pub(crate) mod cstr;
 #[macro_use]
-pub(crate) mod const_assert;
 pub(crate) mod utils;
+// Polyfill for `std` in `no_std` builds.
+#[cfg_attr(feature = "std", path = "maybe_polyfill/std/mod.rs")]
+#[cfg_attr(not(feature = "std"), path = "maybe_polyfill/no_std/mod.rs")]
+pub(crate) mod maybe_polyfill;
+#[cfg(test)]
+#[macro_use]
+pub(crate) mod check_types;
+#[macro_use]
+pub(crate) mod bitcast;
 
 // linux_raw: Weak symbols are used by the use-libc-auxv feature for
 // glibc 2.15 support.
@@ -146,7 +164,7 @@ pub(crate) mod utils;
 // versions of libc and not others.
 #[cfg(any(
     all(linux_raw, feature = "use-libc-auxv"),
-    all(libc, not(any(windows, target_os = "wasi")))
+    all(libc, not(any(windows, target_os = "espidf", target_os = "wasi")))
 ))]
 #[macro_use]
 mod weak;
@@ -163,12 +181,20 @@ mod backend;
 /// versions of these types and traits.
 pub mod fd {
     use super::backend;
+
+    // Re-export `AsSocket` etc. too, as users can't implement `AsFd` etc. on
+    // Windows due to them having blanket impls on Windows, so users must
+    // implement `AsSocket` etc.
     #[cfg(windows)]
-    pub use backend::fd::AsSocket;
+    pub use backend::fd::{AsRawSocket, AsSocket, FromRawSocket, IntoRawSocket};
+
     pub use backend::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 }
 
 // The public API modules.
+#[cfg(feature = "event")]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "event")))]
+pub mod event;
 #[cfg(not(windows))]
 pub mod ffi;
 #[cfg(not(windows))]
@@ -180,26 +206,42 @@ pub mod io;
 #[cfg(feature = "io_uring")]
 #[cfg_attr(doc_cfg, doc(cfg(feature = "io_uring")))]
 pub mod io_uring;
-#[cfg(not(any(windows, target_os = "wasi")))]
+pub mod ioctl;
+#[cfg(not(any(windows, target_os = "espidf", target_os = "vita", target_os = "wasi")))]
 #[cfg(feature = "mm")]
 #[cfg_attr(doc_cfg, doc(cfg(feature = "mm")))]
 pub mod mm;
+#[cfg(linux_kernel)]
+#[cfg(feature = "mount")]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "mount")))]
+pub mod mount;
 #[cfg(not(any(target_os = "redox", target_os = "wasi")))]
 #[cfg(feature = "net")]
 #[cfg_attr(doc_cfg, doc(cfg(feature = "net")))]
 pub mod net;
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "espidf")))]
 #[cfg(feature = "param")]
 #[cfg_attr(doc_cfg, doc(cfg(feature = "param")))]
 pub mod param;
 #[cfg(not(windows))]
-#[cfg(any(feature = "fs", feature = "net"))]
-#[cfg_attr(doc_cfg, doc(cfg(any(feature = "fs", feature = "net"))))]
+#[cfg(any(feature = "fs", feature = "mount", feature = "net"))]
+#[cfg_attr(
+    doc_cfg,
+    doc(cfg(any(feature = "fs", feature = "mount", feature = "net")))
+)]
 pub mod path;
+#[cfg(feature = "pipe")]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "pipe")))]
+#[cfg(not(any(windows, target_os = "wasi")))]
+pub mod pipe;
 #[cfg(not(windows))]
 #[cfg(feature = "process")]
 #[cfg_attr(doc_cfg, doc(cfg(feature = "process")))]
 pub mod process;
+#[cfg(feature = "procfs")]
+#[cfg(linux_kernel)]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "procfs")))]
+pub mod procfs;
 #[cfg(not(windows))]
 #[cfg(not(target_os = "wasi"))]
 #[cfg(feature = "pty")]
@@ -209,7 +251,25 @@ pub mod pty;
 #[cfg(feature = "rand")]
 #[cfg_attr(doc_cfg, doc(cfg(feature = "rand")))]
 pub mod rand;
+#[cfg(not(any(
+    windows,
+    target_os = "android",
+    target_os = "espidf",
+    target_os = "vita",
+    target_os = "wasi"
+)))]
+#[cfg(feature = "shm")]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "shm")))]
+pub mod shm;
 #[cfg(not(windows))]
+#[cfg(feature = "stdio")]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "stdio")))]
+pub mod stdio;
+#[cfg(feature = "system")]
+#[cfg(not(any(windows, target_os = "wasi")))]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "system")))]
+pub mod system;
+#[cfg(not(any(windows, target_os = "vita")))]
 #[cfg(feature = "termios")]
 #[cfg_attr(doc_cfg, doc(cfg(feature = "termios")))]
 pub mod termios;
@@ -217,7 +277,7 @@ pub mod termios;
 #[cfg(feature = "thread")]
 #[cfg_attr(doc_cfg, doc(cfg(feature = "thread")))]
 pub mod thread;
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "espidf")))]
 #[cfg(feature = "time")]
 #[cfg_attr(doc_cfg, doc(cfg(feature = "time")))]
 pub mod time;
@@ -225,23 +285,111 @@ pub mod time;
 // "runtime" is also a public API module, but it's only for libc-like users.
 #[cfg(not(windows))]
 #[cfg(feature = "runtime")]
-#[doc(hidden)]
+#[cfg(linux_raw)]
+#[cfg_attr(not(document_experimental_runtime_api), doc(hidden))]
 #[cfg_attr(doc_cfg, doc(cfg(feature = "runtime")))]
 pub mod runtime;
 
-// We have some internal interdependencies in the API features, so for now,
-// for API features that aren't enabled, declare them as `pub(crate)` so
-// that they're not public, but still available for internal use.
+// Temporarily provide some mount functions for use in the fs module for
+// backwards compatibility.
+#[cfg(linux_kernel)]
+#[cfg(all(feature = "fs", not(feature = "mount")))]
+pub(crate) mod mount;
 
+// Declare "fs" as a non-public module if "fs" isn't enabled but we need it for
+// reading procfs.
 #[cfg(not(windows))]
+#[cfg(not(feature = "fs"))]
 #[cfg(all(
-    not(feature = "param"),
-    any(feature = "runtime", feature = "time", target_arch = "x86"),
+    linux_raw,
+    not(feature = "use-libc-auxv"),
+    not(feature = "use-explicitly-provided-auxv"),
+    any(
+        feature = "param",
+        feature = "process",
+        feature = "runtime",
+        feature = "time",
+        target_arch = "x86",
+    )
 ))]
-pub(crate) mod param;
+#[cfg_attr(doc_cfg, doc(cfg(feature = "fs")))]
+pub(crate) mod fs;
+
+// Similarly, declare `path` as a non-public module if needed.
 #[cfg(not(windows))]
-#[cfg(not(any(feature = "fs", feature = "net")))]
+#[cfg(not(any(feature = "fs", feature = "mount", feature = "net")))]
+#[cfg(all(
+    linux_raw,
+    not(feature = "use-libc-auxv"),
+    not(feature = "use-explicitly-provided-auxv"),
+    any(
+        feature = "param",
+        feature = "process",
+        feature = "runtime",
+        feature = "time",
+        target_arch = "x86",
+    )
+))]
 pub(crate) mod path;
+
+// Private modules used by multiple public modules.
+#[cfg(not(any(windows, target_os = "espidf")))]
+#[cfg(any(feature = "thread", feature = "time", target_arch = "x86"))]
+mod clockid;
+#[cfg(not(any(windows, target_os = "wasi")))]
+#[cfg(any(
+    feature = "procfs",
+    feature = "process",
+    feature = "runtime",
+    feature = "termios",
+    feature = "thread",
+    all(bsd, feature = "event"),
+    all(linux_kernel, feature = "net")
+))]
+mod pid;
+#[cfg(any(feature = "process", feature = "thread"))]
+#[cfg(linux_kernel)]
+mod prctl;
+#[cfg(not(any(windows, target_os = "espidf", target_os = "wasi")))]
+#[cfg(any(feature = "process", feature = "runtime", all(bsd, feature = "event")))]
+mod signal;
 #[cfg(not(windows))]
-#[cfg(not(feature = "process"))]
-pub(crate) mod process;
+#[cfg(any(
+    feature = "fs",
+    feature = "process",
+    feature = "runtime",
+    feature = "thread",
+    feature = "time",
+    all(
+        linux_raw,
+        not(feature = "use-libc-auxv"),
+        not(feature = "use-explicitly-provided-auxv"),
+        any(
+            feature = "param",
+            feature = "process",
+            feature = "runtime",
+            feature = "time",
+            target_arch = "x86",
+        )
+    )
+))]
+mod timespec;
+#[cfg(not(any(windows, target_os = "wasi")))]
+#[cfg(any(
+    feature = "fs",
+    feature = "process",
+    feature = "thread",
+    all(
+        linux_raw,
+        not(feature = "use-libc-auxv"),
+        not(feature = "use-explicitly-provided-auxv"),
+        any(
+            feature = "param",
+            feature = "runtime",
+            feature = "time",
+            target_arch = "x86",
+        )
+    ),
+    all(linux_kernel, feature = "net")
+))]
+mod ugid;

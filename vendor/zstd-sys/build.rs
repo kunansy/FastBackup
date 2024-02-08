@@ -20,9 +20,10 @@ fn generate_bindings(defs: Vec<&str>, headerpaths: Vec<PathBuf>) {
         .clang_args(defs.into_iter().map(|def| format!("-D{}", def)));
 
     #[cfg(feature = "experimental")]
-    let bindings = bindings.clang_arg("-DZSTD_STATIC_LINKING_ONLY");
-    #[cfg(all(feature = "experimental", feature = "zdict_builder"))]
-    let bindings = bindings.clang_arg("-DZDICT_STATIC_LINKING_ONLY");
+    let bindings = bindings
+        .clang_arg("-DZSTD_STATIC_LINKING_ONLY")
+        .clang_arg("-DZDICT_STATIC_LINKING_ONLY")
+        .clang_arg("-DZSTD_RUST_BINDINGS_EXPERIMENTAL");
 
     #[cfg(not(feature = "std"))]
     let bindings = bindings.ctypes_prefix("libc");

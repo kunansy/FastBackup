@@ -58,7 +58,7 @@ cfg_rt! {
     /// ```
     ///
     /// The generic parameter `T` in `JoinHandle<T>` is the return type of the spawned task.
-    /// If the return value is an i32, the join handle has type `JoinHandle<i32>`:
+    /// If the return value is an `i32`, the join handle has type `JoinHandle<i32>`:
     ///
     /// ```
     /// use tokio::task;
@@ -179,6 +179,8 @@ impl<T> JoinHandle<T> {
     /// already completed at the time it was cancelled, but most likely it
     /// will fail with a [cancelled] `JoinError`.
     ///
+    /// See also [the module level docs] for more information on cancellation.
+    ///
     /// ```rust
     /// use tokio::time;
     ///
@@ -205,7 +207,9 @@ impl<T> JoinHandle<T> {
     /// }
     /// # }
     /// ```
+    ///
     /// [cancelled]: method@super::error::JoinError::is_cancelled
+    /// [the module level docs]: crate::task#cancellation
     pub fn abort(&self) {
         self.raw.remote_abort();
     }
@@ -313,6 +317,7 @@ impl<T> Future for JoinHandle<T> {
     type Output = super::Result<T>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        ready!(crate::trace::trace_leaf(cx));
         let mut ret = Poll::Pending;
 
         // Keep track of task budget

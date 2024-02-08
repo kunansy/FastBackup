@@ -26,11 +26,11 @@ async fn test_non_null() -> anyhow::Result<()> {
     let mut tx = conn.begin().await?;
 
     let _ = sqlx::query!("INSERT INTO tweet (text) VALUES ('Hello')")
-        .execute(&mut tx)
+        .execute(&mut *tx)
         .await?;
 
     let row = sqlx::query!("SELECT id, text, owner_id FROM tweet LIMIT 1")
-        .fetch_one(&mut tx)
+        .fetch_one(&mut *tx)
         .await?;
 
     assert!(row.id > 0);
@@ -47,7 +47,7 @@ async fn test_no_result() -> anyhow::Result<()> {
     let mut conn = new::<Postgres>().await?;
     let mut tx = conn.begin().await?;
 
-    let _ = sqlx::query!("DELETE FROM tweet").execute(&mut tx).await?;
+    let _ = sqlx::query!("DELETE FROM tweet").execute(&mut *tx).await?;
 
     // let the transaction rollback so we don't actually delete the tweets
 
@@ -97,11 +97,24 @@ async fn test_void() -> anyhow::Result<()> {
 }
 
 #[sqlx_macros::test]
+async fn test_call_procedure() -> anyhow::Result<()> {
+    let mut conn = new::<Postgres>().await?;
+
+    let row = sqlx::query!(r#"CALL forty_two(null)"#)
+        .fetch_one(&mut conn)
+        .await?;
+
+    assert_eq!(row.forty_two, Some(42));
+
+    Ok(())
+}
+
+#[sqlx_macros::test]
 async fn test_query_file() -> anyhow::Result<()> {
     let mut conn = new::<Postgres>().await?;
 
     // keep trailing comma as a test
-    let account = sqlx::query_file!("tests/postgres/test-query.sql",)
+    let account = sqlx::query_file!("tests/postgres/test-query.sql")
         .fetch_one(&mut conn)
         .await?;
 
@@ -133,7 +146,7 @@ async fn test_query_as() -> anyhow::Result<()> {
     assert_eq!(1, account.id);
     assert_eq!(None, account.name);
 
-    println!("{:?}", account);
+    println!("{account:?}");
 
     Ok(())
 }
@@ -158,7 +171,7 @@ async fn test_query_as_raw() -> anyhow::Result<()> {
     assert_eq!(None, account.name);
     assert_eq!(1, account.r#type);
 
-    println!("{:?}", account);
+    println!("{account:?}");
 
     Ok(())
 }
@@ -167,11 +180,11 @@ async fn test_query_as_raw() -> anyhow::Result<()> {
 async fn test_query_file_as() -> anyhow::Result<()> {
     let mut conn = new::<Postgres>().await?;
 
-    let account = sqlx::query_file_as!(Account, "tests/postgres/test-query.sql",)
+    let account = sqlx::query_file_as!(Account, "tests/postgres/test-query.sql")
         .fetch_one(&mut conn)
         .await?;
 
-    println!("{:?}", account);
+    println!("{account:?}");
 
     Ok(())
 }
@@ -273,7 +286,7 @@ async fn query_by_string() -> anyhow::Result<()> {
 #[sqlx_macros::test]
 #[cfg(feature = "bigdecimal")]
 async fn query_by_bigdecimal() -> anyhow::Result<()> {
-    use sqlx_core::types::BigDecimal;
+    use sqlx::types::BigDecimal;
     let mut conn = new::<Postgres>().await?;
 
     // this tests querying by a non-`Copy` type that doesn't have special reborrow semantics
@@ -325,7 +338,7 @@ async fn test_nullable_err() -> anyhow::Result<()> {
         }
     }
 
-    panic!("expected `UnexpectedNullError`, got {}", err)
+    panic!("expected `UnexpectedNullError`, got {err}")
 }
 
 #[sqlx_macros::test]
@@ -425,7 +438,7 @@ async fn with_test_row<'a>(
 ) -> anyhow::Result<Transaction<'a, Postgres>> {
     let mut transaction = conn.begin().await?;
     sqlx::query!("INSERT INTO tweet(id, text, owner_id) VALUES (1, '#sqlx is pretty cool!', 1)")
-        .execute(&mut transaction)
+        .execute(&mut *transaction)
         .await?;
     Ok(transaction)
 }
@@ -452,13 +465,13 @@ async fn test_column_override_wildcard() -> anyhow::Result<()> {
     let mut conn = with_test_row(&mut conn).await?;
 
     let record = sqlx::query_as!(Record, r#"select id as "id: _" from tweet"#)
-        .fetch_one(&mut conn)
+        .fetch_one(&mut *conn)
         .await?;
 
     assert_eq!(record.id, MyInt(1));
 
     let record = sqlx::query_as!(OptionalRecord, r#"select owner_id as "id: _" from tweet"#)
-        .fetch_one(&mut conn)
+        .fetch_one(&mut *conn)
         .await?;
 
     assert_eq!(record.id, Some(MyInt(1)));
@@ -472,7 +485,7 @@ async fn test_column_override_wildcard_not_null() -> anyhow::Result<()> {
     let mut conn = with_test_row(&mut conn).await?;
 
     let record = sqlx::query_as!(Record, r#"select owner_id as "id!: _" from tweet"#)
-        .fetch_one(&mut conn)
+        .fetch_one(&mut *conn)
         .await?;
 
     assert_eq!(record.id, MyInt(1));
@@ -486,7 +499,7 @@ async fn test_column_override_wildcard_nullable() -> anyhow::Result<()> {
     let mut conn = with_test_row(&mut conn).await?;
 
     let record = sqlx::query_as!(OptionalRecord, r#"select id as "id?: _" from tweet"#)
-        .fetch_one(&mut conn)
+        .fetch_one(&mut *conn)
         .await?;
 
     assert_eq!(record.id, Some(MyInt(1)));
@@ -500,13 +513,13 @@ async fn test_column_override_exact() -> anyhow::Result<()> {
     let mut conn = with_test_row(&mut conn).await?;
 
     let record = sqlx::query!(r#"select id as "id: MyInt" from tweet"#)
-        .fetch_one(&mut conn)
+        .fetch_one(&mut *conn)
         .await?;
 
     assert_eq!(record.id, MyInt(1));
 
     let record = sqlx::query!(r#"select owner_id as "id: MyInt" from tweet"#)
-        .fetch_one(&mut conn)
+        .fetch_one(&mut *conn)
         .await?;
 
     assert_eq!(record.id, Some(MyInt(1)));
@@ -520,7 +533,7 @@ async fn test_column_override_exact_not_null() -> anyhow::Result<()> {
     let mut conn = with_test_row(&mut conn).await?;
 
     let record = sqlx::query!(r#"select owner_id as "id!: MyInt" from tweet"#)
-        .fetch_one(&mut conn)
+        .fetch_one(&mut *conn)
         .await?;
 
     assert_eq!(record.id, MyInt(1));
@@ -534,7 +547,7 @@ async fn test_column_override_exact_nullable() -> anyhow::Result<()> {
     let mut conn = with_test_row(&mut conn).await?;
 
     let record = sqlx::query!(r#"select id as "id?: MyInt" from tweet"#)
-        .fetch_one(&mut conn)
+        .fetch_one(&mut *conn)
         .await?;
 
     assert_eq!(record.id, Some(MyInt(1)));
@@ -595,6 +608,31 @@ async fn test_bind_arg_override_wildcard() -> anyhow::Result<()> {
     .await?;
 
     assert_eq!(record.id, Some(1i32));
+
+    Ok(())
+}
+
+#[sqlx_macros::test]
+async fn test_to_from_citext() -> anyhow::Result<()> {
+    // Ensure that the macros consider `CITEXT` to be compatible with `String` and friends
+
+    let mut conn = new::<Postgres>().await?;
+
+    let mut tx = conn.begin().await?;
+
+    let foo_in = "Hello, world!";
+
+    sqlx::query!("insert into test_citext(foo) values ($1)", foo_in)
+        .execute(&mut *tx)
+        .await?;
+
+    let foo_out: String = sqlx::query_scalar!("select foo from test_citext")
+        .fetch_one(&mut *tx)
+        .await?;
+
+    assert_eq!(foo_in, foo_out);
+
+    tx.rollback().await?;
 
     Ok(())
 }

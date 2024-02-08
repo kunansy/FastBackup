@@ -64,12 +64,13 @@ ast_enum_of_structs! {
         // For testing exhaustiveness in downstream code, use the following idiom:
         //
         //     match ty {
+        //         #![cfg_attr(test, deny(non_exhaustive_omitted_patterns))]
+        //
         //         Type::Array(ty) => {...}
         //         Type::BareFn(ty) => {...}
         //         ...
         //         Type::Verbatim(ty) => {...}
         //
-        //         #[cfg_attr(test, deny(non_exhaustive_omitted_patterns))]
         //         _ => { /* some sane fallback */ }
         //     }
         //
@@ -264,7 +265,7 @@ ast_enum! {
 #[cfg(feature = "parsing")]
 pub(crate) mod parsing {
     use super::*;
-    use crate::ext::IdentExt;
+    use crate::ext::IdentExt as _;
     use crate::parse::{Parse, ParseStream, Result};
     use crate::path;
     use proc_macro2::Span;
@@ -525,7 +526,7 @@ pub(crate) mod parsing {
             let star_token: Option<Token![*]> = input.parse()?;
             let bounds = TypeTraitObject::parse_bounds(dyn_span, input, allow_plus)?;
             return Ok(if star_token.is_some() {
-                Type::Verbatim(verbatim::between(begin, input))
+                Type::Verbatim(verbatim::between(&begin, input))
             } else {
                 Type::TraitObject(TypeTraitObject {
                     dyn_token: Some(dyn_token),
@@ -947,7 +948,7 @@ pub(crate) mod parsing {
             Some(ty) if !has_mut_self => ty,
             _ => {
                 name = None;
-                Type::Verbatim(verbatim::between(begin, input))
+                Type::Verbatim(verbatim::between(&begin, input))
             }
         };
 

@@ -1,7 +1,8 @@
-use std::borrow::Borrow;
+use alloc::collections::VecDeque;
+use core::borrow::Borrow;
+use core::hash::Hash;
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap, VecDeque};
-use std::hash::Hash;
+use std::collections::HashMap;
 
 /// A HashMap-alike, which never gets larger than a specified
 /// capacity, and evicts the oldest insertion to maintain this.
@@ -20,7 +21,8 @@ pub(crate) struct LimitedCache<K: Clone + Hash + Eq, V> {
 
 impl<K, V> LimitedCache<K, V>
 where
-    K: Eq + Hash + Clone + std::fmt::Debug,
+    K: Eq + Hash + Clone + core::fmt::Debug,
+    V: Default,
 {
     /// Create a new LimitedCache with the given rough capacity.
     pub(crate) fn new(capacity_order_of_magnitude: usize) -> Self {
@@ -30,10 +32,32 @@ where
         }
     }
 
+    pub(crate) fn get_or_insert_default_and_edit(&mut self, k: K, edit: impl FnOnce(&mut V)) {
+        let inserted_new_item = match self.map.entry(k) {
+            Entry::Occupied(value) => {
+                edit(value.into_mut());
+                false
+            }
+            entry @ Entry::Vacant(_) => {
+                self.oldest
+                    .push_back(entry.key().clone());
+                edit(entry.or_insert_with(V::default));
+                true
+            }
+        };
+
+        // ensure next insertion does not require a realloc
+        if inserted_new_item && self.oldest.capacity() == self.oldest.len() {
+            if let Some(oldest_key) = self.oldest.pop_front() {
+                self.map.remove(&oldest_key);
+            }
+        }
+    }
+
     pub(crate) fn insert(&mut self, k: K, v: V) {
         let inserted_new_item = match self.map.entry(k) {
             Entry::Occupied(mut old) => {
-                // nb. does not freshen entry in `oldest`
+                // Note: does not freshen entry in `oldest`
                 old.insert(v);
                 false
             }
@@ -46,7 +70,7 @@ where
             }
         };
 
-        // ensure next insert() does not require a realloc
+        // ensure next insertion does not require a realloc
         if inserted_new_item && self.oldest.capacity() == self.oldest.len() {
             if let Some(oldest_key) = self.oldest.pop_front() {
                 self.map.remove(&oldest_key);
@@ -60,6 +84,14 @@ where
         Q: Hash + Eq,
     {
         self.map.get(k)
+    }
+
+    pub(crate) fn get_mut<Q: ?Sized>(&mut self, k: &Q) -> Option<&mut V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq,
+    {
+        self.map.get_mut(k)
     }
 
     pub(crate) fn remove<Q: ?Sized>(&mut self, k: &Q) -> Option<V>
@@ -84,7 +116,7 @@ where
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     type Test = super::LimitedCache<String, usize>;
 
     #[test]
@@ -171,5 +203,44 @@ mod test {
             t.insert("def".into(), 2);
             t.insert("ghi".into(), 3);
         }
+    }
+
+    #[test]
+    fn test_get_or_insert_default_and_edit_evicts_old_items_to_meet_capacity() {
+        let mut t = Test::new(3);
+
+        t.get_or_insert_default_and_edit("abc".into(), |v| *v += 1);
+        t.get_or_insert_default_and_edit("def".into(), |v| *v += 2);
+
+        // evicts "abc"
+        t.get_or_insert_default_and_edit("ghi".into(), |v| *v += 3);
+        assert_eq!(t.get("abc"), None);
+
+        // evicts "def"
+        t.get_or_insert_default_and_edit("jkl".into(), |v| *v += 4);
+        assert_eq!(t.get("def"), None);
+
+        // evicts "ghi"
+        t.get_or_insert_default_and_edit("abc".into(), |v| *v += 5);
+        assert_eq!(t.get("ghi"), None);
+
+        // evicts "jkl"
+        t.get_or_insert_default_and_edit("def".into(), |v| *v += 6);
+
+        assert_eq!(t.get("abc"), Some(&5));
+        assert_eq!(t.get("def"), Some(&6));
+        assert_eq!(t.get("ghi"), None);
+        assert_eq!(t.get("jkl"), None);
+    }
+
+    #[test]
+    fn test_get_or_insert_default_and_edit_edits_existing_item() {
+        let mut t = Test::new(3);
+
+        t.get_or_insert_default_and_edit("abc".into(), |v| *v += 1);
+        t.get_or_insert_default_and_edit("abc".into(), |v| *v += 2);
+        t.get_or_insert_default_and_edit("abc".into(), |v| *v += 3);
+
+        assert_eq!(t.get("abc"), Some(&6));
     }
 }

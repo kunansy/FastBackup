@@ -5,8 +5,8 @@
 
 #![allow(unsafe_code)]
 
-use alloc::vec;
-use alloc::vec::Vec;
+#[cfg(feature = "alloc")]
+use alloc::{vec, vec::Vec};
 use core::mem::MaybeUninit;
 use core::ptr;
 
@@ -14,9 +14,10 @@ use bitflags::bitflags;
 
 use crate::backend::c::{c_int, c_uint, c_void};
 use crate::backend::process::syscalls;
-use crate::backend::process::types::{RawId, Signal};
+use crate::backend::process::types::RawId;
 use crate::io;
 use crate::process::{Pid, RawPid};
+use crate::signal::Signal;
 use crate::utils::{as_mut_ptr, as_ptr};
 
 //
@@ -183,7 +184,7 @@ pub fn trace_status(process: ProcSelector) -> io::Result<TracingStatus> {
         -1 => Ok(TracingStatus::NotTraceble),
         0 => Ok(TracingStatus::Tracable),
         pid => {
-            let pid = unsafe { Pid::from_raw(pid as RawPid) }.ok_or(io::Errno::RANGE)?;
+            let pid = Pid::from_raw(pid as RawPid).ok_or(io::Errno::RANGE)?;
             Ok(TracingStatus::BeingTraced(pid))
         }
     }
@@ -221,11 +222,16 @@ const PROC_REAP_STATUS: c_int = 4;
 
 bitflags! {
     /// `REAPER_STATUS_*`.
+    #[repr(transparent)]
+    #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
     pub struct ReaperStatusFlags: c_uint {
         /// The process has acquired reaper status.
         const OWNED = 1;
         /// The process is the root of the reaper tree (pid 1).
         const REALINIT = 2;
+
+        /// <https://docs.rs/bitflags/*/bitflags/#externally-defined-flags>
+        const _ = !0;
     }
 }
 
@@ -252,7 +258,7 @@ pub struct ReaperStatus {
     /// The pid of the reaper for the specified process id.
     pub reaper: Pid,
     /// The pid of one reaper child if there are any descendants.
-    pub pid: Pid,
+    pub pid: Option<Pid>,
 }
 
 /// Get information about the reaper of the specified process (or the process
@@ -266,11 +272,15 @@ pub struct ReaperStatus {
 pub fn get_reaper_status(process: ProcSelector) -> io::Result<ReaperStatus> {
     let raw = unsafe { procctl_get_optional::<procctl_reaper_status>(PROC_REAP_STATUS, process) }?;
     Ok(ReaperStatus {
-        flags: ReaperStatusFlags::from_bits_truncate(raw.rs_flags),
+        flags: ReaperStatusFlags::from_bits_retain(raw.rs_flags),
         children: raw.rs_children as _,
         descendants: raw.rs_descendants as _,
-        reaper: unsafe { Pid::from_raw(raw.rs_reaper) }.ok_or(io::Errno::RANGE)?,
-        pid: unsafe { Pid::from_raw(raw.rs_pid) }.ok_or(io::Errno::RANGE)?,
+        reaper: Pid::from_raw(raw.rs_reaper).ok_or(io::Errno::RANGE)?,
+        pid: if raw.rs_pid == -1 {
+            None
+        } else {
+            Some(Pid::from_raw(raw.rs_pid).ok_or(io::Errno::RANGE)?)
+        },
     })
 }
 
@@ -278,6 +288,8 @@ const PROC_REAP_GETPIDS: c_int = 5;
 
 bitflags! {
     /// `REAPER_PIDINFO_*`.
+    #[repr(transparent)]
+    #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
     pub struct PidInfoFlags: c_uint {
         /// This structure was filled by the kernel.
         const VALID = 1;
@@ -288,7 +300,8 @@ bitflags! {
         const REAPER = 4;
         /// The reported process is in the zombie state.
         const ZOMBIE = 8;
-        /// The reported process is stopped by SIGSTOP/SIGTSTP.
+        /// The reported process is stopped by
+        /// [`Signal::Stop`]/[`Signal::Tstp`].
         const STOPPED = 16;
         /// The reported process is in the process of exiting.
         const EXITING = 32;
@@ -329,6 +342,7 @@ pub struct PidInfo {
 ///  - [FreeBSD: `procctl(PROC_REAP_GETPIDS,...)`]
 ///
 /// [FreeBSD: `procctl(PROC_REAP_GETPIDS,...)`]: https://man.freebsd.org/cgi/man.cgi?query=procctl&sektion=2
+#[cfg(feature = "alloc")]
 pub fn get_reaper_pids(process: ProcSelector) -> io::Result<Vec<PidInfo>> {
     // Sadly no better way to guarantee that we get all the results than to
     // allocate ~8MB of memory..
@@ -342,14 +356,14 @@ pub fn get_reaper_pids(process: ProcSelector) -> io::Result<Vec<PidInfo>> {
     unsafe { procctl(PROC_REAP_GETPIDS, process, as_mut_ptr(&mut pinfo).cast())? };
     let mut result = Vec::new();
     for raw in pids.into_iter() {
-        let flags = PidInfoFlags::from_bits_truncate(raw.pi_flags);
+        let flags = PidInfoFlags::from_bits_retain(raw.pi_flags);
         if !flags.contains(PidInfoFlags::VALID) {
             break;
         }
         result.push(PidInfo {
             flags,
-            subtree: unsafe { Pid::from_raw(raw.pi_subtree) }.ok_or(io::Errno::RANGE)?,
-            pid: unsafe { Pid::from_raw(raw.pi_pid) }.ok_or(io::Errno::RANGE)?,
+            subtree: Pid::from_raw(raw.pi_subtree).ok_or(io::Errno::RANGE)?,
+            pid: Pid::from_raw(raw.pi_pid).ok_or(io::Errno::RANGE)?,
         });
     }
     Ok(result)
@@ -359,6 +373,8 @@ const PROC_REAP_KILL: c_int = 6;
 
 bitflags! {
     /// `REAPER_KILL_*`.
+    #[repr(transparent)]
+    #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
     struct KillFlags: c_uint {
         const CHILDREN = 1;
         const SUBTREE = 2;
@@ -410,11 +426,7 @@ pub fn reaper_kill(
     unsafe { procctl(PROC_REAP_KILL, process, as_mut_ptr(&mut req).cast())? };
     Ok(KillResult {
         killed: req.rk_killed as _,
-        first_failed: if req.rk_fpid == -1 {
-            None
-        } else {
-            unsafe { Pid::from_raw(req.rk_fpid) }
-        },
+        first_failed: Pid::from_raw(req.rk_fpid),
     })
 }
 
@@ -483,12 +495,12 @@ const PROC_NO_NEW_PRIVS_CTL: c_int = 19;
 
 const PROC_NO_NEW_PRIVS_ENABLE: c_int = 1;
 
-/// Enable the `no_new_privs` mode that ignores SUID and SGID bits
-/// on `execve` in the specified process and its future descendants.
+/// Enable the `no_new_privs` mode that ignores SUID and SGID bits on `execve`
+/// in the specified process and its future descendants.
 ///
-/// This is similar to `set_no_new_privs` on Linux, with the exception
-/// that on FreeBSD there is no argument `no_new_privs` argument as it's
-/// only possible to enable this mode and there's no going back.
+/// This is similar to `set_no_new_privs` on Linux, with the exception that on
+/// FreeBSD there is no argument `no_new_privs` argument as it's only possible
+/// to enable this mode and there's no going back.
 ///
 /// # References
 ///  - [Linux: `prctl(PR_SET_NO_NEW_PRIVS,...)`]

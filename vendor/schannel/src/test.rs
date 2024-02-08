@@ -304,10 +304,7 @@ fn verify_callback_gives_failed_cert() {
     let err = tls_stream::Builder::new()
         .domain("self-signed.badssl.com")
         .verify_callback(|validation_result| {
-            let expected_finger = vec![
-                0xec, 0x4a, 0x07, 0x99, 0xb0, 0x2d, 0xe6, 0x88, 0xdd, 0x27,
-                0xbf, 0x78, 0x53, 0x6b, 0xba, 0xea, 0xc5, 0x5a, 0x12, 0x37,
-            ];
+            let expected_finger = include_bytes!("../test/self-signed.badssl.com.cer.sha1").to_vec();
             assert_eq!(
                 validation_result
                     .failed_certificate()
@@ -405,8 +402,6 @@ fn session_resumption_thread_safety() {
 
 const FRIENDLY_NAME: &str = "schannel-rs localhost testing cert";
 
-static szOID_RSA_SHA256RSA: &[u8] = null_terminate!(Cryptography::szOID_RSA_SHA256RSA);
-
 fn install_certificate() -> io::Result<CertContext> {
     unsafe {
         let mut provider = 0;
@@ -468,7 +463,7 @@ fn install_certificate() -> io::Result<CertContext> {
             return Err(Error::last_os_error());
         }
 
-        let subject_issuer = Cryptography::CRYPTOAPI_BLOB {
+        let subject_issuer = Cryptography::CRYPT_INTEGER_BLOB {
             cbData: cname_len,
             pbData: cname_buffer.as_ptr() as *mut u8,
         };
@@ -482,7 +477,7 @@ fn install_certificate() -> io::Result<CertContext> {
             dwKeySpec: Cryptography::AT_SIGNATURE,
         };
         let sig_algorithm = Cryptography::CRYPT_ALGORITHM_IDENTIFIER {
-            pszObjId: szOID_RSA_SHA256RSA.as_ptr() as *mut _,
+            pszObjId: Cryptography::szOID_RSA_SHA256RSA as *mut _,
             Parameters: mem::zeroed(),
         };
         let mut expiration_date: Foundation::SYSTEMTIME = mem::zeroed();
@@ -543,7 +538,7 @@ test suite with SCHANNEL_RS_SKIP_SERVER_TESTS=1.
 }
 
 fn local_root_store() -> CertStore {
-    if env::var("APPVEYOR").is_ok() {
+    if env::var("APPVEYOR").is_ok() || env::var("CI").is_ok() {
         CertStore::open_local_machine("Root").unwrap()
     } else {
         CertStore::open_current_user("Root").unwrap()

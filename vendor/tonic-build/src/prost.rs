@@ -28,6 +28,8 @@ pub fn configure() -> Builder {
         enum_attributes: Vec::new(),
         type_attributes: Vec::new(),
         boxed: Vec::new(),
+        btree_map: None,
+        bytes: None,
         server_attributes: Attributes::default(),
         client_attributes: Attributes::default(),
         proto_path: "super".to_string(),
@@ -37,6 +39,8 @@ pub fn configure() -> Builder {
         include_file: None,
         emit_rerun_if_changed: std::env::var_os("CARGO").is_some(),
         disable_comments: HashSet::default(),
+        use_arc_self: false,
+        generate_default_stubs: false,
     }
 }
 
@@ -170,6 +174,8 @@ impl prost_build::ServiceGenerator for ServiceGenerator {
                 .compile_well_known_types(self.builder.compile_well_known_types)
                 .attributes(self.builder.server_attributes.clone())
                 .disable_comments(self.builder.disable_comments.clone())
+                .use_arc_self(self.builder.use_arc_self)
+                .generate_default_stubs(self.builder.generate_default_stubs)
                 .generate_server(&service, &self.builder.proto_path);
 
             self.servers.extend(server);
@@ -233,6 +239,8 @@ pub struct Builder {
     pub(crate) message_attributes: Vec<(String, String)>,
     pub(crate) enum_attributes: Vec<(String, String)>,
     pub(crate) boxed: Vec<String>,
+    pub(crate) btree_map: Option<Vec<String>>,
+    pub(crate) bytes: Option<Vec<String>>,
     pub(crate) server_attributes: Attributes,
     pub(crate) client_attributes: Attributes,
     pub(crate) proto_path: String,
@@ -242,6 +250,8 @@ pub struct Builder {
     pub(crate) include_file: Option<PathBuf>,
     pub(crate) emit_rerun_if_changed: bool,
     pub(crate) disable_comments: HashSet<String>,
+    pub(crate) use_arc_self: bool,
+    pub(crate) generate_default_stubs: bool,
 
     out_dir: Option<PathBuf>,
 }
@@ -352,6 +362,46 @@ impl Builder {
         self
     }
 
+    /// Configure the code generator to generate Rust `BTreeMap` fields for Protobuf `map` type
+    /// fields.
+    ///
+    /// Passed directly to `prost_build::Config.btree_map`.
+    ///
+    /// Note: previous configurated paths for `btree_map` will be cleared.
+    pub fn btree_map<I, S>(mut self, paths: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.btree_map = Some(
+            paths
+                .into_iter()
+                .map(|path| path.as_ref().to_string())
+                .collect(),
+        );
+        self
+    }
+
+    /// Configure the code generator to generate Rust `bytes::Bytes` fields for Protobuf `bytes`
+    /// type fields.
+    ///
+    /// Passed directly to `prost_build::Config.bytes`.
+    ///
+    /// Note: previous configurated paths for `bytes` will be cleared.
+    pub fn bytes<I, S>(mut self, paths: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.bytes = Some(
+            paths
+                .into_iter()
+                .map(|path| path.as_ref().to_string())
+                .collect(),
+        );
+        self
+    }
+
     /// Add additional attribute to matched server `mod`s. Matches on the package name.
     pub fn server_mod_attribute<P: AsRef<str>, A: AsRef<str>>(
         mut self,
@@ -411,6 +461,12 @@ impl Builder {
         self
     }
 
+    /// Emit `Arc<Self>` receiver type in server traits instead of `&self`.
+    pub fn use_arc_self(mut self, enable: bool) -> Self {
+        self.use_arc_self = enable;
+        self
+    }
+
     /// Emits GRPC endpoints with no attached package. Effectively ignores protofile package declaration from grpc context.
     ///
     /// This effectively sets prost's exported package to an empty string.
@@ -454,6 +510,17 @@ impl Builder {
     /// explicitly.
     pub fn emit_rerun_if_changed(mut self, enable: bool) -> Self {
         self.emit_rerun_if_changed = enable;
+        self
+    }
+
+    /// Enable or disable directing service generation to providing a default implementation for service methods.
+    /// When this is false all gRPC methods must be explicitly implemented.
+    /// When this is true any unimplemented service methods will return 'unimplemented' gRPC error code.
+    /// When this is true all streaming server request RPC types explicitly use tonic::codegen::BoxStream type.
+    ///
+    /// This defaults to `false`.
+    pub fn generate_default_stubs(mut self, enable: bool) -> Self {
+        self.generate_default_stubs = enable;
         self
     }
 
@@ -504,6 +571,12 @@ impl Builder {
         }
         for prost_path in self.boxed.iter() {
             config.boxed(prost_path);
+        }
+        if let Some(ref paths) = self.btree_map {
+            config.btree_map(paths);
+        }
+        if let Some(ref paths) = self.bytes {
+            config.bytes(paths);
         }
         if self.compile_well_known_types {
             config.compile_well_known_types();

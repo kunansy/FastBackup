@@ -179,8 +179,8 @@
 //!
 //! ```
 //! // [dependencies]
-//! // prettyplease = "0.1"
-//! // syn = { version = "1", default-features = false, features = ["full", "parsing"] }
+//! // prettyplease = "0.2"
+//! // syn = { version = "2", default-features = false, features = ["full", "parsing"] }
 //!
 //! const INPUT: &str = stringify! {
 //!     use crate::{
@@ -320,7 +320,7 @@
 //! these situations with conditional punctuation tokens whose selection can be
 //! deferred and populated after it's known that the group is or is not broken.
 
-#![doc(html_root_url = "https://docs.rs/prettyplease/0.1.25")]
+#![doc(html_root_url = "https://docs.rs/prettyplease/0.2.16")]
 #![allow(
     clippy::cast_possible_wrap,
     clippy::cast_sign_loss,

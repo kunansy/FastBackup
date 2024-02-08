@@ -1,5 +1,12 @@
-#![warn(rust_2018_idioms, single_use_lifetimes)]
-#![allow(dead_code)]
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
+#![allow(
+    dead_code,
+    unreachable_pub,
+    clippy::items_after_statements,
+    clippy::no_effect_underscore_binding,
+    clippy::undocumented_unsafe_blocks
+)]
 
 #[macro_use]
 mod auxiliary;
@@ -335,7 +342,6 @@ fn overlapping_lifetime_names() {
 
     pub trait Trait<'a> {}
 
-    #[allow(single_use_lifetimes)] // https://github.com/rust-lang/rust/issues/55058
     #[pin_project(project_replace)]
     pub struct Hrtb<'pin___, T>
     where

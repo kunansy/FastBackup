@@ -11,9 +11,9 @@
 
 [package]
 edition = "2021"
-rust-version = "1.60"
+rust-version = "1.63"
 name = "axum"
-version = "0.6.18"
+version = "0.6.20"
 description = "Web framework that focuses on ergonomics and modularity"
 homepage = "https://github.com/tokio-rs/axum"
 readme = "README.md"
@@ -77,7 +77,7 @@ version = "0.1.67"
 version = "0.3.4"
 
 [dependencies.axum-macros]
-version = "0.3.7"
+version = "0.3.8"
 optional = true
 
 [dependencies.base64]
@@ -161,7 +161,7 @@ optional = true
 package = "tokio"
 
 [dependencies.tokio-tungstenite]
-version = "0.18.0"
+version = "0.20"
 optional = true
 
 [dependencies.tower]
@@ -217,7 +217,7 @@ default-features = false
 version = "1.0"
 
 [dev-dependencies.axum-macros]
-version = "0.3.7"
+version = "0.3.8"
 features = ["__private"]
 
 [dev-dependencies.quickcheck]

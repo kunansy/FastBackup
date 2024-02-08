@@ -305,10 +305,7 @@ async fn it_can_fail_and_recover() -> anyhow::Result<()> {
         assert!(res.is_err());
 
         // now try and use the connection
-        let val: i32 = conn
-            .fetch_one(&*format!("SELECT {}::int4", i))
-            .await?
-            .get(0);
+        let val: i32 = conn.fetch_one(&*format!("SELECT {i}::int4")).await?.get(0);
 
         assert_eq!(val, i);
     }
@@ -329,10 +326,7 @@ async fn it_can_fail_and_recover_with_pool() -> anyhow::Result<()> {
         assert!(res.is_err());
 
         // now try and use the connection
-        let val: i32 = pool
-            .fetch_one(&*format!("SELECT {}::int4", i))
-            .await?
-            .get(0);
+        let val: i32 = pool.fetch_one(&*format!("SELECT {i}::int4")).await?.get(0);
 
         assert_eq!(val, i);
     }
@@ -402,7 +396,7 @@ async fn it_can_work_with_transactions() -> anyhow::Result<()> {
 
     sqlx::query("INSERT INTO _sqlx_users_1922 (id) VALUES ($1)")
         .bind(10_i32)
-        .execute(&mut tx)
+        .execute(&mut *tx)
         .await?;
 
     tx.rollback().await?;
@@ -419,7 +413,7 @@ async fn it_can_work_with_transactions() -> anyhow::Result<()> {
 
     sqlx::query("INSERT INTO _sqlx_users_1922 (id) VALUES ($1)")
         .bind(10_i32)
-        .execute(&mut tx)
+        .execute(&mut *tx)
         .await?;
 
     tx.commit().await?;
@@ -437,7 +431,7 @@ async fn it_can_work_with_transactions() -> anyhow::Result<()> {
 
         sqlx::query("INSERT INTO _sqlx_users_1922 (id) VALUES ($1)")
             .bind(20_i32)
-            .execute(&mut tx)
+            .execute(&mut *tx)
             .await?;
     }
 
@@ -467,7 +461,7 @@ async fn it_can_work_with_nested_transactions() -> anyhow::Result<()> {
     // insert a user
     sqlx::query("INSERT INTO _sqlx_users_2523 (id) VALUES ($1)")
         .bind(50_i32)
-        .execute(&mut tx)
+        .execute(&mut *tx)
         .await?;
 
     // begin once more
@@ -476,7 +470,7 @@ async fn it_can_work_with_nested_transactions() -> anyhow::Result<()> {
     // insert another user
     sqlx::query("INSERT INTO _sqlx_users_2523 (id) VALUES ($1)")
         .bind(10_i32)
-        .execute(&mut tx2)
+        .execute(&mut *tx2)
         .await?;
 
     // never mind, rollback
@@ -484,7 +478,7 @@ async fn it_can_work_with_nested_transactions() -> anyhow::Result<()> {
 
     // did we really?
     let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM _sqlx_users_2523")
-        .fetch_one(&mut tx)
+        .fetch_one(&mut *tx)
         .await?;
 
     assert_eq!(count, 1);
@@ -521,7 +515,7 @@ async fn it_can_drop_multiple_transactions() -> anyhow::Result<()> {
             // do actually something before dropping
             let _user = sqlx::query("INSERT INTO _sqlx_users_3952 (id) VALUES ($1) RETURNING id")
                 .bind(20_i32)
-                .fetch_one(&mut tx)
+                .fetch_one(&mut *tx)
                 .await?;
         }
 
@@ -553,20 +547,20 @@ async fn pool_smoke_test() -> anyhow::Result<()> {
     // spin up more tasks than connections available, and ensure we don't deadlock
     for i in 0..200 {
         let pool = pool.clone();
-        sqlx_rt::spawn(async move {
+        sqlx_core::rt::spawn(async move {
             for j in 0.. {
                 if let Err(e) = sqlx::query("select 1 + 1").execute(&pool).await {
                     // normal error at termination of the test
                     if matches!(e, sqlx::Error::PoolClosed) {
-                        eprintln!("pool task {} exiting normally after {} iterations", i, j);
+                        eprintln!("pool task {i} exiting normally after {j} iterations");
                     } else {
-                        eprintln!("pool task {} dying due to {} after {} iterations", i, e, j);
+                        eprintln!("pool task {i} dying due to {e} after {j} iterations");
                     }
                     break;
                 }
 
                 // shouldn't be necessary if the pool is fair
-                // sqlx_rt::yield_now().await;
+                // sqlx_core::rt::yield_now().await;
             }
         });
     }
@@ -575,7 +569,7 @@ async fn pool_smoke_test() -> anyhow::Result<()> {
     // of cancellations
     for _ in 0..50 {
         let pool = pool.clone();
-        sqlx_rt::spawn(async move {
+        sqlx_core::rt::spawn(async move {
             while !pool.is_closed() {
                 let acquire = pool.acquire();
                 futures::pin_mut!(acquire);
@@ -589,20 +583,20 @@ async fn pool_smoke_test() -> anyhow::Result<()> {
 
                 // this one is necessary since this is a hot loop,
                 // otherwise this task will never be descheduled
-                sqlx_rt::yield_now().await;
+                sqlx_core::rt::yield_now().await;
             }
         });
     }
 
     eprintln!("sleeping for 30 seconds");
 
-    sqlx_rt::sleep(Duration::from_secs(30)).await;
+    sqlx_core::rt::sleep(Duration::from_secs(30)).await;
 
     // assert_eq!(pool.size(), 10);
 
     eprintln!("closing pool");
 
-    sqlx_rt::timeout(Duration::from_secs(30), pool.close()).await?;
+    sqlx_core::rt::timeout(Duration::from_secs(30), pool.close()).await?;
 
     eprintln!("pool closed successfully");
 
@@ -739,7 +733,7 @@ async fn it_closes_statement_from_cache_issue_470() -> anyhow::Result<()> {
     let mut conn = PgConnection::connect_with(&options).await?;
 
     for i in 0..5 {
-        let row = sqlx::query(&*format!("SELECT {}::int4 AS val", i))
+        let row = sqlx::query(&*format!("SELECT {i}::int4 AS val"))
             .fetch_one(&mut conn)
             .await?;
 
@@ -786,7 +780,7 @@ async fn it_can_prepare_then_execute() -> anyhow::Result<()> {
 
     let tweet_id: i64 =
         sqlx::query_scalar("INSERT INTO tweet ( text ) VALUES ( 'Hello, World' ) RETURNING id")
-            .fetch_one(&mut tx)
+            .fetch_one(&mut *tx)
             .await?;
 
     let statement = tx.prepare("SELECT * FROM tweet WHERE id = $1").await?;
@@ -801,7 +795,7 @@ async fn it_can_prepare_then_execute() -> anyhow::Result<()> {
     assert_eq!(statement.column(2).type_info().name(), "TEXT");
     assert_eq!(statement.column(3).type_info().name(), "INT8");
 
-    let row = statement.query().bind(tweet_id).fetch_one(&mut tx).await?;
+    let row = statement.query().bind(tweet_id).fetch_one(&mut *tx).await?;
     let tweet_text: &str = row.try_get("text")?;
 
     assert_eq!(tweet_text, "Hello, World");
@@ -822,7 +816,7 @@ async fn test_issue_622() -> anyhow::Result<()> {
         .connect(&std::env::var("DATABASE_URL").unwrap())
         .await?;
 
-    println!("pool state: {:?}", pool);
+    println!("pool state: {pool:?}");
 
     let mut handles = vec![];
 
@@ -830,18 +824,18 @@ async fn test_issue_622() -> anyhow::Result<()> {
     for i in 0..3 {
         let pool = pool.clone();
 
-        handles.push(sqlx_rt::spawn(async move {
+        handles.push(sqlx_core::rt::spawn(async move {
             {
                 let mut conn = pool.acquire().await.unwrap();
 
-                let _ = sqlx::query("SELECT 1").fetch_one(&mut conn).await.unwrap();
+                let _ = sqlx::query("SELECT 1").fetch_one(&mut *conn).await.unwrap();
 
                 // conn gets dropped here and should be returned to the pool
             }
 
             // (do some other work here without holding on to a connection)
             // this actually fixes the issue, depending on the timeout used
-            // sqlx_rt::sleep(Duration::from_millis(500)).await;
+            // sqlx_core::rt::sleep(Duration::from_millis(500)).await;
 
             {
                 let start = Instant::now();
@@ -850,7 +844,7 @@ async fn test_issue_622() -> anyhow::Result<()> {
                         println!("{} acquire took {:?}", i, start.elapsed());
                         drop(conn);
                     }
-                    Err(e) => panic!("{} acquire returned error: {} pool state: {:?}", i, e, pool),
+                    Err(e) => panic!("{i} acquire returned error: {e} pool state: {pool:?}"),
                 }
             }
 
@@ -1008,7 +1002,7 @@ async fn test_pg_listener_allows_pool_to_close() -> anyhow::Result<()> {
     // acquires and holds a connection which would normally prevent the pool from closing
     let mut listener = PgListener::connect_with(&pool).await?;
 
-    sqlx_rt::spawn(async move {
+    sqlx_core::rt::spawn(async move {
         listener.recv().await.unwrap();
     });
 
@@ -1389,6 +1383,69 @@ VALUES
 }
 
 #[sqlx_macros::test]
+async fn custom_type_resolution_respects_search_path() -> anyhow::Result<()> {
+    let mut conn = new::<Postgres>().await?;
+
+    conn.execute(
+        r#"
+DROP TYPE IF EXISTS some_enum_type;
+DROP SCHEMA IF EXISTS another CASCADE;
+
+CREATE SCHEMA another;
+CREATE TYPE some_enum_type AS ENUM ('a', 'b', 'c');
+CREATE TYPE another.some_enum_type AS ENUM ('d', 'e', 'f');
+    "#,
+    )
+    .await?;
+
+    #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    struct SomeEnumType(String);
+
+    impl sqlx::Type<Postgres> for SomeEnumType {
+        fn type_info() -> sqlx::postgres::PgTypeInfo {
+            sqlx::postgres::PgTypeInfo::with_name("some_enum_type")
+        }
+
+        fn compatible(ty: &sqlx::postgres::PgTypeInfo) -> bool {
+            *ty == Self::type_info()
+        }
+    }
+
+    impl<'r> sqlx::Decode<'r, Postgres> for SomeEnumType {
+        fn decode(
+            value: sqlx::postgres::PgValueRef<'r>,
+        ) -> Result<Self, Box<dyn std::error::Error + 'static + Send + Sync>> {
+            Ok(Self(<String as sqlx::Decode<Postgres>>::decode(value)?))
+        }
+    }
+
+    impl<'q> sqlx::Encode<'q, Postgres> for SomeEnumType {
+        fn encode_by_ref(
+            &self,
+            buf: &mut sqlx::postgres::PgArgumentBuffer,
+        ) -> sqlx::encode::IsNull {
+            <String as sqlx::Encode<Postgres>>::encode_by_ref(&self.0, buf)
+        }
+    }
+
+    let mut conn = new::<Postgres>().await?;
+
+    sqlx::query("set search_path = 'another'")
+        .execute(&mut conn)
+        .await?;
+
+    let result = sqlx::query("SELECT 1 WHERE $1::some_enum_type = 'd'::some_enum_type;")
+        .bind(SomeEnumType("d".into()))
+        .fetch_all(&mut conn)
+        .await;
+
+    let result = result.unwrap();
+    assert_eq!(result.len(), 1);
+
+    Ok(())
+}
+
+#[sqlx_macros::test]
 async fn test_pg_server_num() -> anyhow::Result<()> {
     let conn = new::<Postgres>().await?;
 
@@ -1671,7 +1728,7 @@ async fn test_advisory_locks() -> anyhow::Result<()> {
     // leak so we can take it across the task boundary
     let conn2_lock2 = lock2.acquire(conn2).await?.leak();
 
-    sqlx_rt::spawn({
+    sqlx_core::rt::spawn({
         let lock1 = lock1.clone();
         let lock2 = lock2.clone();
 
@@ -1719,10 +1776,40 @@ async fn test_postgres_bytea_hex_deserialization_errors() -> anyhow::Result<()> 
     let mut conn = new::<Postgres>().await?;
     conn.execute("SET bytea_output = 'escape';").await?;
     for value in ["", "DEADBEEF"] {
-        let query = format!("SELECT '\\x{}'::bytea", value);
+        let query = format!("SELECT '\\x{value}'::bytea");
         let res: sqlx::Result<Vec<u8>> = conn.fetch_one(query.as_str()).await?.try_get(0usize);
         // Deserialization only supports hex format so this should error and definitely not panic.
         res.unwrap_err();
     }
+    Ok(())
+}
+
+#[sqlx_macros::test]
+async fn test_shrink_buffers() -> anyhow::Result<()> {
+    // We don't really have a good way to test that `.shrink_buffers()` functions as expected
+    // without exposing a lot of internals, but we can at least be sure it doesn't
+    // materially affect the operation of the connection.
+
+    let mut conn = new::<Postgres>().await?;
+
+    // The connection buffer is only 8 KiB by default so this should definitely force it to grow.
+    let data = vec![0u8; 32 * 1024];
+
+    let ret: Vec<u8> = sqlx::query_scalar("SELECT $1::bytea")
+        .bind(&data)
+        .fetch_one(&mut conn)
+        .await?;
+
+    assert_eq!(ret, data);
+
+    conn.shrink_buffers();
+
+    let ret: i64 = sqlx::query_scalar("SELECT $1::int8")
+        .bind(&12345678i64)
+        .fetch_one(&mut conn)
+        .await?;
+
+    assert_eq!(ret, 12345678i64);
+
     Ok(())
 }

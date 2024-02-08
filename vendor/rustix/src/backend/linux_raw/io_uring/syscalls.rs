@@ -3,10 +3,9 @@
 //! # Safety
 //!
 //! See the `rustix::backend::syscalls` module documentation for details.
-#![allow(unsafe_code)]
-#![allow(clippy::undocumented_unsafe_blocks)]
+#![allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
 
-use super::super::conv::{by_mut, c_uint, pass_usize, ret_c_uint, ret_owned_fd};
+use crate::backend::conv::{by_mut, c_uint, pass_usize, ret_c_uint, ret_owned_fd};
 use crate::fd::{BorrowedFd, OwnedFd};
 use crate::io;
 use crate::io_uring::{io_uring_params, IoringEnterFlags, IoringRegisterOp};

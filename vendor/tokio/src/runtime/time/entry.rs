@@ -11,10 +11,10 @@
 //! 2) a held driver lock.
 //!
 //! It follows from this that any changes made while holding BOTH 1 and 2 will
-//! be reliably visible, regardless of ordering. This is because of the acq/rel
+//! be reliably visible, regardless of ordering. This is because of the `acq/rel`
 //! fences on the driver lock ensuring ordering with 2, and rust mutable
 //! reference rules for 1 (a mutable reference to an object can't be passed
-//! between threads without an acq/rel barrier, and same-thread we have local
+//! between threads without an `acq/rel` barrier, and same-thread we have local
 //! happens-before ordering).
 //!
 //! # State field
@@ -72,17 +72,21 @@ type TimerResult = Result<(), crate::time::error::Error>;
 const STATE_DEREGISTERED: u64 = u64::MAX;
 const STATE_PENDING_FIRE: u64 = STATE_DEREGISTERED - 1;
 const STATE_MIN_VALUE: u64 = STATE_PENDING_FIRE;
+/// The largest safe integer to use for ticks.
+///
+/// This value should be updated if any other signal values are added above.
+pub(super) const MAX_SAFE_MILLIS_DURATION: u64 = u64::MAX - 2;
 
 /// This structure holds the current shared state of the timer - its scheduled
 /// time (if registered), or otherwise the result of the timer completing, as
 /// well as the registered waker.
 ///
-/// Generally, the StateCell is only permitted to be accessed from two contexts:
-/// Either a thread holding the corresponding &mut TimerEntry, or a thread
-/// holding the timer driver lock. The write actions on the StateCell amount to
-/// passing "ownership" of the StateCell between these contexts; moving a timer
-/// from the TimerEntry to the driver requires _both_ holding the &mut
-/// TimerEntry and the driver lock, while moving it back (firing the timer)
+/// Generally, the `StateCell` is only permitted to be accessed from two contexts:
+/// Either a thread holding the corresponding `&mut TimerEntry`, or a thread
+/// holding the timer driver lock. The write actions on the `StateCell` amount to
+/// passing "ownership" of the `StateCell` between these contexts; moving a timer
+/// from the `TimerEntry` to the driver requires _both_ holding the `&mut
+/// TimerEntry` and the driver lock, while moving it back (firing the timer)
 /// requires only the driver lock.
 pub(super) struct StateCell {
     /// Holds either the scheduled expiration time for this timer, or (if the
@@ -126,7 +130,7 @@ impl StateCell {
     fn when(&self) -> Option<u64> {
         let cur_state = self.state.load(Ordering::Relaxed);
 
-        if cur_state == u64::MAX {
+        if cur_state == STATE_DEREGISTERED {
             None
         } else {
             Some(cur_state)
@@ -160,7 +164,7 @@ impl StateCell {
     /// Marks this timer as being moved to the pending list, if its scheduled
     /// time is not after `not_after`.
     ///
-    /// If the timer is scheduled for a time after not_after, returns an Err
+    /// If the timer is scheduled for a time after `not_after`, returns an Err
     /// containing the current scheduled time.
     ///
     /// SAFETY: Must hold the driver lock.
@@ -202,7 +206,7 @@ impl StateCell {
     /// Fires the timer, setting the result to the provided result.
     ///
     /// Returns:
-    /// * `Some(waker) - if fired and a waker needs to be invoked once the
+    /// * `Some(waker)` - if fired and a waker needs to be invoked once the
     ///   driver lock is released
     /// * `None` - if fired and a waker does not need to be invoked, or if
     ///   already fired
@@ -310,15 +314,15 @@ pub(crate) struct TimerEntry {
 unsafe impl Send for TimerEntry {}
 unsafe impl Sync for TimerEntry {}
 
-/// An TimerHandle is the (non-enforced) "unique" pointer from the driver to the
-/// timer entry. Generally, at most one TimerHandle exists for a timer at a time
+/// An `TimerHandle` is the (non-enforced) "unique" pointer from the driver to the
+/// timer entry. Generally, at most one `TimerHandle` exists for a timer at a time
 /// (enforced by the timer state machine).
 ///
-/// SAFETY: An TimerHandle is essentially a raw pointer, and the usual caveats
-/// of pointer safety apply. In particular, TimerHandle does not itself enforce
-/// that the timer does still exist; however, normally an TimerHandle is created
+/// SAFETY: An `TimerHandle` is essentially a raw pointer, and the usual caveats
+/// of pointer safety apply. In particular, `TimerHandle` does not itself enforce
+/// that the timer does still exist; however, normally an `TimerHandle` is created
 /// immediately before registering the timer, and is consumed when firing the
-/// timer, to help minimize mistakes. Still, because TimerHandle cannot enforce
+/// timer, to help minimize mistakes. Still, because `TimerHandle` cannot enforce
 /// memory safety, all operations are unsafe.
 #[derive(Debug)]
 pub(crate) struct TimerHandle {
@@ -433,7 +437,7 @@ impl TimerShared {
         self.state.extend_expiration(t)
     }
 
-    /// Returns a TimerHandle for this timer.
+    /// Returns a `TimerHandle` for this timer.
     pub(super) fn handle(&self) -> TimerHandle {
         TimerHandle {
             inner: NonNull::from(self),
@@ -549,9 +553,11 @@ impl TimerEntry {
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), super::Error>> {
-        if self.driver().is_shutdown() {
-            panic!("{}", crate::util::error::RUNTIME_SHUTTING_DOWN_ERROR);
-        }
+        assert!(
+            !self.driver().is_shutdown(),
+            "{}",
+            crate::util::error::RUNTIME_SHUTTING_DOWN_ERROR
+        );
 
         if !self.registered {
             let deadline = self.deadline;
@@ -635,6 +641,6 @@ impl TimerHandle {
 
 impl Drop for TimerEntry {
     fn drop(&mut self) {
-        unsafe { Pin::new_unchecked(self) }.as_mut().cancel()
+        unsafe { Pin::new_unchecked(self) }.as_mut().cancel();
     }
 }

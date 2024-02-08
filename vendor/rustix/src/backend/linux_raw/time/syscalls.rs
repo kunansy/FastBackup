@@ -3,35 +3,34 @@
 //! # Safety
 //!
 //! See the `rustix::backend` module documentation for details.
-#![allow(unsafe_code)]
-#![allow(clippy::undocumented_unsafe_blocks)]
+#![allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
 
-use super::super::conv::{ret, ret_infallible};
-use super::types::ClockId;
+use crate::backend::conv::{ret, ret_infallible};
+use crate::clockid::ClockId;
 use crate::io;
+use crate::timespec::Timespec;
 use core::mem::MaybeUninit;
-use linux_raw_sys::general::__kernel_timespec;
+#[cfg(all(feature = "time", target_pointer_width = "32"))]
+use linux_raw_sys::general::itimerspec as __kernel_old_itimerspec;
 #[cfg(target_pointer_width = "32")]
 use linux_raw_sys::general::timespec as __kernel_old_timespec;
 #[cfg(feature = "time")]
 use {
-    super::super::conv::{by_ref, ret_owned_fd},
+    crate::backend::conv::{by_ref, ret_owned_fd},
     crate::fd::BorrowedFd,
     crate::fd::OwnedFd,
     crate::time::{Itimerspec, TimerfdClockId, TimerfdFlags, TimerfdTimerFlags},
 };
-#[cfg(all(feature = "time", target_pointer_width = "32"))]
-use {core::convert::TryInto, linux_raw_sys::general::itimerspec as __kernel_old_itimerspec};
 
 // `clock_gettime` has special optimizations via the vDSO.
 #[cfg(feature = "time")]
-pub(crate) use super::super::vdso_wrappers::{clock_gettime, clock_gettime_dynamic};
+pub(crate) use crate::backend::vdso_wrappers::{clock_gettime, clock_gettime_dynamic};
 
 #[inline]
-pub(crate) fn clock_getres(which_clock: ClockId) -> __kernel_timespec {
+pub(crate) fn clock_getres(which_clock: ClockId) -> Timespec {
     #[cfg(target_pointer_width = "32")]
     unsafe {
-        let mut result = MaybeUninit::<__kernel_timespec>::uninit();
+        let mut result = MaybeUninit::<Timespec>::uninit();
         if let Err(err) = ret(syscall!(__NR_clock_getres_time64, which_clock, &mut result)) {
             // See the comments in `rustix_clock_gettime_via_syscall` about
             // emulation.
@@ -42,19 +41,18 @@ pub(crate) fn clock_getres(which_clock: ClockId) -> __kernel_timespec {
     }
     #[cfg(target_pointer_width = "64")]
     unsafe {
-        let mut result = MaybeUninit::<__kernel_timespec>::uninit();
+        let mut result = MaybeUninit::<Timespec>::uninit();
         ret_infallible(syscall!(__NR_clock_getres, which_clock, &mut result));
         result.assume_init()
     }
 }
 
 #[cfg(target_pointer_width = "32")]
-unsafe fn clock_getres_old(which_clock: ClockId, result: &mut MaybeUninit<__kernel_timespec>) {
+unsafe fn clock_getres_old(which_clock: ClockId, result: &mut MaybeUninit<Timespec>) {
     let mut old_result = MaybeUninit::<__kernel_old_timespec>::uninit();
     ret_infallible(syscall!(__NR_clock_getres, which_clock, &mut old_result));
     let old_result = old_result.assume_init();
-    // TODO: With Rust 1.55, we can use MaybeUninit::write here.
-    result.as_mut_ptr().write(__kernel_timespec {
+    result.write(Timespec {
         tv_sec: old_result.tv_sec.into(),
         tv_nsec: old_result.tv_nsec.into(),
     });
@@ -62,7 +60,7 @@ unsafe fn clock_getres_old(which_clock: ClockId, result: &mut MaybeUninit<__kern
 
 #[cfg(feature = "time")]
 #[inline]
-pub(crate) fn clock_settime(which_clock: ClockId, timespec: __kernel_timespec) -> io::Result<()> {
+pub(crate) fn clock_settime(which_clock: ClockId, timespec: Timespec) -> io::Result<()> {
     // `clock_settime64` was introduced in Linux 5.1. The old `clock_settime`
     // syscall is not y2038-compatible on 32-bit architectures.
     #[cfg(target_pointer_width = "32")]
@@ -88,7 +86,7 @@ pub(crate) fn clock_settime(which_clock: ClockId, timespec: __kernel_timespec) -
 
 #[cfg(feature = "time")]
 #[cfg(target_pointer_width = "32")]
-unsafe fn clock_settime_old(which_clock: ClockId, timespec: __kernel_timespec) -> io::Result<()> {
+unsafe fn clock_settime_old(which_clock: ClockId, timespec: Timespec) -> io::Result<()> {
     let old_timespec = __kernel_old_timespec {
         tv_sec: timespec
             .tv_sec
@@ -106,7 +104,7 @@ unsafe fn clock_settime_old(which_clock: ClockId, timespec: __kernel_timespec) -
 #[cfg(feature = "time")]
 #[inline]
 pub(crate) fn timerfd_create(clockid: TimerfdClockId, flags: TimerfdFlags) -> io::Result<OwnedFd> {
-    unsafe { ret_owned_fd(syscall!(__NR_timerfd_create, clockid, flags)) }
+    unsafe { ret_owned_fd(syscall_readonly!(__NR_timerfd_create, clockid, flags)) }
 }
 
 #[cfg(feature = "time")]
@@ -197,13 +195,12 @@ unsafe fn timerfd_settime_old(
         &mut old_result
     ))?;
     let old_result = old_result.assume_init();
-    // TODO: With Rust 1.55, we can use MaybeUninit::write here.
-    result.as_mut_ptr().write(Itimerspec {
-        it_interval: __kernel_timespec {
+    result.write(Itimerspec {
+        it_interval: Timespec {
             tv_sec: old_result.it_interval.tv_sec.into(),
             tv_nsec: old_result.it_interval.tv_nsec.into(),
         },
-        it_value: __kernel_timespec {
+        it_value: Timespec {
             tv_sec: old_result.it_value.tv_sec.into(),
             tv_nsec: old_result.it_value.tv_nsec.into(),
         },
@@ -246,13 +243,12 @@ unsafe fn timerfd_gettime_old(
     let mut old_result = MaybeUninit::<__kernel_old_itimerspec>::uninit();
     ret(syscall!(__NR_timerfd_gettime, fd, &mut old_result))?;
     let old_result = old_result.assume_init();
-    // TODO: With Rust 1.55, we can use MaybeUninit::write here.
-    result.as_mut_ptr().write(Itimerspec {
-        it_interval: __kernel_timespec {
+    result.write(Itimerspec {
+        it_interval: Timespec {
             tv_sec: old_result.it_interval.tv_sec.into(),
             tv_nsec: old_result.it_interval.tv_nsec.into(),
         },
-        it_value: __kernel_timespec {
+        it_value: Timespec {
             tv_sec: old_result.it_value.tv_sec.into(),
             tv_nsec: old_result.it_value.tv_nsec.into(),
         },

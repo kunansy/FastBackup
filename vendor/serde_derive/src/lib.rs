@@ -1,7 +1,7 @@
 //! This crate provides Serde's two derive macros.
 //!
-//! ```edition2018
-//! # use serde_derive::{Serialize, Deserialize};
+//! ```edition2021
+//! # use serde_derive::{Deserialize, Serialize};
 //! #
 //! #[derive(Serialize, Deserialize)]
 //! # struct S;
@@ -13,8 +13,7 @@
 //!
 //! [https://serde.rs/derive.html]: https://serde.rs/derive.html
 
-#![doc(html_root_url = "https://docs.rs/serde_derive/1.0.164")]
-#![allow(unknown_lints, bare_trait_objects)]
+#![doc(html_root_url = "https://docs.rs/serde_derive/1.0.196")]
 // Ignored clippy lints
 #![allow(
     // clippy false positive: https://github.com/rust-lang/rust-clippy/issues/7054
@@ -51,7 +50,6 @@
     clippy::match_wildcard_for_single_variants,
     clippy::module_name_repetitions,
     clippy::must_use_candidate,
-    clippy::option_if_let_else,
     clippy::similar_names,
     clippy::single_match_else,
     clippy::struct_excessive_bools,
@@ -63,17 +61,16 @@
 )]
 #![cfg_attr(all(test, exhaustive), feature(non_exhaustive_omitted_patterns_lint))]
 
-#[macro_use]
+extern crate proc_macro2;
 extern crate quote;
-#[macro_use]
 extern crate syn;
 
 extern crate proc_macro;
-extern crate proc_macro2;
 
 mod internals;
 
 use proc_macro::TokenStream;
+use syn::parse_macro_input;
 use syn::DeriveInput;
 
 #[macro_use]
@@ -86,7 +83,6 @@ mod dummy;
 mod pretend;
 mod ser;
 mod this;
-mod try;
 
 #[proc_macro_derive(Serialize, attributes(serde))]
 pub fn derive_serialize(input: TokenStream) -> TokenStream {

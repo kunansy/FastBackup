@@ -1,8 +1,6 @@
 //! Socket address utilities.
 
-use super::super::c;
-#[cfg(not(windows))]
-use core::convert::TryInto;
+use crate::backend::c;
 #[cfg(unix)]
 use {
     crate::ffi::CStr,
@@ -78,15 +76,19 @@ impl SocketAddrUnix {
 
     fn init() -> c::sockaddr_un {
         c::sockaddr_un {
-            #[cfg(any(bsd, target_os = "haiku"))]
+            #[cfg(any(bsd, target_os = "aix", target_os = "haiku", target_os = "nto"))]
             sun_len: 0,
+            #[cfg(target_os = "vita")]
+            ss_len: 0,
             sun_family: c::AF_UNIX as _,
-            #[cfg(bsd)]
+            #[cfg(any(bsd, target_os = "nto"))]
             sun_path: [0; 104],
-            #[cfg(not(any(bsd, target_os = "haiku")))]
+            #[cfg(not(any(bsd, target_os = "aix", target_os = "haiku", target_os = "nto")))]
             sun_path: [0; 108],
             #[cfg(target_os = "haiku")]
             sun_path: [0; 126],
+            #[cfg(target_os = "aix")]
+            sun_path: [0; 1023],
         }
     }
 
@@ -161,9 +163,7 @@ impl Eq for SocketAddrUnix {}
 impl PartialOrd for SocketAddrUnix {
     #[inline]
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        let self_len = self.len() - offsetof_sun_path();
-        let other_len = other.len() - offsetof_sun_path();
-        self.unix.sun_path[..self_len].partial_cmp(&other.unix.sun_path[..other_len])
+        Some(self.cmp(other))
     }
 }
 
@@ -210,18 +210,36 @@ pub type SocketAddrStorage = c::sockaddr_storage;
 #[inline]
 pub(crate) fn offsetof_sun_path() -> usize {
     let z = c::sockaddr_un {
-        #[cfg(any(bsd, target_os = "haiku"))]
+        #[cfg(any(bsd, target_os = "aix", target_os = "haiku", target_os = "nto"))]
         sun_len: 0_u8,
-        #[cfg(any(bsd, target_os = "haiku"))]
+        #[cfg(target_os = "vita")]
+        ss_len: 0,
+        #[cfg(any(
+            bsd,
+            target_os = "aix",
+            target_os = "espidf",
+            target_os = "haiku",
+            target_os = "nto",
+            target_os = "vita"
+        ))]
         sun_family: 0_u8,
-        #[cfg(not(any(bsd, target_os = "haiku")))]
+        #[cfg(not(any(
+            bsd,
+            target_os = "aix",
+            target_os = "espidf",
+            target_os = "haiku",
+            target_os = "nto",
+            target_os = "vita"
+        )))]
         sun_family: 0_u16,
-        #[cfg(bsd)]
+        #[cfg(any(bsd, target_os = "nto"))]
         sun_path: [0; 104],
-        #[cfg(not(any(bsd, target_os = "haiku")))]
+        #[cfg(not(any(bsd, target_os = "aix", target_os = "haiku", target_os = "nto")))]
         sun_path: [0; 108],
         #[cfg(target_os = "haiku")]
         sun_path: [0; 126],
+        #[cfg(target_os = "aix")]
+        sun_path: [0; 1023],
     };
     (crate::utils::as_ptr(&z.sun_path) as usize) - (crate::utils::as_ptr(&z) as usize)
 }

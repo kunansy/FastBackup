@@ -12,7 +12,7 @@
 [package]
 edition = "2021"
 name = "google-apis-common"
-version = "5.0.4"
+version = "6.0.1"
 authors = ["Sebastian Thiel <byronimo@gmail.com>"]
 description = "Shared functionality among the google-api crates."
 homepage = "https://github.com/Byron/google-apis-rs/google-apis-common"
@@ -78,5 +78,5 @@ version = "^0.3.1"
 version = "= 1.7"
 
 [dependencies.yup-oauth2]
-version = "= 8.1"
+version = "^ 8.2"
 optional = true

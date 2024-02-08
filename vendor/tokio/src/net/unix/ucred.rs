@@ -31,16 +31,26 @@ impl UCred {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "android", target_os = "openbsd"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "redox",
+    target_os = "android",
+    target_os = "openbsd"
+))]
 pub(crate) use self::impl_linux::get_peer_cred;
 
-#[cfg(any(target_os = "netbsd"))]
+#[cfg(target_os = "netbsd")]
 pub(crate) use self::impl_netbsd::get_peer_cred;
 
 #[cfg(any(target_os = "dragonfly", target_os = "freebsd"))]
 pub(crate) use self::impl_bsd::get_peer_cred;
 
-#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[cfg(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "tvos",
+    target_os = "watchos"
+))]
 pub(crate) use self::impl_macos::get_peer_cred;
 
 #[cfg(any(target_os = "solaris", target_os = "illumos"))]
@@ -49,7 +59,15 @@ pub(crate) use self::impl_solaris::get_peer_cred;
 #[cfg(target_os = "aix")]
 pub(crate) use self::impl_aix::get_peer_cred;
 
-#[cfg(any(target_os = "linux", target_os = "android", target_os = "openbsd"))]
+#[cfg(any(target_os = "espidf", target_os = "vita"))]
+pub(crate) use self::impl_noproc::get_peer_cred;
+
+#[cfg(any(
+    target_os = "linux",
+    target_os = "redox",
+    target_os = "android",
+    target_os = "openbsd"
+))]
 pub(crate) mod impl_linux {
     use crate::net::unix::{self, UnixStream};
 
@@ -58,7 +76,7 @@ pub(crate) mod impl_linux {
 
     #[cfg(target_os = "openbsd")]
     use libc::sockpeercred as ucred;
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(any(target_os = "linux", target_os = "redox", target_os = "android"))]
     use libc::ucred;
 
     pub(crate) fn get_peer_cred(sock: &UnixStream) -> io::Result<super::UCred> {
@@ -101,7 +119,7 @@ pub(crate) mod impl_linux {
     }
 }
 
-#[cfg(any(target_os = "netbsd"))]
+#[cfg(target_os = "netbsd")]
 pub(crate) mod impl_netbsd {
     use crate::net::unix::{self, UnixStream};
 
@@ -174,7 +192,12 @@ pub(crate) mod impl_bsd {
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[cfg(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "tvos",
+    target_os = "watchos"
+))]
 pub(crate) mod impl_macos {
     use crate::net::unix::{self, UnixStream};
 
@@ -279,5 +302,19 @@ pub(crate) mod impl_aix {
                 Err(io::Error::last_os_error())
             }
         }
+    }
+}
+
+#[cfg(any(target_os = "espidf", target_os = "vita"))]
+pub(crate) mod impl_noproc {
+    use crate::net::unix::UnixStream;
+    use std::io;
+
+    pub(crate) fn get_peer_cred(_sock: &UnixStream) -> io::Result<super::UCred> {
+        Ok(super::UCred {
+            uid: 0,
+            gid: 0,
+            pid: None,
+        })
     }
 }

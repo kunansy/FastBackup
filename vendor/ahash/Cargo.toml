@@ -11,8 +11,9 @@
 
 [package]
 edition = "2018"
+rust-version = "1.60.0"
 name = "ahash"
-version = "0.8.3"
+version = "0.8.7"
 authors = ["Tom Kaitchuck <Tom.Kaitchuck@gmail.com>"]
 build = "./build.rs"
 exclude = [
@@ -38,6 +39,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/tkaitchuck/ahash"
 
 [package.metadata.docs.rs]
+features = ["std"]
 rustc-args = [
     "-C",
     "target-feature=+aes",
@@ -46,20 +48,19 @@ rustdoc-args = [
     "-C",
     "target-feature=+aes",
 ]
-features = ["std"]
 
 [profile.bench]
 opt-level = 3
 lto = "fat"
 codegen-units = 1
-debug = false
+debug = 0
 debug-assertions = false
 
 [profile.release]
 opt-level = 3
 lto = "fat"
 codegen-units = 1
-debug = false
+debug = 0
 debug-assertions = false
 
 [profile.test]
@@ -92,7 +93,7 @@ optional = true
 version = "1.0"
 
 [dependencies.const-random]
-version = "0.1.12"
+version = "0.1.17"
 optional = true
 
 [dependencies.getrandom]
@@ -102,6 +103,11 @@ optional = true
 [dependencies.serde]
 version = "1.0.117"
 optional = true
+
+[dependencies.zerocopy]
+version = "0.7.31"
+features = ["simd"]
+default-features = false
 
 [dev-dependencies.criterion]
 version = "0.3.2"
@@ -144,14 +150,12 @@ default = [
     "std",
     "runtime-rng",
 ]
+nightly-arm-aes = []
 no-rng = []
 runtime-rng = ["getrandom"]
 std = []
 
 [target."cfg(not(all(target_arch = \"arm\", target_os = \"none\")))".dependencies.once_cell]
-version = "1.13.1"
-features = [
-    "unstable",
-    "alloc",
-]
+version = "1.18.0"
+features = ["alloc"]
 default-features = false

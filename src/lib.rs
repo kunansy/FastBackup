@@ -220,9 +220,10 @@ pub mod db {
             let db_name = arc_pool
                 .connect_options()
                 .get_database()
-                .unwrap_or("undefined");
+                .unwrap_or("undefined")
+                .to_string();
 
-            create_filename(db_name, &None)
+            create_filename(&db_name, &None)
         };
 
         log::info!("DB dumped");

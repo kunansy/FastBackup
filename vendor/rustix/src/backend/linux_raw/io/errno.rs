@@ -10,16 +10,38 @@
 #![allow(unsafe_code)]
 #![cfg_attr(not(rustc_attrs), allow(unused_unsafe))]
 
-use super::super::c;
+use crate::backend::c;
 use crate::backend::fd::RawFd;
 use crate::backend::reg::{RetNumber, RetReg};
 use crate::io;
 use linux_raw_sys::errno;
 
-/// The error type for `rustix` APIs.
+/// `errno`—An error code.
 ///
-/// This is similar to `std::io::Error`, but only holds an OS error code,
-/// and no extra error value.
+/// The error type for `rustix` APIs. This is similar to [`std::io::Error`],
+/// but only holds an OS error code, and no extra error value.
+///
+/// # References
+///  - [POSIX]
+///  - [Linux]
+///  - [Winsock]
+///  - [FreeBSD]
+///  - [NetBSD]
+///  - [OpenBSD]
+///  - [DragonFly BSD]
+///  - [illumos]
+///  - [glibc]
+///
+/// [POSIX]: https://pubs.opengroup.org/onlinepubs/9699919799/functions/errno.html
+/// [Linux]: https://man7.org/linux/man-pages/man3/errno.3.html
+/// [Winsock]: https://learn.microsoft.com/en-us/windows/win32/winsock/windows-sockets-error-codes-2
+/// [FreeBSD]: https://man.freebsd.org/cgi/man.cgi?errno
+/// [NetBSD]: https://man.netbsd.org/errno.2
+/// [OpenBSD]: https://man.openbsd.org/errno.2
+/// [DragonFly BSD]: https://man.dragonflybsd.org/?command=errno&section=2
+/// [illumos]: https://illumos.org/man/3C/errno
+/// [glibc]: https://www.gnu.org/software/libc/manual/html_node/Error-Codes.html
+/// [`std::io::Error`]: Result
 #[repr(transparent)]
 #[doc(alias = "errno")]
 #[derive(Eq, PartialEq, Hash, Copy, Clone)]
@@ -38,7 +60,7 @@ impl Errno {
     #[inline]
     pub fn from_io_error(io_err: &std::io::Error) -> Option<Self> {
         io_err.raw_os_error().and_then(|raw| {
-            // `std::io::Error` could theoretically have arbitrary "OS error"
+            // `std::io::Error` could theoretically have arbitrary OS error
             // values, so check that they're in Linux's range.
             if (1..4096).contains(&raw) {
                 Some(Self::from_errno(raw as u32))
@@ -67,7 +89,7 @@ impl Errno {
         let encoded = raw.wrapping_neg() as u16;
 
         // TODO: Use Range::contains, once that's `const`.
-        const_assert!(encoded >= 0xf001);
+        assert!(encoded >= 0xf001);
 
         // SAFETY: Linux syscalls return negated error values in the range
         // `-4095..0`, which we just asserted.
@@ -214,7 +236,7 @@ pub(in crate::backend) unsafe fn try_decode_void<Num: RetNumber>(
 /// # Safety
 ///
 /// This must only be used with syscalls which do not return on success.
-#[cfg(feature = "runtime")]
+#[cfg(any(feature = "event", feature = "runtime"))]
 #[inline]
 pub(in crate::backend) unsafe fn try_decode_error<Num: RetNumber>(raw: RetReg<Num>) -> io::Errno {
     debug_assert!(raw.is_in_range(-4095..0));
@@ -237,6 +259,13 @@ pub(in crate::backend) fn decode_usize_infallible<Num: RetNumber>(raw: RetReg<Nu
 }
 
 /// Return the contained `c_int` value.
+#[cfg(not(debug_assertions))]
+#[inline]
+pub(in crate::backend) fn decode_c_int_infallible<Num: RetNumber>(raw: RetReg<Num>) -> c::c_int {
+    raw.decode_c_int()
+}
+
+/// Return the contained `c_uint` value.
 #[cfg(not(debug_assertions))]
 #[inline]
 pub(in crate::backend) fn decode_c_uint_infallible<Num: RetNumber>(raw: RetReg<Num>) -> c::c_uint {

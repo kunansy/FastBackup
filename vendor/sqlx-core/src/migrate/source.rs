@@ -1,40 +1,44 @@
 use crate::error::BoxDynError;
+use crate::fs;
 use crate::migrate::{Migration, MigrationType};
 use futures_core::future::BoxFuture;
-use futures_util::TryStreamExt;
-use sqlx_rt::fs;
+
 use std::borrow::Cow;
 use std::fmt::Debug;
 use std::path::{Path, PathBuf};
 
+/// In the default implementation, a MigrationSource is a directory which
+/// contains the migration SQL scripts. All these scripts must be stored in
+/// files with names using the format `<VERSION>_<DESCRIPTION>.sql`, where
+/// `<VERSION>` is a string that can be parsed into `i64` and its value is
+/// greater than zero, and `<DESCRIPTION>` is a string.
+///
+/// Files that don't match this format are silently ignored.
+///
+/// You can create a new empty migration script using sqlx-cli:
+/// `sqlx migrate add <DESCRIPTION>`.
+///
+/// Note that migrations for each database are tracked using the
+/// `_sqlx_migrations` table (stored in the database). If a migration's hash
+/// changes and it has already been run, this will cause an error.
 pub trait MigrationSource<'s>: Debug {
     fn resolve(self) -> BoxFuture<'s, Result<Vec<Migration>, BoxDynError>>;
 }
 
-/// Implementation of the `MigrationSource` for [std::path::Path].
-///
-/// The path has to point to a directory, which contains the migration SQL scripts. All these
-/// scripts must be stored in files with names using the format `<VERSION>_<DESCRIPTION>.sql`,
-/// where `<VERSION>` is a string that can be parsed into `i64` and its value is greater than zero,
-/// and `<DESCRIPTION>` is a string.
 impl<'s> MigrationSource<'s> for &'s Path {
     fn resolve(self) -> BoxFuture<'s, Result<Vec<Migration>, BoxDynError>> {
         Box::pin(async move {
-            #[allow(unused_mut)]
             let mut s = fs::read_dir(self.canonicalize()?).await?;
             let mut migrations = Vec::new();
 
-            #[cfg(feature = "_rt-tokio")]
-            let mut s = tokio_stream::wrappers::ReadDirStream::new(s);
-
-            while let Some(entry) = s.try_next().await? {
-                if !entry.metadata().await?.is_file() {
+            while let Some(entry) = s.next().await? {
+                // std::fs::metadata traverses symlinks
+                if !std::fs::metadata(&entry.path)?.is_file() {
                     // not a file; ignore
                     continue;
                 }
 
-                let file_name = entry.file_name();
-                let file_name = file_name.to_string_lossy();
+                let file_name = entry.file_name.to_string_lossy();
 
                 let parts = file_name.splitn(2, '_').collect::<Vec<_>>();
 
@@ -52,7 +56,7 @@ impl<'s> MigrationSource<'s> for &'s Path {
                     .replace('_', " ")
                     .to_owned();
 
-                let sql = fs::read_to_string(&entry.path()).await?;
+                let sql = fs::read_to_string(&entry.path).await?;
 
                 migrations.push(Migration::new(
                     version,

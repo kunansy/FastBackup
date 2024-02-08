@@ -1,17 +1,18 @@
 use crate::{backend, io};
 
-pub use backend::time::types::Timespec;
+pub use crate::timespec::Timespec;
 
 #[cfg(not(any(
     apple,
     target_os = "dragonfly",
-    target_os = "emscripten",
+    target_os = "espidf",
     target_os = "freebsd", // FreeBSD 12 has clock_nanosleep, but libc targets FreeBSD 11.
     target_os = "openbsd",
     target_os = "redox",
+    target_os = "vita",
     target_os = "wasi",
 )))]
-pub use backend::time::types::ClockId;
+pub use crate::clockid::ClockId;
 
 /// `clock_nanosleep(id, 0, request, remain)`—Sleeps for a duration on a
 /// given clock.
@@ -29,10 +30,12 @@ pub use backend::time::types::ClockId;
     apple,
     target_os = "dragonfly",
     target_os = "emscripten",
+    target_os = "espidf",
     target_os = "freebsd", // FreeBSD 12 has clock_nanosleep, but libc targets FreeBSD 11.
     target_os = "haiku",
     target_os = "openbsd",
     target_os = "redox",
+    target_os = "vita",
     target_os = "wasi",
 )))]
 #[inline]
@@ -56,10 +59,12 @@ pub fn clock_nanosleep_relative(id: ClockId, request: &Timespec) -> NanosleepRel
     apple,
     target_os = "dragonfly",
     target_os = "emscripten",
+    target_os = "espidf",
     target_os = "freebsd", // FreeBSD 12 has clock_nanosleep, but libc targets FreeBSD 11.
     target_os = "haiku",
     target_os = "openbsd",
     target_os = "redox",
+    target_os = "vita",
     target_os = "wasi",
 )))]
 #[inline]

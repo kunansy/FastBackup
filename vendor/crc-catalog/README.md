@@ -9,15 +9,15 @@ MSRV is 1.46.
 Catalog of CRC algorithms expressed as simple Rust structs. The Rust code is generated from the "[Catalogue of parametrised CRC algorithms](http://reveng.sourceforge.net/crc-catalogue)" using the `generate_catalog.sh` script:
 
 ```
-$ ./generate_catalog.sh > src/catalog.rs
+$ ./generate_catalog.sh > src/algorithm.rs
 ```
 
 ## License
 
 Licensed under either of
 
- * Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
- * MIT License ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
+ * [Apache License, Version 2.0](LICENSES/Apache-2.0.txt)
+ * [MIT License](LICENSES/MIT.txt)
 
 at your option.
 

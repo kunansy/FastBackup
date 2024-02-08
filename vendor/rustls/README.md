@@ -3,13 +3,14 @@
 </p>
 
 <p align="center">
-Rustls is a modern TLS library written in Rust.  It uses <a href = "https://github.com/briansmith/ring"><em>ring</em></a> for cryptography and <a href = "https://github.com/briansmith/webpki">webpki</a> for certificate
-verification.
+Rustls is a modern TLS library written in Rust.
 </p>
 
 # Status
-Rustls is ready for use.  There are no major breaking interface changes
-envisioned after the set included in the 0.20 release.
+
+Rustls is used in production at many organizations and projects. We aim to maintain
+reasonable API surface stability but the API may evolve as we make changes to accomodate
+new features or performance improvements.
 
 If you'd like to help out, please see [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -18,78 +19,22 @@ If you'd like to help out, please see [CONTRIBUTING.md](CONTRIBUTING.md).
 [![Documentation](https://docs.rs/rustls/badge.svg)](https://docs.rs/rustls/)
 [![Chat](https://img.shields.io/discord/976380008299917365?logo=discord)](https://discord.gg/MCSB76RU96)
 
-## Release history
+## Changelog
 
-* Next release
-  - Planned: removal of unused signature verification schemes at link-time.
-* 0.20.8 (2023-01-12)
-  - Yield an error from `ConnectionCommon::read_tls()` if buffers are full.
-    Both a full deframer buffer and a full incoming plaintext buffer will
-    now cause an error to be returned. Callers should call `process_new_packets()`
-    and read out the plaintext data from `reader()` after each successful call to `read_tls()`.
-  - The minimum supported Rust version is now 1.57.0 due to some dependencies
-    requiring it.
-* 0.20.7 (2022-10-18)
-  - Expose secret extraction API under the `secret_extraction` cargo feature.
-    This is designed to enable switching from rustls to kTLS (kernel TLS
-    offload) after a successful TLS 1.2/1.3 handshake, for example.
-  - Move filtering of signature schemes after config selection, avoiding the need
-    for linking in encryption/decryption code for all cipher suites at the cost of
-    exposing more signature schemes in the `ClientHello` emitted by the `Acceptor`.
-  - Expose AlertDescription, ContentType, and HandshakeType,
-    SignatureAlgorithm, and NamedGroup as part of the stable API. Previously they
-    were part of the unstable internals API, but were referenced by parts of the
-    stable API.
-  - We now have a [Discord channel](https://discord.gg/MCSB76RU96) for community
-    discussions.
-  - The minimum supported Rust version is now 1.56.0 due to several dependencies
-    requiring it.
-* 0.20.6 (2022-05-18)
-  - 0.20.5 included a change to track more context for the `Error::CorruptMessage`
-    which made API-incompatible changes to the `Error` type. We yanked 0.20.5
-    and have reverted that change as part of 0.20.6.
-* 0.20.5 (2022-05-14)
-  - Correct compatbility with servers which return no TLS extensions and take
-    advantage of a special case encoding.
-  - Remove spurious warn-level logging introduced in 0.20.3.
-  - Expose cipher suites in `ClientHello` type.
-  - Allow verification of IP addresses with `dangerous_config` enabled.
-  - Retry I/O operations in `ConnectionCommon::complete_io()` when interrupted.
-  - Fix server::ResolvesServerCertUsingSni case sensitivity.
-* 0.20.4 (2022-02-19)
-  - Correct regression in QUIC 0-RTT support.
-* 0.20.3 (2022-02-13)
-  - Support loading ECDSA keys in SEC1 format.
-  - Support receipt of 0-RTT "early data" in TLS1.3 servers.  It is not enabled
-    by default; opt in by setting `ServerConfig::max_early_data_size` to a non-zero
-    value.
-  - Support sending of data with the first server flight.  This is also not
-    enabled by default either: opt in by setting `ServerConfig::send_half_rtt_data`.
-  - Support `read_buf` interface when compiled with nightly. This means
-    data can be safely read out of a rustls connection into a buffer without
-    the buffer requiring initialisation first.  Set the `read_buf` feature to
-    use this.
-  - Improve efficiency when writing vectors of TLS types.
-  - Reduce copying and improve efficiency in TLS1.2 handshake.
-* 0.20.2 (2021-11-21)
-  - Fix `CipherSuite::as_str()` value (as introduced in 0.20.1).
-* 0.20.1 (2021-11-14)
-  - Allow cipher suite enum items to be stringified.
-  - Improve documentation of configuration builder types.
-  - Ensure unused cipher suites can be removed at link-time.
-  - Ensure single-use error types implement `std::error::Error`, and are public.
-
-See [RELEASE_NOTES.md](RELEASE_NOTES.md) for further change history.
+The detailed list of changes in each release can be found at
+https://github.com/rustls/rustls/releases.
 
 # Documentation
-Lives here: https://docs.rs/rustls/
+
+https://docs.rs/rustls/
 
 # Approach
+
 Rustls is a TLS library that aims to provide a good level of cryptographic security,
 requires no configuration to achieve that security, and provides no unsafe features or
-obsolete cryptography.
+obsolete cryptography by default.
 
-## Current features
+## Current functionality (with default crate features)
 
 * TLS1.2 and TLS1.3.
 * ECDSA, Ed25519 or RSA server authentication by clients.
@@ -111,14 +56,6 @@ obsolete cryptography.
 * Extended master secret support ([RFC7627](https://tools.ietf.org/html/rfc7627)).
 * Exporters ([RFC5705](https://tools.ietf.org/html/rfc5705)).
 * OCSP stapling by servers.
-* SCT stapling by servers.
-* SCT verification by clients.
-
-## Possible future features
-
-* PSK support.
-* OCSP verification by clients.
-* Certificate pinning.
 
 ## Non-features
 
@@ -133,21 +70,41 @@ rustls does not and will not support:
 * Ciphersuites without forward secrecy.
 * Renegotiation.
 * Kerberos.
-* Compression.
+* TLS 1.2 protocol compression.
 * Discrete-log Diffie-Hellman.
 * Automatic protocol version downgrade.
+* Using CA certificates directly to authenticate a server/client (often called "self-signed
+certificates"). _Rustls' default certificate verifier does not support using a trust anchor as
+both a CA certificate and an end-entity certificate in order to limit complexity and risk in
+path building. While dangerous, all authentication can be turned off if required --
+see the [example code](https://github.com/rustls/rustls/blob/992e2364a006b2e84a8cf6a7c3eaf0bdb773c9de/examples/src/bin/tlsclient-mio.rs#L318)_.
 
 There are plenty of other libraries that provide these features should you
 need them.
 
 ### Platform support
 
-Rustls uses [`ring`](https://crates.io/crates/ring) for implementing the
-cryptography in TLS. As a result, rustls only runs on platforms
-[supported by `ring`](https://github.com/briansmith/ring#online-automated-testing).
-At the time of writing this means x86, x86-64, armv7, and aarch64.
+While Rustls itself is platform independent, by default it uses
+[`ring`](https://crates.io/crates/ring) for implementing the cryptography in
+TLS. As a result, rustls only runs on platforms
+supported by `ring`. At the time of writing, this means 32-bit ARM, Aarch64 (64-bit ARM),
+x86, x86-64, LoongArch64, 32-bit & 64-bit Little Endian MIPS, 32-bit PowerPC (Big Endian),
+64-bit PowerPC (Big and Little Endian), 64-bit RISC-V, and s390x. We do not presently
+support WebAssembly.
+For more information, see [the supported `ring` target platforms][ring-target-platforms].
 
-Rustls requires Rust 1.56 or later.
+By providing a custom instance of the [`crypto::CryptoProvider`] struct, you
+can replace all cryptography dependencies of rustls.  This is a route to being portable
+to a wider set of architectures and environments, or compliance requirements.  See the
+[`crypto::CryptoProvider`] documentation for more details.
+
+Specifying `default-features = false` when depending on rustls will remove the
+dependency on *ring*.
+
+Rustls requires Rust 1.61 or later.
+
+[ring-target-platforms]: https://github.com/briansmith/ring/blob/2e8363b433fa3b3962c877d9ed2e9145612f3160/include/ring-core/target.h#L18-L64
+[crypto::CryptoProvider]: https://docs.rs/rustls/latest/rustls/crypto/trait.CryptoProvider.html
 
 # Example code
 There are two example programs which use
@@ -183,7 +140,6 @@ Options:
                         SUITE instead.  May be used multiple times.
     --proto PROTOCOL    Send ALPN extension containing PROTOCOL.
                         May be used multiple times to offer several protocols.
-    --cache CACHE       Save session cache to file CACHE.
     --no-tickets        Disable session ticket support.
     --no-sni            Disable server name indication support.
     --insecure          Disable certificate verification.
@@ -209,7 +165,7 @@ or
 
 ```
 $ cargo run --bin tlsclient-mio -- --http expired.badssl.com
-TLS error: WebPkiError(CertExpired, ValidateServerCert)
+TLS error: InvalidCertificate(Expired)
 Connection closed
 ```
 
@@ -249,6 +205,8 @@ Options:
                         to certificate.  Optional.
     --auth CERTFILE     Enable client authentication, and accept certificates
                         signed by those roots provided in CERTFILE.
+    --crl CRLFILE ...   Perform client certificate revocation checking using the DER-encoded
+                        CRLFILE. May be used multiple times.
     --require-auth      Send a fatal alert if the client does not complete client
                         authentication.
     --resumption        Support session resumption.
@@ -290,6 +248,19 @@ Rustls is distributed under the following three licenses:
 These are included as LICENSE-APACHE, LICENSE-MIT and LICENSE-ISC
 respectively.  You may use this software under the terms of any
 of these licenses, at your option.
+
+# Project Membership
+
+- Joe Birr-Pixton ([@ctz], Project Founder - full-time funded by [Prossimo])
+- Dirkjan Ochtman ([@djc], Co-maintainer)
+- Daniel McCarney ([@cpu], Co-maintainer - full-time funded by [Prossimo])
+- Josh Aas ([@bdaehlie], Project Management)
+
+[@ctz]: https://github.com/ctz
+[@djc]: https://github.com/djc
+[@cpu]: https://github.com/cpu
+[@bdaehlie]: https://github.com/bdaehlie
+[Prossimo]: https://www.memorysafety.org/initiative/rustls/
 
 # Code of conduct
 

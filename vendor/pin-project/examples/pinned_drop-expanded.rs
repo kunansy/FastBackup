@@ -1,6 +1,8 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
 // Original code (./pinned_drop.rs):
 //
-// ```rust
+// ```
 // #![allow(dead_code)]
 //
 // use std::pin::Pin;
@@ -22,8 +24,18 @@
 // fn main() {}
 // ```
 
-#![allow(dead_code, unused_imports, unused_parens, unknown_lints, renamed_and_removed_lints)]
-#![allow(clippy::needless_lifetimes, clippy::mut_mut)]
+#![allow(
+    dead_code,
+    missing_debug_implementations,
+    single_use_lifetimes,
+    unused_imports,
+    unused_parens,
+    unknown_lints,
+    renamed_and_removed_lints,
+    clippy::mut_mut,
+    clippy::needless_lifetimes,
+    clippy::undocumented_unsafe_blocks
+)]
 
 use std::pin::Pin;
 

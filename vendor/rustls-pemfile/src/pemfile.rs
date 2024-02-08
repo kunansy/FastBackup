@@ -15,6 +15,9 @@ pub enum Item {
 
     /// A Sec1-encoded plaintext private key; as specified in RFC5915
     ECKey(Vec<u8>),
+
+    /// A Certificate Revocation List; as specified in RFC5280
+    Crl(Vec<u8>),
 }
 
 impl Item {
@@ -24,6 +27,7 @@ impl Item {
             b"RSA PRIVATE KEY" => Some(Item::RSAKey(der)),
             b"PRIVATE KEY" => Some(Item::PKCS8Key(der)),
             b"EC PRIVATE KEY" => Some(Item::ECKey(der)),
+            b"X509 CRL" => Some(Item::Crl(der)),
             _ => None,
         }
     }
@@ -44,7 +48,7 @@ pub fn read_one(rd: &mut dyn io::BufRead) -> Result<Option<Item>, io::Error> {
 
     loop {
         line.clear();
-        let len = rd.read_until(b'\n', &mut line)?;
+        let len = read_until_newline(rd, &mut line)?;
 
         if len == 0 {
             // EOF
@@ -98,7 +102,7 @@ pub fn read_one(rd: &mut dyn io::BufRead) -> Result<Option<Item>, io::Error> {
                     .decode(&b64buf)
                     .map_err(|err| io::Error::new(ErrorKind::InvalidData, err))?;
 
-                if let Some(item) = Item::from_start_line(&section_type, der) {
+                if let Some(item) = Item::from_start_line(section_type, der) {
                     return Ok(Some(item));
                 } else {
                     section = None;
@@ -116,6 +120,43 @@ pub fn read_one(rd: &mut dyn io::BufRead) -> Result<Option<Item>, io::Error> {
                 }
             }
             b64buf.extend(&line[..line.len() - trim]);
+        }
+    }
+}
+
+// Ported from https://github.com/rust-lang/rust/blob/91cfcb021935853caa06698b759c293c09d1e96a/library/std/src/io/mod.rs#L1990 and
+// modified to look for our accepted newlines.
+fn read_until_newline<R: io::BufRead + ?Sized>(
+    r: &mut R,
+    buf: &mut Vec<u8>,
+) -> std::io::Result<usize> {
+    let mut read = 0;
+    loop {
+        let (done, used) = {
+            let available = match r.fill_buf() {
+                Ok(n) => n,
+                Err(ref e) if e.kind() == ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e),
+            };
+            match available
+                .iter()
+                .copied()
+                .position(|b| b == b'\n' || b == b'\r')
+            {
+                Some(i) => {
+                    buf.extend_from_slice(&available[..=i]);
+                    (true, i + 1)
+                }
+                None => {
+                    buf.extend_from_slice(available);
+                    (false, available.len())
+                }
+            }
+        };
+        r.consume(used);
+        read += used;
+        if done || used == 0 {
+            return Ok(read);
         }
     }
 }

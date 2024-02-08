@@ -81,23 +81,23 @@ impl AHasher {
 
     #[inline(always)]
     fn hash_in(&mut self, new_value: u128) {
-        self.enc = aesenc(self.enc, new_value);
+        self.enc = aesdec(self.enc, new_value);
         self.sum = shuffle_and_add(self.sum, new_value);
     }
 
     #[inline(always)]
     fn hash_in_2(&mut self, v1: u128, v2: u128) {
-        self.enc = aesenc(self.enc, v1);
+        self.enc = aesdec(self.enc, v1);
         self.sum = shuffle_and_add(self.sum, v1);
-        self.enc = aesenc(self.enc, v2);
+        self.enc = aesdec(self.enc, v2);
         self.sum = shuffle_and_add(self.sum, v2);
     }
 
     #[inline]
     #[cfg(feature = "specialize")]
     fn short_finish(&self) -> u64 {
-        let combined = aesdec(self.sum, self.enc);
-        let result: [u64; 2] = aesenc(combined, combined).convert();
+        let combined = aesenc(self.sum, self.enc);
+        let result: [u64; 2] = aesdec(combined, combined).convert();
         result[0]
     }
 }
@@ -164,28 +164,29 @@ impl Hasher for AHasher {
                     let tail = data.read_last_u128x4();
                     let mut current: [u128; 4] = [self.key; 4];
                     current[0] = aesenc(current[0], tail[0]);
-                    current[1] = aesenc(current[1], tail[1]);
+                    current[1] = aesdec(current[1], tail[1]);
                     current[2] = aesenc(current[2], tail[2]);
-                    current[3] = aesenc(current[3], tail[3]);
-                    let mut sum: [u128; 2] = [self.key, self.key];
+                    current[3] = aesdec(current[3], tail[3]);
+                    let mut sum: [u128; 2] = [self.key, !self.key];
                     sum[0] = add_by_64s(sum[0].convert(), tail[0].convert()).convert();
                     sum[1] = add_by_64s(sum[1].convert(), tail[1].convert()).convert();
                     sum[0] = shuffle_and_add(sum[0], tail[2]);
                     sum[1] = shuffle_and_add(sum[1], tail[3]);
                     while data.len() > 64 {
                         let (blocks, rest) = data.read_u128x4();
-                        current[0] = aesenc(current[0], blocks[0]);
-                        current[1] = aesenc(current[1], blocks[1]);
-                        current[2] = aesenc(current[2], blocks[2]);
-                        current[3] = aesenc(current[3], blocks[3]);
+                        current[0] = aesdec(current[0], blocks[0]);
+                        current[1] = aesdec(current[1], blocks[1]);
+                        current[2] = aesdec(current[2], blocks[2]);
+                        current[3] = aesdec(current[3], blocks[3]);
                         sum[0] = shuffle_and_add(sum[0], blocks[0]);
                         sum[1] = shuffle_and_add(sum[1], blocks[1]);
                         sum[0] = shuffle_and_add(sum[0], blocks[2]);
                         sum[1] = shuffle_and_add(sum[1], blocks[3]);
                         data = rest;
                     }
-                    self.hash_in_2(aesenc(current[0], current[1]), aesenc(current[2], current[3]));
-                    self.hash_in(add_by_64s(sum[0].convert(), sum[1].convert()).convert());
+                    self.hash_in_2(current[0], current[1]);
+                    self.hash_in_2(current[2], current[3]);
+                    self.hash_in_2(sum[0], sum[1]);
                 } else {
                     //len 33-64
                     let (head, _) = data.read_u128x2();
@@ -207,8 +208,8 @@ impl Hasher for AHasher {
     }
     #[inline]
     fn finish(&self) -> u64 {
-        let combined = aesdec(self.sum, self.enc);
-        let result: [u64; 2] = aesenc(aesenc(combined, self.key), combined).convert();
+        let combined = aesenc(self.sum, self.enc);
+        let result: [u64; 2] = aesdec(aesdec(combined, self.key), combined).convert();
         result[0]
     }
 }
@@ -328,15 +329,15 @@ impl Hasher for AHasherStr {
     fn write(&mut self, bytes: &[u8]) {
         if bytes.len() > 8 {
             self.0.write(bytes);
-            self.0.enc = aesdec(self.0.sum, self.0.enc);
-            self.0.enc = aesenc(aesenc(self.0.enc, self.0.key), self.0.enc);
+            self.0.enc = aesenc(self.0.sum, self.0.enc);
+            self.0.enc = aesdec(aesdec(self.0.enc, self.0.key), self.0.enc);
         } else {
             add_in_length(&mut self.0.enc, bytes.len() as u64);
 
             let value = read_small(bytes).convert();
             self.0.sum = shuffle_and_add(self.0.sum, value);
-            self.0.enc = aesdec(self.0.sum, self.0.enc);
-            self.0.enc = aesenc(aesenc(self.0.enc, self.0.key), self.0.enc);
+            self.0.enc = aesenc(self.0.sum, self.0.enc);
+            self.0.enc = aesdec(aesdec(self.0.enc, self.0.key), self.0.enc);
         }
     }
 

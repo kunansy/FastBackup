@@ -15,6 +15,12 @@ pub trait MigrateDatabase {
     // drop database in url
     // uses a maintenance database depending on driver
     fn drop_database(url: &str) -> BoxFuture<'_, Result<(), Error>>;
+
+    // force drop database in url
+    // uses a maintenance database depending on driver
+    fn force_drop_database(_url: &str) -> BoxFuture<'_, Result<(), Error>> {
+        Box::pin(async { Err(MigrateError::ForceNotSupported)? })
+    }
 }
 
 // 'e = Executor
@@ -26,19 +32,6 @@ pub trait Migrate {
     // Return the version on which the database is dirty or None otherwise.
     // "dirty" means there is a partially applied migration that failed.
     fn dirty_version(&mut self) -> BoxFuture<'_, Result<Option<i64>, MigrateError>>;
-
-    // Return the current version and if the database is "dirty".
-    // "dirty" means there is a partially applied migration that failed.
-    #[deprecated]
-    fn version(&mut self) -> BoxFuture<'_, Result<Option<(i64, bool)>, MigrateError>>;
-
-    // validate the migration
-    // checks that it does exist on the database and that the checksum matches
-    #[deprecated]
-    fn validate<'e: 'm, 'm>(
-        &'e mut self,
-        migration: &'m Migration,
-    ) -> BoxFuture<'m, Result<(), MigrateError>>;
 
     // Return the ordered list of applied migrations
     fn list_applied_migrations(

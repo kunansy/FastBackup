@@ -11,8 +11,9 @@
 
 [package]
 edition = "2018"
+rust-version = "1.49.0"
 name = "lock_api"
-version = "0.4.10"
+version = "0.4.11"
 authors = ["Amanieu d'Antras <amanieu@gmail.com>"]
 description = "Wrappers to create fully-featured Mutex and RwLock types. Compatible with no_std."
 keywords = [
@@ -33,6 +34,7 @@ all-features = true
 rustdoc-args = [
     "--cfg",
     "docsrs",
+    "--generate-link-to-definition",
 ]
 
 [dependencies.owning_ref]

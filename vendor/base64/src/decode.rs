@@ -1,5 +1,5 @@
 use crate::engine::{general_purpose::STANDARD, DecodeEstimate, Engine};
-#[cfg(any(feature = "alloc", feature = "std", test))]
+#[cfg(any(feature = "alloc", test))]
 use alloc::vec::Vec;
 use core::fmt;
 #[cfg(any(feature = "std", test))]
@@ -41,11 +41,7 @@ impl fmt::Display for DecodeError {
 }
 
 #[cfg(any(feature = "std", test))]
-impl error::Error for DecodeError {
-    fn cause(&self) -> Option<&dyn error::Error> {
-        None
-    }
-}
+impl error::Error for DecodeError {}
 
 /// Errors that can occur while decoding into a slice.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -69,7 +65,7 @@ impl fmt::Display for DecodeSliceError {
 
 #[cfg(any(feature = "std", test))]
 impl error::Error for DecodeSliceError {
-    fn cause(&self) -> Option<&dyn error::Error> {
+    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         match self {
             DecodeSliceError::DecodeError(e) => Some(e),
             DecodeSliceError::OutputSliceTooSmall => None,
@@ -87,7 +83,7 @@ impl From<DecodeError> for DecodeSliceError {
 ///
 /// See [Engine::decode].
 #[deprecated(since = "0.21.0", note = "Use Engine::decode")]
-#[cfg(any(feature = "alloc", feature = "std", test))]
+#[cfg(any(feature = "alloc", test))]
 pub fn decode<T: AsRef<[u8]>>(input: T) -> Result<Vec<u8>, DecodeError> {
     STANDARD.decode(input)
 }
@@ -97,7 +93,7 @@ pub fn decode<T: AsRef<[u8]>>(input: T) -> Result<Vec<u8>, DecodeError> {
 /// See [Engine::decode].
 ///Returns a `Result` containing a `Vec<u8>`.
 #[deprecated(since = "0.21.0", note = "Use Engine::decode")]
-#[cfg(any(feature = "alloc", feature = "std", test))]
+#[cfg(any(feature = "alloc", test))]
 pub fn decode_engine<E: Engine, T: AsRef<[u8]>>(
     input: T,
     engine: &E,
@@ -108,7 +104,7 @@ pub fn decode_engine<E: Engine, T: AsRef<[u8]>>(
 /// Decode from string reference as octets.
 ///
 /// See [Engine::decode_vec].
-#[cfg(any(feature = "alloc", feature = "std", test))]
+#[cfg(any(feature = "alloc", test))]
 #[deprecated(since = "0.21.0", note = "Use Engine::decode_vec")]
 pub fn decode_engine_vec<E: Engine, T: AsRef<[u8]>>(
     input: T,

@@ -6,6 +6,12 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::mem;
 use std::ops::Deref;
+#[cfg(unix)]
+use std::os::unix::io::{AsFd, AsRawFd, BorrowedFd, RawFd};
+#[cfg(target_os = "wasi")]
+use std::os::wasi::io::{AsFd, AsRawFd, BorrowedFd, RawFd};
+#[cfg(windows)]
+use std::os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, RawHandle};
 use std::path::{Path, PathBuf};
 
 use crate::error::IoResultExt;
@@ -602,11 +608,44 @@ impl NamedTempFile<File> {
 
     /// Create a new named temporary file in the specified directory.
     ///
+    /// This is equivalent to:
+    ///
+    /// ```ignore
+    /// Builder::new().tempfile_in(dir)
+    /// ```
+    ///
     /// See [`NamedTempFile::new()`] for details.
     ///
     /// [`NamedTempFile::new()`]: #method.new
     pub fn new_in<P: AsRef<Path>>(dir: P) -> io::Result<NamedTempFile> {
         Builder::new().tempfile_in(dir)
+    }
+
+    /// Create a new named temporary file with the specified filename prefix.
+    ///
+    /// See [`NamedTempFile::new()`] for details.
+    ///
+    /// [`NamedTempFile::new()`]: #method.new
+    pub fn with_prefix<S: AsRef<OsStr>>(prefix: S) -> io::Result<NamedTempFile> {
+        Builder::new().prefix(&prefix).tempfile()
+    }
+    /// Create a new named temporary file with the specified filename prefix,
+    /// in the specified directory.
+    ///
+    /// This is equivalent to:
+    ///
+    /// ```ignore
+    /// Builder::new().prefix(&prefix).tempfile_in(directory)
+    /// ```
+    ///
+    /// See [`NamedTempFile::new()`] for details.
+    ///
+    /// [`NamedTempFile::new()`]: #method.new
+    pub fn with_prefix_in<S: AsRef<OsStr>, P: AsRef<Path>>(
+        prefix: S,
+        dir: P,
+    ) -> io::Result<NamedTempFile> {
+        Builder::new().prefix(&prefix).tempfile_in(dir)
     }
 }
 
@@ -692,7 +731,7 @@ impl<F> NamedTempFile<F> {
     /// # Security
     ///
     /// This method persists the temporary file using its path and may not be
-    /// secure in the in all cases. Please read the security section on the top
+    /// secure in all cases. Please read the security section on the top
     /// level documentation of this type for details.
     ///
     /// # Errors
@@ -746,7 +785,7 @@ impl<F> NamedTempFile<F> {
     /// # Security
     ///
     /// This method persists the temporary file using its path and may not be
-    /// secure in the in all cases. Please read the security section on the top
+    /// secure in all cases. Please read the security section on the top
     /// level documentation of this type for details.
     ///
     /// # Errors
@@ -1034,42 +1073,33 @@ impl Seek for &NamedTempFile<File> {
     }
 }
 
-#[cfg(all(fd, unix))]
-impl<F: std::os::unix::io::AsFd> std::os::unix::io::AsFd for NamedTempFile<F> {
-    fn as_fd(&self) -> std::os::unix::io::BorrowedFd<'_> {
+#[cfg(any(unix, target_os = "wasi"))]
+impl<F: AsFd> AsFd for NamedTempFile<F> {
+    fn as_fd(&self) -> BorrowedFd<'_> {
         self.as_file().as_fd()
     }
 }
 
-#[cfg(unix)]
-impl<F> std::os::unix::io::AsRawFd for NamedTempFile<F>
-where
-    F: std::os::unix::io::AsRawFd,
-{
+#[cfg(any(unix, target_os = "wasi"))]
+impl<F: AsRawFd> AsRawFd for NamedTempFile<F> {
     #[inline]
-    fn as_raw_fd(&self) -> std::os::unix::io::RawFd {
+    fn as_raw_fd(&self) -> RawFd {
         self.as_file().as_raw_fd()
     }
 }
 
-#[cfg(all(fd, windows))]
-impl<F> std::os::windows::io::AsHandle for NamedTempFile<F>
-where
-    F: std::os::windows::io::AsHandle,
-{
+#[cfg(windows)]
+impl<F: AsHandle> AsHandle for NamedTempFile<F> {
     #[inline]
-    fn as_handle(&self) -> std::os::windows::io::BorrowedHandle<'_> {
+    fn as_handle(&self) -> BorrowedHandle<'_> {
         self.as_file().as_handle()
     }
 }
 
 #[cfg(windows)]
-impl<F> std::os::windows::io::AsRawHandle for NamedTempFile<F>
-where
-    F: std::os::windows::io::AsRawHandle,
-{
+impl<F: AsRawHandle> AsRawHandle for NamedTempFile<F> {
     #[inline]
-    fn as_raw_handle(&self) -> std::os::windows::io::RawHandle {
+    fn as_raw_handle(&self) -> RawHandle {
         self.as_file().as_raw_handle()
     }
 }
@@ -1077,13 +1107,14 @@ where
 pub(crate) fn create_named(
     mut path: PathBuf,
     open_options: &mut OpenOptions,
+    permissions: Option<&std::fs::Permissions>,
 ) -> io::Result<NamedTempFile> {
     // Make the path absolute. Otherwise, changing directories could cause us to
     // delete the wrong file.
     if !path.is_absolute() {
         path = env::current_dir()?.join(path)
     }
-    imp::create_named(&path, open_options)
+    imp::create_named(&path, open_options, permissions)
         .with_err_path(|| path.clone())
         .map(|file| NamedTempFile {
             path: TempPath {

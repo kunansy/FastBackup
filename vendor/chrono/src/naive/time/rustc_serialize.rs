@@ -1,5 +1,3 @@
-#![cfg_attr(docsrs, doc(cfg(feature = "rustc-serialize")))]
-
 use super::NaiveTime;
 use rustc_serialize::{Decodable, Decoder, Encodable, Encoder};
 
@@ -16,14 +14,17 @@ impl Decodable for NaiveTime {
 }
 
 #[cfg(test)]
-use rustc_serialize::json;
+mod tests {
+    use crate::naive::time::{test_decodable_json, test_encodable_json};
+    use rustc_serialize::json;
 
-#[test]
-fn test_encodable() {
-    super::test_encodable_json(json::encode);
-}
+    #[test]
+    fn test_encodable() {
+        test_encodable_json(json::encode);
+    }
 
-#[test]
-fn test_decodable() {
-    super::test_decodable_json(json::decode);
+    #[test]
+    fn test_decodable() {
+        test_decodable_json(json::decode);
+    }
 }

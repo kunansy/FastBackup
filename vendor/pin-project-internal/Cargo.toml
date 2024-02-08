@@ -10,10 +10,10 @@
 # See Cargo.toml.orig for the original contents.
 
 [package]
-edition = "2018"
+edition = "2021"
 rust-version = "1.56"
 name = "pin-project-internal"
-version = "1.1.1"
+version = "1.1.4"
 description = """
 Implementation detail of the `pin-project` crate.
 """
@@ -24,6 +24,7 @@ keywords = [
 ]
 categories = [
     "no-std",
+    "no-std::no-alloc",
     "rust-patterns",
 ]
 license = "Apache-2.0 OR MIT"
@@ -39,7 +40,7 @@ proc-macro = true
 version = "1.0.60"
 
 [dependencies.quote]
-version = "1"
+version = "1.0.25"
 
 [dependencies.syn]
 version = "2.0.1"
@@ -49,3 +50,86 @@ features = [
 ]
 
 [dev-dependencies]
+
+[lints.clippy]
+all = "warn"
+as_ptr_cast_mut = "warn"
+default_union_representation = "warn"
+inline_asm_x86_att_syntax = "warn"
+pedantic = "warn"
+trailing_empty_array = "warn"
+transmute_undefined_repr = "warn"
+undocumented_unsafe_blocks = "warn"
+
+[lints.clippy.bool_assert_comparison]
+level = "allow"
+priority = 1
+
+[lints.clippy.borrow_as_ptr]
+level = "allow"
+priority = 1
+
+[lints.clippy.doc_markdown]
+level = "allow"
+priority = 1
+
+[lints.clippy.float_cmp]
+level = "allow"
+priority = 1
+
+[lints.clippy.manual_assert]
+level = "allow"
+priority = 1
+
+[lints.clippy.manual_range_contains]
+level = "allow"
+priority = 1
+
+[lints.clippy.missing_errors_doc]
+level = "allow"
+priority = 1
+
+[lints.clippy.module_name_repetitions]
+level = "allow"
+priority = 1
+
+[lints.clippy.similar_names]
+level = "allow"
+priority = 1
+
+[lints.clippy.single_match]
+level = "allow"
+priority = 1
+
+[lints.clippy.single_match_else]
+level = "allow"
+priority = 1
+
+[lints.clippy.struct_excessive_bools]
+level = "allow"
+priority = 1
+
+[lints.clippy.struct_field_names]
+level = "allow"
+priority = 1
+
+[lints.clippy.too_many_arguments]
+level = "allow"
+priority = 1
+
+[lints.clippy.too_many_lines]
+level = "allow"
+priority = 1
+
+[lints.clippy.type_complexity]
+level = "allow"
+priority = 1
+
+[lints.rust]
+improper_ctypes = "warn"
+improper_ctypes_definitions = "warn"
+missing_debug_implementations = "warn"
+non_ascii_idents = "warn"
+rust_2018_idioms = "warn"
+single_use_lifetimes = "warn"
+unreachable_pub = "warn"

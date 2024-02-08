@@ -23,7 +23,7 @@
 //! }
 //! ```
 //!
-//! Wait for SIGHUP on Unix
+//! Wait for `SIGHUP` on Unix
 //!
 //! ```rust,no_run
 //! # #[cfg(unix)] {
@@ -70,10 +70,8 @@ struct RxFuture {
 }
 
 async fn make_future(mut rx: Receiver<()>) -> Receiver<()> {
-    match rx.changed().await {
-        Ok(()) => rx,
-        Err(_) => panic!("signal sender went away"),
-    }
+    rx.changed().await.expect("signal sender went away");
+    rx
 }
 
 impl RxFuture {

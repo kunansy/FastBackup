@@ -1,13 +1,15 @@
 use crate::enums::ProtocolVersion;
-use crate::error::Error;
+use crate::enums::{AlertDescription, ContentType, HandshakeType};
+use crate::error::{Error, InvalidMessage, PeerMisbehaved};
 use crate::msgs::alert::AlertMessagePayload;
 use crate::msgs::base::Payload;
 use crate::msgs::ccs::ChangeCipherSpecPayload;
 use crate::msgs::codec::{Codec, Reader};
-use crate::msgs::enums::{AlertDescription, AlertLevel, ContentType, HandshakeType};
+use crate::msgs::enums::AlertLevel;
+use crate::msgs::fragmenter::MAX_FRAGMENT_LEN;
 use crate::msgs::handshake::HandshakeMessagePayload;
 
-use std::convert::TryFrom;
+use alloc::vec::Vec;
 
 #[derive(Debug)]
 pub enum MessagePayload {
@@ -37,26 +39,26 @@ impl MessagePayload {
         }
     }
 
-    pub fn new(typ: ContentType, vers: ProtocolVersion, payload: Payload) -> Result<Self, Error> {
+    pub fn new(
+        typ: ContentType,
+        vers: ProtocolVersion,
+        payload: Payload,
+    ) -> Result<Self, InvalidMessage> {
         let mut r = Reader::init(&payload.0);
-        let parsed = match typ {
-            ContentType::ApplicationData => return Ok(Self::ApplicationData(payload)),
-            ContentType::Alert => AlertMessagePayload::read(&mut r)
-                .filter(|_| !r.any_left())
-                .map(MessagePayload::Alert),
-            ContentType::Handshake => HandshakeMessagePayload::read_version(&mut r, vers)
-                .filter(|_| !r.any_left())
-                .map(|parsed| Self::Handshake {
+        match typ {
+            ContentType::ApplicationData => Ok(Self::ApplicationData(payload)),
+            ContentType::Alert => AlertMessagePayload::read(&mut r).map(MessagePayload::Alert),
+            ContentType::Handshake => {
+                HandshakeMessagePayload::read_version(&mut r, vers).map(|parsed| Self::Handshake {
                     parsed,
                     encoded: payload,
-                }),
-            ContentType::ChangeCipherSpec => ChangeCipherSpecPayload::read(&mut r)
-                .filter(|_| !r.any_left())
-                .map(MessagePayload::ChangeCipherSpec),
-            _ => None,
-        };
-
-        parsed.ok_or(Error::CorruptMessagePayload(typ))
+                })
+            }
+            ContentType::ChangeCipherSpec => {
+                ChangeCipherSpecPayload::read(&mut r).map(MessagePayload::ChangeCipherSpec)
+            }
+            _ => Err(InvalidMessage::InvalidContentType),
+        }
     }
 
     pub fn content_type(&self) -> ContentType {
@@ -74,49 +76,77 @@ impl MessagePayload {
 /// This type owns all memory for its interior parts. It is used to read/write from/to I/O
 /// buffers as well as for fragmenting, joining and encryption/decryption. It can be converted
 /// into a `Message` by decoding the payload.
+///
+/// # Decryption
+/// Internally the message payload is stored as a `Vec<u8>`; this can by mutably borrowed with
+/// [`OpaqueMessage::payload_mut()`].  This is useful for decrypting a message in-place.
+/// After the message is decrypted, call [`OpaqueMessage::into_plain_message()`] or
+/// [`OpaqueMessage::into_tls13_unpadded_message()`] (depending on the
+/// protocol version).
 #[derive(Clone, Debug)]
 pub struct OpaqueMessage {
     pub typ: ContentType,
     pub version: ProtocolVersion,
-    pub payload: Payload,
+    payload: Payload,
 }
 
 impl OpaqueMessage {
+    /// Construct a new `OpaqueMessage` from constituent fields.
+    ///
+    /// `body` is moved into the `payload` field.
+    pub fn new(typ: ContentType, version: ProtocolVersion, body: Vec<u8>) -> Self {
+        Self {
+            typ,
+            version,
+            payload: Payload::new(body),
+        }
+    }
+
+    /// Access the message payload as a slice.
+    pub fn payload(&self) -> &[u8] {
+        &self.payload.0
+    }
+
+    /// Access the message payload as a mutable `Vec<u8>`.
+    pub fn payload_mut(&mut self) -> &mut Vec<u8> {
+        &mut self.payload.0
+    }
+
     /// `MessageError` allows callers to distinguish between valid prefixes (might
     /// become valid if we read more data) and invalid data.
     pub fn read(r: &mut Reader) -> Result<Self, MessageError> {
-        let typ = ContentType::read(r).ok_or(MessageError::TooShortForHeader)?;
-        let version = ProtocolVersion::read(r).ok_or(MessageError::TooShortForHeader)?;
-        let len = u16::read(r).ok_or(MessageError::TooShortForHeader)?;
+        let typ = ContentType::read(r).map_err(|_| MessageError::TooShortForHeader)?;
+        // Don't accept any new content-types.
+        if let ContentType::Unknown(_) = typ {
+            return Err(MessageError::InvalidContentType);
+        }
+
+        let version = ProtocolVersion::read(r).map_err(|_| MessageError::TooShortForHeader)?;
+        // Accept only versions 0x03XX for any XX.
+        match version {
+            ProtocolVersion::Unknown(ref v) if (v & 0xff00) != 0x0300 => {
+                return Err(MessageError::UnknownProtocolVersion);
+            }
+            _ => {}
+        };
+
+        let len = u16::read(r).map_err(|_| MessageError::TooShortForHeader)?;
 
         // Reject undersize messages
         //  implemented per section 5.1 of RFC8446 (TLSv1.3)
         //              per section 6.2.1 of RFC5246 (TLSv1.2)
         if typ != ContentType::ApplicationData && len == 0 {
-            return Err(MessageError::IllegalLength);
+            return Err(MessageError::InvalidEmptyPayload);
         }
 
         // Reject oversize messages
         if len >= Self::MAX_PAYLOAD {
-            return Err(MessageError::IllegalLength);
+            return Err(MessageError::MessageTooLarge);
         }
-
-        // Don't accept any new content-types.
-        if let ContentType::Unknown(_) = typ {
-            return Err(MessageError::IllegalContentType);
-        }
-
-        // Accept only versions 0x03XX for any XX.
-        match version {
-            ProtocolVersion::Unknown(ref v) if (v & 0xff00) != 0x0300 => {
-                return Err(MessageError::IllegalProtocolVersion);
-            }
-            _ => {}
-        };
 
         let mut sub = r
             .sub(len as usize)
-            .ok_or(MessageError::TooShortForLength)?;
+            .map_err(|_| MessageError::TooShortForLength)?;
         let payload = Payload::read(&mut sub);
 
         Ok(Self {
@@ -147,6 +177,30 @@ impl OpaqueMessage {
         }
     }
 
+    /// For TLS1.3 (only), checks the length msg.payload is valid and removes the padding.
+    ///
+    /// Returns an error if the message (pre-unpadding) is too long, or the padding is invalid,
+    /// or the message (post-unpadding) is too long.
+    pub fn into_tls13_unpadded_message(mut self) -> Result<PlainMessage, Error> {
+        let payload = &mut self.payload.0;
+
+        if payload.len() > MAX_FRAGMENT_LEN + 1 {
+            return Err(Error::PeerSentOversizedRecord);
+        }
+
+        self.typ = unpad_tls13(payload);
+        if self.typ == ContentType::Unknown(0) {
+            return Err(PeerMisbehaved::IllegalTlsInnerPlaintext.into());
+        }
+
+        if payload.len() > MAX_FRAGMENT_LEN {
+            return Err(Error::PeerSentOversizedRecord);
+        }
+
+        self.version = ProtocolVersion::TLSv1_3;
+        Ok(self.into_plain_message())
+    }
+
     /// This is the maximum on-the-wire size of a TLSCiphertext.
     /// That's 2^14 payload bytes, a header, and a 2KB allowance
     /// for ciphertext overheads.
@@ -157,6 +211,21 @@ impl OpaqueMessage {
 
     /// Maximum on-wire message size.
     pub const MAX_WIRE_SIZE: usize = (Self::MAX_PAYLOAD + Self::HEADER_SIZE) as usize;
+}
+
+/// `v` is a message payload, immediately post-decryption.  This function
+/// removes zero padding bytes, until a non-zero byte is encountered which is
+/// the content type, which is returned.  See RFC8446 s5.2.
+///
+/// ContentType(0) is returned if the message payload is empty or all zeroes.
+fn unpad_tls13(v: &mut Vec<u8>) -> ContentType {
+    loop {
+        match v.pop() {
+            Some(0) => {}
+            Some(content_type) => return ContentType::from(content_type),
+            None => return ContentType::Unknown(0),
+        }
+    }
 }
 
 impl From<Message> for PlainMessage {
@@ -286,7 +355,8 @@ impl<'a> BorrowedPlainMessage<'a> {
 pub enum MessageError {
     TooShortForHeader,
     TooShortForLength,
-    IllegalLength,
-    IllegalContentType,
-    IllegalProtocolVersion,
+    InvalidEmptyPayload,
+    MessageTooLarge,
+    InvalidContentType,
+    UnknownProtocolVersion,
 }

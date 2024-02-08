@@ -1,10 +1,10 @@
 # webpki-roots
 This is a crate containing Mozilla's root certificates for use with
-the [webpki](https://github.com/briansmith/webpki) or
+the [webpki](https://github.com/rustls/webpki) or
 [rustls](https://github.com/rustls/rustls) crates.
 
 This crate is inspired by [certifi.io](https://certifi.io/en/latest/) and
-uses the services provided by [mkcert.org](https://mkcert.org/).
+uses the data provided by the [Common CA Database (CCADB)](https://www.ccadb.org/).
 
 [![webpki-roots](https://github.com/rustls/webpki-roots/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/rustls/webpki-roots/actions/workflows/build.yml)
 [![Crate](https://img.shields.io/crates/v/webpki-roots.svg)](https://crates.io/crates/webpki-roots)
@@ -14,8 +14,7 @@ The underlying data is MPL-licensed, and `src/lib.rs`
 is therefore a derived work.
 
 # Regenerating sources
-You will need python3 and curl.
-
-Run `build.py` which will output a new version of `src/lib.rs`.  You can now
-compare and audit.  The code is generated in deterministic order so changes
+Sources are generated in an integration test, in `tests/codegen.rs`. The test
+will fail if the sources are out of date relative to upstream, and update
+`src/lib.rs` if so. The code is generated in deterministic order so changes
 to the source should only result from upstream changes.

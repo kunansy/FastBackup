@@ -18,7 +18,7 @@
 ///     .await?;
 ///
 /// // anonymous struct has `#[derive(Debug)]` for convenience
-/// println!("{:?}", account);
+/// println!("{account:?}");
 /// println!("{}: {}", account.id, account.name);
 ///
 /// # Ok(())
@@ -28,7 +28,17 @@
 /// # fn main() {}
 /// ```
 ///
-/// **The method you want to call depends on how many rows you're expecting.**
+/// The output columns will be mapped to their corresponding Rust types.
+/// See the documentation for your database for details:
+///
+/// * Postgres: [crate::postgres::types]
+/// * MySQL: [crate::mysql::types]
+///     * Note: due to wire protocol limitations, the query macros do not know when
+///       a column should be decoded as `bool`. It will be inferred to be `i8` instead.
+///       See the link above for details.
+/// * SQLite: [crate::sqlite::types]
+///
+/// **The method you want to call on the result depends on how many rows you're expecting.**
 ///
 /// | Number of Rows | Method to Call*             | Returns                                             | Notes |
 /// |----------------| ----------------------------|-----------------------------------------------------|-------|
@@ -38,14 +48,14 @@
 /// | At Least One   | `.fetch(...)`               | `impl Stream<Item = sqlx::Result<{adhoc struct}>>`  | Call `.try_next().await` to get each row result. |
 /// | Multiple   | `.fetch_all(...)`               | `sqlx::Result<Vec<{adhoc struct}>>`  | |
 ///
-/// \* All methods accept one of `&mut {connection type}`, `&mut Transaction` or `&Pool`.
+/// \* All methods accept one of `&mut {connection type}`, `&mut Transaction` or `&Pool`.  
 /// † Only callable if the query returns no columns; otherwise it's assumed the query *may* return at least one row.
 /// ## Requirements
 /// * The `DATABASE_URL` environment variable must be set at build-time to point to a database
 /// server with the schema that the query string will be checked against. All variants of `query!()`
 /// use [dotenv]<sup>1</sup> so this can be in a `.env` file instead.
 ///
-///     * Or, `sqlx-data.json` must exist at the workspace root. See [Offline Mode](#offline-mode-requires-the-offline-feature)
+///     * Or, `.sqlx` must exist at the workspace root. See [Offline Mode](#offline-mode-requires-the-offline-feature)
 ///       below.
 ///
 /// * The query must be a string literal, or concatenation of string literals using `+` (useful
@@ -60,7 +70,7 @@
 ///       determine the database type.
 ///
 /// <sup>1</sup> The `dotenv` crate itself appears abandoned as of [December 2021](https://github.com/dotenv-rs/dotenv/issues/74)
-/// so we now use the [`dotenvy`] crate instead. The file format is the same.
+/// so we now use the [dotenvy] crate instead. The file format is the same.
 ///
 /// [dotenv]: https://crates.io/crates/dotenv
 /// [dotenvy]: https://crates.io/crates/dotenvy
@@ -86,7 +96,7 @@
 ///     .fetch_one(&mut conn)
 ///     .await?;
 ///
-/// println!("{:?}", account);
+/// println!("{account:?}");
 /// println!("{}: {}", account.id, account.name);
 /// # Ok(())
 /// # }
@@ -151,9 +161,12 @@
 /// sqlx::query!("select $1::int4 as id", my_int as MyInt4)
 /// ```
 ///
-/// Using `expr as _` or `expr : _` simply signals to the macro to not type-check that bind expression,
-/// and then that syntax is stripped from the expression so as to not trigger type errors
-/// (or an unstable syntax feature in the case of the latter, which is called type ascription).
+/// Using `expr as _` simply signals to the macro to not type-check that bind expression,
+/// and then that syntax is stripped from the expression so as to not trigger type errors.
+///
+/// **NOTE:** type ascription syntax (`expr: _`) is deprecated and will be removed in a
+/// future release. This is due to Rust's [RFC 3307](https://github.com/rust-lang/rfcs/pull/3307)
+/// officially dropping support for the syntax.
 ///
 /// ## Type Overrides: Output Columns
 /// Type overrides are also available for output columns, utilizing the SQL standard's support
@@ -276,21 +289,21 @@
 /// | `foo!: T` | Forced not-null | Overridden |
 /// | `foo?: T` | Forced nullable | Overridden |
 ///
-/// ## Offline Mode (requires the `offline` feature)
+/// ## Offline Mode
 /// The macros can be configured to not require a live database connection for compilation,
 /// but it requires a couple extra steps:
 ///
 /// * Run `cargo install sqlx-cli`.
 /// * In your project with `DATABASE_URL` set (or in a `.env` file) and the database server running,
 ///   run `cargo sqlx prepare`.
-/// * Check the generated `sqlx-data.json` file into version control.
+/// * Check the generated `.sqlx` directory into version control.
 /// * Don't have `DATABASE_URL` set during compilation.
 ///
 /// Your project can now be built without a database connection (you must omit `DATABASE_URL` or
 /// else it will still try to connect). To update the generated file simply run `cargo sqlx prepare`
 /// again.
 ///
-/// To ensure that your `sqlx-data.json` file is kept up-to-date, both with the queries in your
+/// To ensure that your `.sqlx` directory is kept up-to-date, both with the queries in your
 /// project and your database schema itself, run
 /// `cargo install sqlx-cli && cargo sqlx prepare --check` in your Continuous Integration script.
 ///
@@ -366,7 +379,7 @@ macro_rules! query_unchecked (
 ///     .fetch_one(&mut conn)
 ///     .await?;
 ///
-/// println!("{:?}", account);
+/// println!("{account:?}");
 /// println!("{}: {}", account.id, account.name);
 ///
 /// # Ok(())
@@ -418,8 +431,10 @@ macro_rules! query_file_unchecked (
 /// module for your database for mappings:
 ///     * Postgres: [crate::postgres::types]
 ///     * MySQL: [crate::mysql::types]
+///         * Note: due to wire protocol limitations, the query macros do not know when
+///           a column should be decoded as `bool`. It will be inferred to be `i8` instead.
+///           See the link above for details.
 ///     * SQLite: [crate::sqlite::types]
-///     * MSSQL: [crate::mssql::types]
 /// * If a column may be `NULL`, the corresponding field's type must be wrapped in `Option<_>`.
 /// * Neither the query nor the struct may have unused fields.
 ///
@@ -449,7 +464,7 @@ macro_rules! query_file_unchecked (
 ///     .fetch_one(&mut conn)
 ///     .await?;
 ///
-/// println!("{:?}", account);
+/// println!("{account:?}");
 /// println!("{}: {}", account.id, account.name);
 ///
 /// # Ok(())
@@ -586,7 +601,7 @@ macro_rules! query_as (
 ///     .fetch_one(&mut conn)
 ///     .await?;
 ///
-/// println!("{:?}", account);
+/// println!("{account:?}");
 /// println!("{}: {}", account.id, account.name);
 ///
 /// # Ok(())
@@ -733,7 +748,7 @@ macro_rules! query_file_scalar_unchecked (
 ///
 /// This is because our ability to tell the compiler to watch external files for changes
 /// from a proc-macro is very limited. The compiler by default only re-runs proc macros when
-/// one ore more source files have changed, because normally it shouldn't have to otherwise. SQLx is
+/// one or more source files have changed, because normally it shouldn't have to otherwise. SQLx is
 /// just weird in that external factors can change the output of proc macros, much to the chagrin of
 /// the compiler team and IDE plugin authors.
 ///
@@ -773,7 +788,7 @@ macro_rules! query_file_scalar_unchecked (
 /// You can also set it in `build.rustflags` in `.cargo/config.toml`:
 /// ```toml,ignore
 /// [build]
-/// rustflags = ["--cfg sqlx_macros_unstable"]
+/// rustflags = ["--cfg=sqlx_macros_unstable"]
 /// ```
 ///
 /// And then continue building and running your project normally.

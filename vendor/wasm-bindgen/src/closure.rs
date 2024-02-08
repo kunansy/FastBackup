@@ -356,16 +356,12 @@ where
     /// lifetime dynamically managed by the JS GC. This function can be used
     /// to drop this `Closure` while keeping the associated JS function still
     /// valid.
-    ///
-    /// By default this function will leak memory. This can be dangerous if this
-    /// function is called many times in an application because the memory leak
-    /// will overwhelm the page quickly and crash the wasm.
-    ///
-    /// If the browser, however, supports weak references, then this function
-    /// will not leak memory. Instead the Rust memory will be reclaimed when the
-    /// JS closure is GC'd. Weak references are not enabled by default since
-    /// they're still a proposal for the JS standard. They can be enabled with
-    /// `WASM_BINDGEN_WEAKREF=1` when running `wasm-bindgen`, however.
+    /// 
+    /// If the platform supports weak references, the Rust memory will be
+    /// reclaimed when the JS closure is GC'd. If weak references is not
+    /// supported, this can be dangerous if this function is called many times
+    /// in an application because the memory leak will overwhelm the page
+    /// quickly and crash the wasm.
     pub fn into_js_value(self) -> JsValue {
         let idx = self.js.idx;
         mem::forget(self);
@@ -559,7 +555,7 @@ pub trait IntoWasmClosure<T: ?Sized> {
 
 macro_rules! doit {
     ($(
-        ($($var:ident)*)
+        ($($var:ident $arg1:ident $arg2:ident $arg3:ident $arg4:ident)*)
     )*) => ($(
         unsafe impl<$($var,)* R> WasmClosure for dyn Fn($($var),*) -> R + 'static
             where $($var: FromWasmAbi + 'static,)*
@@ -570,8 +566,13 @@ macro_rules! doit {
                 unsafe extern "C" fn invoke<$($var: FromWasmAbi,)* R: ReturnWasmAbi>(
                     a: usize,
                     b: usize,
-                    $($var: <$var as FromWasmAbi>::Abi),*
-                ) -> <R as ReturnWasmAbi>::Abi {
+                    $(
+                    $arg1: <$var::Abi as WasmAbi>::Prim1,
+                    $arg2: <$var::Abi as WasmAbi>::Prim2,
+                    $arg3: <$var::Abi as WasmAbi>::Prim3,
+                    $arg4: <$var::Abi as WasmAbi>::Prim4,
+                    )*
+                ) -> WasmRet<R::Abi> {
                     if a == 0 {
                         throw_str("closure invoked after being dropped");
                     }
@@ -582,11 +583,11 @@ macro_rules! doit {
                         let f: *const dyn Fn($($var),*) -> R =
                             FatPtr { fields: (a, b) }.ptr;
                         $(
-                            let $var = <$var as FromWasmAbi>::from_abi($var);
+                            let $var = <$var as FromWasmAbi>::from_abi($var::Abi::join($arg1, $arg2, $arg3, $arg4));
                         )*
                         (*f)($($var),*)
                     };
-                    ret.return_abi()
+                    ret.return_abi().into()
                 }
 
                 inform(invoke::<$($var,)* R> as u32);
@@ -622,8 +623,13 @@ macro_rules! doit {
                 unsafe extern "C" fn invoke<$($var: FromWasmAbi,)* R: ReturnWasmAbi>(
                     a: usize,
                     b: usize,
-                    $($var: <$var as FromWasmAbi>::Abi),*
-                ) -> <R as ReturnWasmAbi>::Abi {
+                    $(
+                    $arg1: <$var::Abi as WasmAbi>::Prim1,
+                    $arg2: <$var::Abi as WasmAbi>::Prim2,
+                    $arg3: <$var::Abi as WasmAbi>::Prim3,
+                    $arg4: <$var::Abi as WasmAbi>::Prim4,
+                    )*
+                ) -> WasmRet<R::Abi> {
                     if a == 0 {
                         throw_str("closure invoked recursively or after being dropped");
                     }
@@ -635,11 +641,11 @@ macro_rules! doit {
                             FatPtr { fields: (a, b) }.ptr;
                         let f = f as *mut dyn FnMut($($var),*) -> R;
                         $(
-                            let $var = <$var as FromWasmAbi>::from_abi($var);
+                            let $var = <$var as FromWasmAbi>::from_abi($var::Abi::join($arg1, $arg2, $arg3, $arg4));
                         )*
                         (*f)($($var),*)
                     };
-                    ret.return_abi()
+                    ret.return_abi().into()
                 }
 
                 inform(invoke::<$($var,)* R> as u32);
@@ -732,14 +738,14 @@ macro_rules! doit {
 
 doit! {
     ()
-    (A)
-    (A B)
-    (A B C)
-    (A B C D)
-    (A B C D E)
-    (A B C D E F)
-    (A B C D E F G)
-    (A B C D E F G H)
+    (A a1 a2 a3 a4)
+    (A a1 a2 a3 a4 B b1 b2 b3 b4)
+    (A a1 a2 a3 a4 B b1 b2 b3 b4 C c1 c2 c3 c4)
+    (A a1 a2 a3 a4 B b1 b2 b3 b4 C c1 c2 c3 c4 D d1 d2 d3 d4)
+    (A a1 a2 a3 a4 B b1 b2 b3 b4 C c1 c2 c3 c4 D d1 d2 d3 d4 E e1 e2 e3 e4)
+    (A a1 a2 a3 a4 B b1 b2 b3 b4 C c1 c2 c3 c4 D d1 d2 d3 d4 E e1 e2 e3 e4 F f1 f2 f3 f4)
+    (A a1 a2 a3 a4 B b1 b2 b3 b4 C c1 c2 c3 c4 D d1 d2 d3 d4 E e1 e2 e3 e4 F f1 f2 f3 f4 G g1 g2 g3 g4)
+    (A a1 a2 a3 a4 B b1 b2 b3 b4 C c1 c2 c3 c4 D d1 d2 d3 d4 E e1 e2 e3 e4 F f1 f2 f3 f4 G g1 g2 g3 g4 H h1 h2 h3 h4)
 }
 
 // Copy the above impls down here for where there's only one argument and it's a
@@ -758,8 +764,11 @@ where
         unsafe extern "C" fn invoke<A: RefFromWasmAbi, R: ReturnWasmAbi>(
             a: usize,
             b: usize,
-            arg: <A as RefFromWasmAbi>::Abi,
-        ) -> <R as ReturnWasmAbi>::Abi {
+            arg1: <A::Abi as WasmAbi>::Prim1,
+            arg2: <A::Abi as WasmAbi>::Prim2,
+            arg3: <A::Abi as WasmAbi>::Prim3,
+            arg4: <A::Abi as WasmAbi>::Prim4,
+        ) -> WasmRet<R::Abi> {
             if a == 0 {
                 throw_str("closure invoked after being dropped");
             }
@@ -768,10 +777,10 @@ where
             // example)
             let ret = {
                 let f: *const dyn Fn(&A) -> R = FatPtr { fields: (a, b) }.ptr;
-                let arg = <A as RefFromWasmAbi>::ref_from_abi(arg);
+                let arg = <A as RefFromWasmAbi>::ref_from_abi(A::Abi::join(arg1, arg2, arg3, arg4));
                 (*f)(&*arg)
             };
-            ret.return_abi()
+            ret.return_abi().into()
         }
 
         inform(invoke::<A, R> as u32);
@@ -801,8 +810,11 @@ where
         unsafe extern "C" fn invoke<A: RefFromWasmAbi, R: ReturnWasmAbi>(
             a: usize,
             b: usize,
-            arg: <A as RefFromWasmAbi>::Abi,
-        ) -> <R as ReturnWasmAbi>::Abi {
+            arg1: <A::Abi as WasmAbi>::Prim1,
+            arg2: <A::Abi as WasmAbi>::Prim2,
+            arg3: <A::Abi as WasmAbi>::Prim3,
+            arg4: <A::Abi as WasmAbi>::Prim4,
+        ) -> WasmRet<R::Abi> {
             if a == 0 {
                 throw_str("closure invoked recursively or after being dropped");
             }
@@ -812,10 +824,10 @@ where
             let ret = {
                 let f: *const dyn FnMut(&A) -> R = FatPtr { fields: (a, b) }.ptr;
                 let f = f as *mut dyn FnMut(&A) -> R;
-                let arg = <A as RefFromWasmAbi>::ref_from_abi(arg);
+                let arg = <A as RefFromWasmAbi>::ref_from_abi(A::Abi::join(arg1, arg2, arg3, arg4));
                 (*f)(&*arg)
             };
-            ret.return_abi()
+            ret.return_abi().into()
         }
 
         inform(invoke::<A, R> as u32);

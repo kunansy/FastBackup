@@ -126,6 +126,7 @@ fn lint_suppress_with_body() -> Attribute {
     parse_quote! {
         #[allow(
             clippy::async_yields_async,
+            clippy::diverging_sub_expression,
             clippy::let_unit_value,
             clippy::no_effect_underscore_binding,
             clippy::shadow_same,
@@ -174,7 +175,7 @@ fn transform_sig(
     };
 
     let mut lifetimes = CollectLifetimes::new();
-    for arg in sig.inputs.iter_mut() {
+    for arg in &mut sig.inputs {
         match arg {
             FnArg::Receiver(arg) => lifetimes.visit_receiver_mut(arg),
             FnArg::Typed(arg) => lifetimes.visit_type_mut(&mut arg.ty),
@@ -405,7 +406,7 @@ fn transform_block(context: Context, sig: &mut Signature, block: &mut Block) {
     let let_ret = match &mut sig.output {
         ReturnType::Default => quote_spanned! {block.brace_token.span=>
             #(#decls)*
-            let _: () = { #(#stmts)* };
+            let () = { #(#stmts)* };
         },
         ReturnType::Type(_, ret) => {
             if contains_associated_type_impl_trait(context, ret) {

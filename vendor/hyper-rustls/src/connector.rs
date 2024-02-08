@@ -1,4 +1,3 @@
-use std::convert::TryFrom;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -11,7 +10,7 @@ use tokio_rustls::TlsConnector;
 
 use crate::stream::MaybeHttpsStream;
 
-pub mod builder;
+pub(crate) mod builder;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -22,6 +21,15 @@ pub struct HttpsConnector<T> {
     http: T,
     tls_config: Arc<rustls::ClientConfig>,
     override_server_name: Option<String>,
+}
+
+impl<T> HttpsConnector<T> {
+    /// Force the use of HTTPS when connecting.
+    ///
+    /// If a URL is not `https` when connecting, an error is returned.
+    pub fn enforce_https(&mut self) {
+        self.force_https = true;
+    }
 }
 
 impl<T> fmt::Debug for HttpsConnector<T> {
@@ -37,7 +45,7 @@ where
     C: Into<Arc<rustls::ClientConfig>>,
 {
     fn from((http, cfg): (H, C)) -> Self {
-        HttpsConnector {
+        Self {
             force_https: false,
             http,
             tls_config: cfg.into(),

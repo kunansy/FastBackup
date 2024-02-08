@@ -2,41 +2,45 @@
 
 #[cfg(not(target_os = "wasi"))]
 use crate::fs::Mode;
-use crate::fs::{OFlags, Timespec};
-use crate::io::SeekFrom;
 #[cfg(not(target_os = "wasi"))]
-use crate::process::{Gid, Uid};
+use crate::fs::{Gid, Uid};
+use crate::fs::{OFlags, SeekFrom, Timespec};
 use crate::{backend, io};
 use backend::fd::{AsFd, BorrowedFd};
-
-#[cfg(not(target_os = "wasi"))]
-pub use backend::fs::types::FlockOperation;
-
 #[cfg(not(any(
     netbsdlike,
     solarish,
     target_os = "aix",
     target_os = "dragonfly",
+    target_os = "espidf",
+    target_os = "nto",
     target_os = "redox",
+    target_os = "vita",
 )))]
-pub use backend::fs::types::FallocateFlags;
-
-pub use backend::fs::types::Stat;
-
+use backend::fs::types::FallocateFlags;
+#[cfg(not(any(
+    target_os = "espidf",
+    target_os = "solaris",
+    target_os = "vita",
+    target_os = "wasi"
+)))]
+use backend::fs::types::FlockOperation;
+#[cfg(linux_kernel)]
+use backend::fs::types::FsWord;
+use backend::fs::types::Stat;
 #[cfg(not(any(
     solarish,
+    target_os = "espidf",
     target_os = "haiku",
     target_os = "netbsd",
+    target_os = "nto",
     target_os = "redox",
+    target_os = "vita",
     target_os = "wasi",
 )))]
-pub use backend::fs::types::StatFs;
-
+use backend::fs::types::StatFs;
 #[cfg(not(any(target_os = "haiku", target_os = "redox", target_os = "wasi")))]
-pub use backend::fs::types::{StatVfs, StatVfsMountFlags};
-
-#[cfg(linux_kernel)]
-pub use backend::fs::types::FsWord;
+use backend::fs::types::StatVfs;
 
 /// Timestamps used by [`utimensat`] and [`futimens`].
 ///
@@ -102,10 +106,10 @@ pub fn tell<Fd: AsFd>(fd: Fd) -> io::Result<u64> {
     backend::fs::syscalls::tell(fd.as_fd())
 }
 
-/// `fchmod(fd)`—Sets open file or directory permissions.
+/// `fchmod(fd, mode)`—Sets open file or directory permissions.
 ///
-/// This implementation does not support `O_PATH` file descriptors, even on
-/// platforms where the host libc emulates it.
+/// This implementation does not support [`OFlags::PATH`] file descriptors,
+/// even on platforms where the host libc emulates it.
 ///
 /// # References
 ///  - [POSIX]
@@ -119,7 +123,7 @@ pub fn fchmod<Fd: AsFd>(fd: Fd, mode: Mode) -> io::Result<()> {
     backend::fs::syscalls::fchmod(fd.as_fd(), mode)
 }
 
-/// `fchown(fd)`—Sets open file or directory ownership.
+/// `fchown(fd, owner, group)`—Sets open file or directory ownership.
 ///
 /// # References
 ///  - [POSIX]
@@ -162,9 +166,12 @@ pub fn fstat<Fd: AsFd>(fd: Fd) -> io::Result<Stat> {
 /// [Linux]: https://man7.org/linux/man-pages/man2/fstatfs.2.html
 #[cfg(not(any(
     solarish,
+    target_os = "espidf",
     target_os = "haiku",
     target_os = "netbsd",
+    target_os = "nto",
     target_os = "redox",
+    target_os = "vita",
     target_os = "wasi",
 )))]
 #[inline]
@@ -200,6 +207,7 @@ pub fn fstatvfs<Fd: AsFd>(fd: Fd) -> io::Result<StatVfs> {
 ///
 /// [POSIX]: https://pubs.opengroup.org/onlinepubs/9699919799/functions/futimens.html
 /// [Linux]: https://man7.org/linux/man-pages/man2/utimensat.2.html
+#[cfg(not(any(target_os = "espidf", target_os = "vita")))]
 #[inline]
 pub fn futimens<Fd: AsFd>(fd: Fd, times: &Timestamps) -> io::Result<()> {
     backend::fs::syscalls::futimens(fd.as_fd(), times)
@@ -225,7 +233,10 @@ pub fn futimens<Fd: AsFd>(fd: Fd, times: &Timestamps) -> io::Result<()> {
     solarish,
     target_os = "aix",
     target_os = "dragonfly",
+    target_os = "espidf",
+    target_os = "nto",
     target_os = "redox",
+    target_os = "vita",
 )))] // not implemented in libc for netbsd yet
 #[inline]
 #[doc(alias = "posix_fallocate")]
@@ -248,7 +259,7 @@ pub(crate) fn _is_file_read_write(fd: BorrowedFd<'_>) -> io::Result<(bool, bool)
     let mode = backend::fs::syscalls::fcntl_getfl(fd)?;
 
     // Check for `O_PATH`.
-    #[cfg(any(linux_kernel, target_os = "fuchsia", target_os = "emscripten"))]
+    #[cfg(any(linux_kernel, target_os = "emscripten", target_os = "fuchsia"))]
     if mode.contains(OFlags::PATH) {
         return Ok((false, false));
     }
@@ -293,8 +304,10 @@ pub fn fsync<Fd: AsFd>(fd: Fd) -> io::Result<()> {
 #[cfg(not(any(
     apple,
     target_os = "dragonfly",
+    target_os = "espidf",
     target_os = "haiku",
     target_os = "redox",
+    target_os = "vita",
 )))]
 #[inline]
 pub fn fdatasync<Fd: AsFd>(fd: Fd) -> io::Result<()> {
@@ -320,7 +333,12 @@ pub fn ftruncate<Fd: AsFd>(fd: Fd, length: u64) -> io::Result<()> {
 ///  - [Linux]
 ///
 /// [Linux]: https://man7.org/linux/man-pages/man2/flock.2.html
-#[cfg(not(any(target_os = "solaris", target_os = "wasi")))]
+#[cfg(not(any(
+    target_os = "espidf",
+    target_os = "solaris",
+    target_os = "vita",
+    target_os = "wasi"
+)))]
 #[inline]
 pub fn flock<Fd: AsFd>(fd: Fd, operation: FlockOperation) -> io::Result<()> {
     backend::fs::syscalls::flock(fd.as_fd(), operation)

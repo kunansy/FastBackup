@@ -27,7 +27,7 @@ async fn macro_select_from_cte_bind() -> anyhow::Result<()> {
     .fetch_one(&mut conn)
     .await?;
 
-    println!("{:?}", account);
+    println!("{account:?}");
     println!("{}: {}", account.id, account.name);
 
     Ok(())
@@ -53,7 +53,7 @@ async fn test_query_as_raw() -> anyhow::Result<()> {
     assert_eq!(account.name, None);
     assert_eq!(account.r#type, 1);
 
-    println!("{:?}", account);
+    println!("{account:?}");
 
     Ok(())
 }
@@ -191,7 +191,7 @@ async fn with_test_row<'a>(
 ) -> anyhow::Result<(Transaction<'a, MySql>, MyInt)> {
     let mut transaction = conn.begin().await?;
     let id = sqlx::query!("INSERT INTO tweet(text, owner_id) VALUES ('#sqlx is pretty cool!', 1)")
-        .execute(&mut transaction)
+        .execute(&mut *transaction)
         .await?
         .last_insert_id();
     Ok((transaction, MyInt(id as i64)))
@@ -215,20 +215,20 @@ async fn test_column_override_wildcard() -> anyhow::Result<()> {
     let (mut conn, id) = with_test_row(&mut conn).await?;
 
     let record = sqlx::query_as!(Record, "select id as `id: _` from tweet")
-        .fetch_one(&mut conn)
+        .fetch_one(&mut *conn)
         .await?;
 
     assert_eq!(record.id, id);
 
     // this syntax is also useful for expressions
     let record = sqlx::query_as!(Record, "select * from (select 1 as `id: _`) records")
-        .fetch_one(&mut conn)
+        .fetch_one(&mut *conn)
         .await?;
 
     assert_eq!(record.id, MyInt(1));
 
     let record = sqlx::query_as!(OptionalRecord, "select owner_id as `id: _` from tweet")
-        .fetch_one(&mut conn)
+        .fetch_one(&mut *conn)
         .await?;
 
     assert_eq!(record.id, Some(MyInt(1)));
@@ -242,7 +242,7 @@ async fn test_column_override_wildcard_not_null() -> anyhow::Result<()> {
     let (mut conn, _) = with_test_row(&mut conn).await?;
 
     let record = sqlx::query_as!(Record, "select owner_id as `id!: _` from tweet")
-        .fetch_one(&mut conn)
+        .fetch_one(&mut *conn)
         .await?;
 
     assert_eq!(record.id, MyInt(1));
@@ -256,7 +256,7 @@ async fn test_column_override_wildcard_nullable() -> anyhow::Result<()> {
     let (mut conn, id) = with_test_row(&mut conn).await?;
 
     let record = sqlx::query_as!(OptionalRecord, "select id as `id?: _` from tweet")
-        .fetch_one(&mut conn)
+        .fetch_one(&mut *conn)
         .await?;
 
     assert_eq!(record.id, Some(id));
@@ -270,20 +270,20 @@ async fn test_column_override_exact() -> anyhow::Result<()> {
     let (mut conn, id) = with_test_row(&mut conn).await?;
 
     let record = sqlx::query!("select id as `id: MyInt` from tweet")
-        .fetch_one(&mut conn)
+        .fetch_one(&mut *conn)
         .await?;
 
     assert_eq!(record.id, id);
 
     // we can also support this syntax for expressions
     let record = sqlx::query!("select * from (select 1 as `id: MyInt`) records")
-        .fetch_one(&mut conn)
+        .fetch_one(&mut *conn)
         .await?;
 
     assert_eq!(record.id, MyInt(1));
 
     let record = sqlx::query!("select owner_id as `id: MyInt` from tweet")
-        .fetch_one(&mut conn)
+        .fetch_one(&mut *conn)
         .await?;
 
     assert_eq!(record.id, Some(MyInt(1)));
@@ -297,7 +297,7 @@ async fn test_column_override_exact_not_null() -> anyhow::Result<()> {
     let (mut conn, _) = with_test_row(&mut conn).await?;
 
     let record = sqlx::query!("select owner_id as `id!: MyInt` from tweet")
-        .fetch_one(&mut conn)
+        .fetch_one(&mut *conn)
         .await?;
 
     assert_eq!(record.id, MyInt(1));
@@ -311,7 +311,7 @@ async fn test_column_override_exact_nullable() -> anyhow::Result<()> {
     let (mut conn, id) = with_test_row(&mut conn).await?;
 
     let record = sqlx::query!("select id as `id?: MyInt` from tweet")
-        .fetch_one(&mut conn)
+        .fetch_one(&mut *conn)
         .await?;
 
     assert_eq!(record.id, Some(id));
@@ -366,7 +366,7 @@ async fn test_try_from_attr_for_native_type() -> anyhow::Result<()> {
     let (mut conn, id) = with_test_row(&mut conn).await?;
 
     let record = sqlx::query_as::<_, Record>("select id from tweet")
-        .fetch_one(&mut conn)
+        .fetch_one(&mut *conn)
         .await?;
 
     assert_eq!(record.id, id.0 as u64);
@@ -395,7 +395,7 @@ async fn test_try_from_attr_for_custom_type() -> anyhow::Result<()> {
     let (mut conn, id) = with_test_row(&mut conn).await?;
 
     let record = sqlx::query_as::<_, Record>("select id from tweet")
-        .fetch_one(&mut conn)
+        .fetch_one(&mut *conn)
         .await?;
 
     assert_eq!(record.id, Id(id.0));
@@ -427,10 +427,105 @@ async fn test_try_from_attr_with_flatten() -> anyhow::Result<()> {
     let (mut conn, id) = with_test_row(&mut conn).await?;
 
     let record = sqlx::query_as::<_, Record>("select id from tweet")
-        .fetch_one(&mut conn)
+        .fetch_one(&mut *conn)
         .await?;
 
     assert_eq!(record.id, id.0 as u64);
+
+    Ok(())
+}
+
+#[sqlx_macros::test]
+async fn test_try_from_attr_with_complex_type() -> anyhow::Result<()> {
+    mod m {
+        #[derive(sqlx::Type)]
+        #[sqlx(transparent)]
+        pub struct ComplexType<T>(T);
+
+        impl std::convert::TryFrom<ComplexType<i64>> for u64 {
+            type Error = std::num::TryFromIntError;
+            fn try_from(value: ComplexType<i64>) -> Result<Self, Self::Error> {
+                u64::try_from(value.0)
+            }
+        }
+    }
+
+    #[derive(sqlx::FromRow)]
+    struct Record {
+        #[sqlx(try_from = "m::ComplexType<i64>")]
+        id: u64,
+    }
+
+    let mut conn = new::<MySql>().await?;
+    let (mut conn, id) = with_test_row(&mut conn).await?;
+
+    let record = sqlx::query_as::<_, Record>("select id from tweet")
+        .fetch_one(&mut *conn)
+        .await?;
+
+    assert_eq!(record.id, id.0 as u64);
+
+    Ok(())
+}
+
+#[sqlx_macros::test]
+async fn test_from_row_json_attr() -> anyhow::Result<()> {
+    #[derive(serde::Deserialize)]
+    struct J {
+        a: u32,
+        b: u32,
+    }
+
+    #[derive(sqlx::FromRow)]
+    struct Record {
+        #[sqlx(json)]
+        j: J,
+    }
+
+    let mut conn = new::<MySql>().await?;
+
+    let record = sqlx::query_as::<_, Record>("select json_object('a', 1, 'b', 2) as j")
+        .fetch_one(&mut conn)
+        .await?;
+
+    assert_eq!(record.j.a, 1);
+    assert_eq!(record.j.b, 2);
+
+    Ok(())
+}
+
+#[sqlx_macros::test]
+async fn test_from_row_json_try_from_attr() -> anyhow::Result<()> {
+    #[derive(serde::Deserialize)]
+    struct J {
+        a: u32,
+        b: u32,
+    }
+
+    // Non-deserializable
+    struct J2 {
+        sum: u32,
+    }
+
+    impl std::convert::From<J> for J2 {
+        fn from(j: J) -> Self {
+            Self { sum: j.a + j.b }
+        }
+    }
+
+    #[derive(sqlx::FromRow)]
+    struct Record {
+        #[sqlx(json, try_from = "J")]
+        j: J2,
+    }
+
+    let mut conn = new::<MySql>().await?;
+
+    let record = sqlx::query_as::<_, Record>("select json_object('a', 1, 'b', 2) as j")
+        .fetch_one(&mut conn)
+        .await?;
+
+    assert_eq!(record.j.sum, 3);
 
     Ok(())
 }

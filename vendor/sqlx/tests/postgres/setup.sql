@@ -1,6 +1,9 @@
 -- https://www.postgresql.org/docs/current/ltree.html
 CREATE EXTENSION IF NOT EXISTS ltree;
 
+-- https://www.postgresql.org/docs/current/citext.html
+CREATE EXTENSION IF NOT EXISTS citext;
+
 -- https://www.postgresql.org/docs/current/sql-createtype.html
 CREATE TYPE status AS ENUM ('new', 'open', 'closed');
 
@@ -21,6 +24,15 @@ CREATE TABLE tweet
     owner_id   BIGINT
 );
 
+CREATE TABLE tweet_reply
+(
+    id         BIGSERIAL PRIMARY KEY,
+    tweet_id   BIGINT      NOT NULL REFERENCES tweet(id),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    text       TEXT        NOT NULL,
+    owner_id   BIGINT
+);
+
 CREATE TYPE float_range AS RANGE
 (
     subtype = float8,
@@ -31,4 +43,11 @@ CREATE TABLE products (
     product_no INTEGER,
     name TEXT,
     price NUMERIC CHECK (price > 0)
+);
+
+CREATE OR REPLACE PROCEDURE forty_two(INOUT forty_two INT = NULL)
+    LANGUAGE plpgsql AS 'begin forty_two := 42; end;';
+
+CREATE TABLE test_citext (
+    foo CITEXT NOT NULL
 );

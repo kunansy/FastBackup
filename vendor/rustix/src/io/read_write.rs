@@ -1,15 +1,15 @@
 //! `read` and `write`, optionally positioned, optionally vectored
 
+#![allow(unsafe_code)]
+
+use crate::buffer::split_init;
 use crate::{backend, io};
 use backend::fd::AsFd;
+use core::mem::MaybeUninit;
 
 // Declare `IoSlice` and `IoSliceMut`.
 #[cfg(not(windows))]
-#[cfg(not(feature = "std"))]
-pub use backend::io::io_slice::{IoSlice, IoSliceMut};
-#[cfg(not(windows))]
-#[cfg(feature = "std")]
-pub use std::io::{IoSlice, IoSliceMut};
+pub use crate::maybe_polyfill::io::{IoSlice, IoSliceMut};
 
 #[cfg(linux_kernel)]
 pub use backend::io::types::ReadWriteFlags;
@@ -38,7 +38,25 @@ pub use backend::io::types::ReadWriteFlags;
 /// [glibc]: https://www.gnu.org/software/libc/manual/html_node/I_002fO-Primitives.html#index-reading-from-a-file-descriptor
 #[inline]
 pub fn read<Fd: AsFd>(fd: Fd, buf: &mut [u8]) -> io::Result<usize> {
-    backend::io::syscalls::read(fd.as_fd(), buf)
+    unsafe { backend::io::syscalls::read(fd.as_fd(), buf.as_mut_ptr(), buf.len()) }
+}
+
+/// `read(fd, buf)`—Reads from a stream.
+///
+/// This is equivalent to [`read`], except that it can read into uninitialized
+/// memory. It returns the slice that was initialized by this function and the
+/// slice that remains uninitialized.
+#[inline]
+pub fn read_uninit<Fd: AsFd>(
+    fd: Fd,
+    buf: &mut [MaybeUninit<u8>],
+) -> io::Result<(&mut [u8], &mut [MaybeUninit<u8>])> {
+    // Get number of initialized bytes.
+    let length =
+        unsafe { backend::io::syscalls::read(fd.as_fd(), buf.as_mut_ptr() as *mut u8, buf.len()) };
+
+    // Split into the initialized and uninitialized portions.
+    Ok(unsafe { split_init(buf, length?) })
 }
 
 /// `write(fd, buf)`—Writes to a stream.
@@ -90,7 +108,24 @@ pub fn write<Fd: AsFd>(fd: Fd, buf: &[u8]) -> io::Result<usize> {
 /// [illumos]: https://illumos.org/man/2/pread
 #[inline]
 pub fn pread<Fd: AsFd>(fd: Fd, buf: &mut [u8], offset: u64) -> io::Result<usize> {
-    backend::io::syscalls::pread(fd.as_fd(), buf, offset)
+    unsafe { backend::io::syscalls::pread(fd.as_fd(), buf.as_mut_ptr(), buf.len(), offset) }
+}
+
+/// `pread(fd, buf, offset)`—Reads from a file at a given position.
+///
+/// This is equivalent to [`pread`], except that it can read into uninitialized
+/// memory. It returns the slice that was initialized by this function and the
+/// slice that remains uninitialized.
+#[inline]
+pub fn pread_uninit<Fd: AsFd>(
+    fd: Fd,
+    buf: &mut [MaybeUninit<u8>],
+    offset: u64,
+) -> io::Result<(&mut [u8], &mut [MaybeUninit<u8>])> {
+    let length = unsafe {
+        backend::io::syscalls::pread(fd.as_fd(), buf.as_mut_ptr() as *mut u8, buf.len(), offset)
+    };
+    Ok(unsafe { split_init(buf, length?) })
 }
 
 /// `pwrite(fd, bufs)`—Writes to a file at a given position.
@@ -142,6 +177,7 @@ pub fn pwrite<Fd: AsFd>(fd: Fd, buf: &[u8], offset: u64) -> io::Result<usize> {
 /// [OpenBSD]: https://man.openbsd.org/readv.2
 /// [DragonFly BSD]: https://man.dragonflybsd.org/?command=readv&section=2
 /// [illumos]: https://illumos.org/man/2/readv
+#[cfg(not(target_os = "espidf"))]
 #[inline]
 pub fn readv<Fd: AsFd>(fd: Fd, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
     backend::io::syscalls::readv(fd.as_fd(), bufs)
@@ -167,6 +203,7 @@ pub fn readv<Fd: AsFd>(fd: Fd, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize>
 /// [OpenBSD]: https://man.openbsd.org/writev.2
 /// [DragonFly BSD]: https://man.dragonflybsd.org/?command=writev&section=2
 /// [illumos]: https://illumos.org/man/2/writev
+#[cfg(not(target_os = "espidf"))]
 #[inline]
 pub fn writev<Fd: AsFd>(fd: Fd, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
     backend::io::syscalls::writev(fd.as_fd(), bufs)
@@ -189,7 +226,14 @@ pub fn writev<Fd: AsFd>(fd: Fd, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
 /// [OpenBSD]: https://man.openbsd.org/preadv.2
 /// [DragonFly BSD]: https://man.dragonflybsd.org/?command=preadv&section=2
 /// [illumos]: https://illumos.org/man/2/preadv
-#[cfg(not(any(target_os = "haiku", target_os = "redox", target_os = "solaris")))]
+#[cfg(not(any(
+    target_os = "espidf",
+    target_os = "haiku",
+    target_os = "nto",
+    target_os = "redox",
+    target_os = "solaris",
+    target_os = "vita"
+)))]
 #[inline]
 pub fn preadv<Fd: AsFd>(fd: Fd, bufs: &mut [IoSliceMut<'_>], offset: u64) -> io::Result<usize> {
     backend::io::syscalls::preadv(fd.as_fd(), bufs, offset)
@@ -216,7 +260,14 @@ pub fn preadv<Fd: AsFd>(fd: Fd, bufs: &mut [IoSliceMut<'_>], offset: u64) -> io:
 /// [OpenBSD]: https://man.openbsd.org/pwritev.2
 /// [DragonFly BSD]: https://man.dragonflybsd.org/?command=pwritev&section=2
 /// [illumos]: https://illumos.org/man/2/pwritev
-#[cfg(not(any(target_os = "haiku", target_os = "redox", target_os = "solaris")))]
+#[cfg(not(any(
+    target_os = "espidf",
+    target_os = "haiku",
+    target_os = "nto",
+    target_os = "redox",
+    target_os = "solaris",
+    target_os = "vita"
+)))]
 #[inline]
 pub fn pwritev<Fd: AsFd>(fd: Fd, bufs: &[IoSlice<'_>], offset: u64) -> io::Result<usize> {
     backend::io::syscalls::pwritev(fd.as_fd(), bufs, offset)

@@ -1,12 +1,14 @@
-//! The Unix `fcntl` function is effectively lots of different functions
-//! hidden behind a single dynamic dispatch interface. In order to provide
-//! a type-safe API, rustix makes them all separate functions so that they
-//! can have dedicated static type signatures.
+//! The Unix `fcntl` function is effectively lots of different functions hidden
+//! behind a single dynamic dispatch interface. In order to provide a type-safe
+//! API, rustix makes them all separate functions so that they can have
+//! dedicated static type signatures.
 
 #[cfg(not(any(
     target_os = "emscripten",
+    target_os = "espidf",
     target_os = "fuchsia",
     target_os = "redox",
+    target_os = "vita",
     target_os = "wasi"
 )))]
 use crate::fs::FlockOperation;
@@ -14,10 +16,10 @@ use crate::{backend, io};
 use backend::fd::AsFd;
 use backend::fs::types::OFlags;
 
-// These `fcntl` functions like in the `io` module because they're not specific
+// These `fcntl` functions live in the `io` module because they're not specific
 // to files, directories, or memfd objects. We re-export them here in the `fs`
 // module because the other the `fcntl` functions are here.
-#[cfg(not(target_os = "wasi"))]
+#[cfg(not(any(target_os = "espidf", target_os = "wasi")))]
 pub use crate::io::fcntl_dupfd_cloexec;
 pub use crate::io::{fcntl_getfd, fcntl_setfd};
 
@@ -63,7 +65,7 @@ pub fn fcntl_get_seals<Fd: AsFd>(fd: Fd) -> io::Result<SealFlags> {
 }
 
 #[cfg(any(linux_kernel, target_os = "freebsd", target_os = "fuchsia"))]
-pub use backend::fs::types::SealFlags;
+use backend::fs::types::SealFlags;
 
 /// `fcntl(fd, F_ADD_SEALS)`
 ///
@@ -85,8 +87,8 @@ pub fn fcntl_add_seals<Fd: AsFd>(fd: Fd, seals: SealFlags) -> io::Result<()> {
 /// file should be locked.
 ///
 /// Unlike `flock`-style locks, `fcntl`-style locks are process-associated,
-/// meaning that they don't guard against being acquired by two threads in
-/// the same process.
+/// meaning that they don't guard against being acquired by two threads in the
+/// same process.
 ///
 /// # References
 ///  - [POSIX]
@@ -96,8 +98,10 @@ pub fn fcntl_add_seals<Fd: AsFd>(fd: Fd, seals: SealFlags) -> io::Result<()> {
 /// [Linux]: https://man7.org/linux/man-pages/man2/fcntl.2.html
 #[cfg(not(any(
     target_os = "emscripten",
+    target_os = "espidf",
     target_os = "fuchsia",
     target_os = "redox",
+    target_os = "vita",
     target_os = "wasi"
 )))]
 #[inline]

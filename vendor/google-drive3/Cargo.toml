@@ -12,12 +12,12 @@
 [package]
 edition = "2018"
 name = "google-drive3"
-version = "5.0.2+20230115"
+version = "5.0.3+20230115"
 authors = ["Sebastian Thiel <byronimo@gmail.com>"]
 autobins = false
 description = "A complete library to interact with drive (protocol v3)"
 homepage = "https://developers.google.com/drive/"
-documentation = "https://docs.rs/google-drive3/5.0.2+20230115"
+documentation = "https://docs.rs/google-drive3/5.0.3+20230115"
 readme = "README.md"
 keywords = [
     "drive",
@@ -33,7 +33,7 @@ repository = "https://github.com/Byron/google-apis-rs/tree/main/gen/drive3"
 version = "^ 1.0"
 
 [dependencies.google-apis-common]
-version = "5.0.1"
+version = "6.0"
 
 [dependencies.http]
 version = "^0.2"
@@ -42,7 +42,7 @@ version = "^0.2"
 version = "^ 0.14"
 
 [dependencies.hyper-rustls]
-version = "0.23.0"
+version = "0.24.0"
 
 [dependencies.itertools]
 version = "^ 0.10"

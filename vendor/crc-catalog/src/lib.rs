@@ -1,8 +1,9 @@
 #![no_std]
 
 #[rustfmt::skip]
-mod catalog;
-pub use catalog::*;
+pub mod algorithm;
+pub mod poly;
+pub use algorithm::*;
 
 pub trait Width: Sized + 'static {}
 impl Width for u8 {}

@@ -25,6 +25,7 @@ const _: () = {
     extern crate pin_project as _pin_project;
     #[allow(dead_code)]
     #[allow(clippy::mut_mut)]
+    #[allow(clippy::missing_docs_in_private_items)]
     struct __StructProjection<'pin, T, U>
     where
         Struct<T, U>: 'pin,
@@ -34,6 +35,7 @@ const _: () = {
     }
     #[allow(dead_code)]
     #[allow(clippy::ref_option_ref)]
+    #[allow(clippy::missing_docs_in_private_items)]
     struct __StructProjectionRef<'pin, T, U>
     where
         Struct<T, U>: 'pin,
@@ -43,6 +45,7 @@ const _: () = {
     }
     impl<T, U> Struct<T, U> {
         #[allow(dead_code)]
+        #[inline]
         fn project<'pin>(
             self: _pin_project::__private::Pin<&'pin mut Self>,
         ) -> __StructProjection<'pin, T, U> {
@@ -56,6 +59,7 @@ const _: () = {
         }
         #[allow(dead_code)]
         #[allow(clippy::missing_const_for_fn)]
+        #[inline]
         fn project_ref<'pin>(
             self: _pin_project::__private::Pin<&'pin Self>,
         ) -> __StructProjectionRef<'pin, T, U> {
@@ -94,6 +98,7 @@ const _: () = {
         __Struct<'pin, T, U>: _pin_project::__private::Unpin,
     {}
     impl<T, U> _pin_project::__private::Drop for Struct<T, U> {
+        #[allow(clippy::missing_inline_in_public_items)]
         fn drop(&mut self) {
             unsafe {
                 let __pinned_self = _pin_project::__private::Pin::new_unchecked(self);

@@ -1,11 +1,11 @@
+use crate::enums::{AlertDescription, HandshakeType};
 use crate::msgs::base::{PayloadU16, PayloadU24, PayloadU8};
 
 use super::base::Payload;
 use super::codec::Reader;
-use super::enums::{AlertDescription, AlertLevel, HandshakeType};
+use super::enums::AlertLevel;
 use super::message::{Message, OpaqueMessage, PlainMessage};
 
-use std::convert::TryFrom;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -79,12 +79,6 @@ fn can_read_safari_client_hello() {
 fn alert_is_not_handshake() {
     let m = Message::build_alert(AlertLevel::Fatal, AlertDescription::DecodeError);
     assert!(!m.is_handshake_type(HandshakeType::ClientHello));
-}
-
-#[test]
-fn alert_is_not_opaque() {
-    let m = Message::build_alert(AlertLevel::Fatal, AlertDescription::DecodeError);
-    assert!(Message::try_from(m).is_ok());
 }
 
 #[test]

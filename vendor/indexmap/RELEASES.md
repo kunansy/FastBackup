@@ -1,3 +1,96 @@
+- 2.2.2
+
+  - Added indexing methods to raw entries: `RawEntryBuilder::from_hash_full`,
+    `RawEntryBuilder::index_from_hash`, and `RawEntryMut::index`.
+
+- 2.2.1
+
+  - Corrected the signature of `RawOccupiedEntryMut::into_key(self) -> &'a mut K`,
+    This a breaking change from 2.2.0, but that version was published for less
+    than a day and has now been yanked.
+
+- 2.2.0
+
+  - The new `IndexMap::get_index_entry` method finds an entry by its index for
+    in-place manipulation.
+
+  - The `Keys` iterator now implements `Index<usize>` for quick access to the
+    entry's key, compared to indexing the map to get the value.
+
+  - The new `IndexMap::splice` and `IndexSet::splice` methods will drain the
+    given range as an iterator, and then replace that range with entries from
+    an input iterator.
+
+  - The new trait `RawEntryApiV1` offers opt-in access to a raw entry API for
+    `IndexMap`, corresponding to the unstable API on `HashSet` as of Rust 1.75.
+
+  - Many `IndexMap` and `IndexSet` methods have relaxed their type constraints,
+    e.g. removing `K: Hash` on methods that don't actually need to hash.
+
+  - Removal methods `remove`, `remove_entry`, and `take` are now deprecated
+    in favor of their `shift_` or `swap_` prefixed variants, which are more
+    explicit about their effect on the index and order of remaining items.
+    The deprecated methods will remain to guide drop-in replacements from
+    `HashMap` and `HashSet` toward the prefixed methods.
+
+- 2.1.0
+
+  - Empty slices can now be created with `map::Slice::{new, new_mut}` and
+    `set::Slice::new`. In addition, `Slice::new`, `len`, and `is_empty` are
+    now `const` functions on both types.
+
+  - `IndexMap`, `IndexSet`, and their respective `Slice`s all have binary
+    search methods for sorted data: map `binary_search_keys` and set
+    `binary_search` for plain comparison, `binary_search_by` for custom
+    comparators, `binary_search_by_key` for key extraction, and
+    `partition_point` for boolean conditions.
+
+- 2.0.2
+
+  - The `hashbrown` dependency has been updated to version 0.14.1 to
+    complete the support for Rust 1.63.
+
+- 2.0.1
+
+  - **MSRV**: Rust 1.63.0 is now supported as well, pending publication of
+    `hashbrown`'s relaxed MSRV (or use cargo `--ignore-rust-version`).
+
+- 2.0.0
+
+  - **MSRV**: Rust 1.64.0 or later is now required.
+
+  - The `"std"` feature is no longer auto-detected. It is included in the
+    default feature set, or else can be enabled like any other Cargo feature.
+
+  - The `"serde-1"` feature has been removed, leaving just the optional
+    `"serde"` dependency to be enabled like a feature itself.
+
+  - `IndexMap::get_index_mut` now returns `Option<(&K, &mut V)>`, changing
+    the key part from `&mut K` to `&K`. There is also a new alternative
+    `MutableKeys::get_index_mut2` to access the former behavior.
+
+  - The new `map::Slice<K, V>` and `set::Slice<T>` offer a linear view of maps
+    and sets, behaving a lot like normal `[(K, V)]` and `[T]` slices. Notably,
+    comparison traits like `Eq` only consider items in order, rather than hash
+    lookups, and slices even implement `Hash`.
+
+  - `IndexMap` and `IndexSet` now have `sort_by_cached_key` and
+    `par_sort_by_cached_key` methods which perform stable sorts in place
+    using a key extraction function.
+
+  - `IndexMap` and `IndexSet` now have `reserve_exact`, `try_reserve`, and
+    `try_reserve_exact` methods that correspond to the same methods on `Vec`.
+    However, exactness only applies to the direct capacity for items, while the
+    raw hash table still follows its own rules for capacity and load factor.
+
+  - The `Equivalent` trait is now re-exported from the `equivalent` crate,
+    intended as a common base to allow types to work with multiple map types.
+
+  - The `hashbrown` dependency has been updated to version 0.14.
+
+  - The `serde_seq` module has been moved from the crate root to below the
+    `map` module.
+
 - 1.9.3
 
   - Bump the `rustc-rayon` dependency, for compiler use only.
@@ -37,7 +130,7 @@
   - The new `IndexSet::replace_full` will return the index of the item along
     with the replaced value, if any, by @zakcutner in PR [222].
 
-[222]: https://github.com/bluss/indexmap/pull/222
+[222]: https://github.com/indexmap-rs/indexmap/pull/222
 
 - 1.8.0
 
@@ -62,12 +155,12 @@
     which sort in-place without preserving the order of equal items, by
     @bhgomes in PR [211].
 
-[195]: https://github.com/bluss/indexmap/pull/195
-[196]: https://github.com/bluss/indexmap/pull/196
-[197]: https://github.com/bluss/indexmap/pull/197
-[203]: https://github.com/bluss/indexmap/pull/203
-[205]: https://github.com/bluss/indexmap/pull/205
-[211]: https://github.com/bluss/indexmap/pull/211
+[195]: https://github.com/indexmap-rs/indexmap/pull/195
+[196]: https://github.com/indexmap-rs/indexmap/pull/196
+[197]: https://github.com/indexmap-rs/indexmap/pull/197
+[203]: https://github.com/indexmap-rs/indexmap/pull/203
+[205]: https://github.com/indexmap-rs/indexmap/pull/205
+[211]: https://github.com/indexmap-rs/indexmap/pull/211
 
 - 1.7.0
 
@@ -83,8 +176,8 @@
   - The new `Entry::or_insert_with_key` matches Rust 1.50's `Entry` method,
     passing `&K` to the callback to create a value, by @cuviper in PR [175].
 
-[170]: https://github.com/bluss/indexmap/pull/170
-[175]: https://github.com/bluss/indexmap/pull/175
+[170]: https://github.com/indexmap-rs/indexmap/pull/170
+[175]: https://github.com/indexmap-rs/indexmap/pull/175
 
 - 1.6.1
 
@@ -95,8 +188,8 @@
     `truncate`, `split_off`, `first`, `first_mut`, `last`, `last_mut`, and
     `swap_indices`, by @cuviper in PR [160].
 
-[158]: https://github.com/bluss/indexmap/pull/158
-[160]: https://github.com/bluss/indexmap/pull/160
+[158]: https://github.com/indexmap-rs/indexmap/pull/158
+[160]: https://github.com/indexmap-rs/indexmap/pull/160
 
 - 1.6.0
 
@@ -110,7 +203,7 @@
     want the default `S = RandomState`, bypassing the autodetection added in 1.3.0,
     by @cuviper in PR [145].
 
-[145]: https://github.com/bluss/indexmap/pull/145
+[145]: https://github.com/indexmap-rs/indexmap/pull/145
 
 - 1.5.1
 
@@ -120,9 +213,9 @@
 
   - `drain` now accepts any `R: RangeBounds<usize>` by @cuviper in PR [142].
 
-[132]: https://github.com/bluss/indexmap/pull/132
-[141]: https://github.com/bluss/indexmap/pull/141
-[142]: https://github.com/bluss/indexmap/pull/142
+[132]: https://github.com/indexmap-rs/indexmap/pull/132
+[141]: https://github.com/indexmap-rs/indexmap/pull/141
+[142]: https://github.com/indexmap-rs/indexmap/pull/142
 
 - 1.5.0
 
@@ -138,10 +231,10 @@
 
   - Add new method `reverse` by @linclelinkpart5 in PR [128]
 
-[125]: https://github.com/bluss/indexmap/pull/125
-[128]: https://github.com/bluss/indexmap/pull/128
-[131]: https://github.com/bluss/indexmap/pull/131
-[136]: https://github.com/bluss/indexmap/pull/136
+[125]: https://github.com/indexmap-rs/indexmap/pull/125
+[128]: https://github.com/indexmap-rs/indexmap/pull/128
+[131]: https://github.com/indexmap-rs/indexmap/pull/131
+[136]: https://github.com/indexmap-rs/indexmap/pull/136
 
 - 1.4.0
 
@@ -154,9 +247,9 @@
     now run using Rust 1.32 or later (MSRV for building the crate has not changed).
     by @kjeremy and @bluss
 
-[123]: https://github.com/bluss/indexmap/issues/123
-[115]: https://github.com/bluss/indexmap/pull/115
-[120]: https://github.com/bluss/indexmap/pull/120
+[123]: https://github.com/indexmap-rs/indexmap/issues/123
+[115]: https://github.com/indexmap-rs/indexmap/pull/115
+[120]: https://github.com/indexmap-rs/indexmap/pull/120
 
 - 1.3.2
 
@@ -300,7 +393,7 @@
     See [#10] for more information.
   - Implement `Extend<(&K, &V)>` by @xfix.
 
-[#10]: https://github.com/bluss/ordermap/pull/10
+[#10]: https://github.com/indexmap-rs/indexmap/pull/10
 
 - 0.2.13
 
@@ -349,7 +442,7 @@
 
   - Improved performance of `.insert()` ([#3]) by @pczarn.
 
-[#3]: https://github.com/bluss/ordermap/pull/3
+[#3]: https://github.com/indexmap-rs/indexmap/pull/3
 
 - 0.2.3
 

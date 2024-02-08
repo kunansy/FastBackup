@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.20.5 (January 30, 2024)
+
+- Add `Flag::span` inherent method, as `Flag` can no longer impl `syn::spanned::Spanned` [#242](https://github.com/TedDriggs/darling/issues/242)
+
+## v0.20.4 (January 29, 2024)
+
+- Accept bare paths in `#[darling(default = ...)]` [#258](https://github.com/TedDriggs/darling/pull/258)
+- Add `FromMeta` impl for `PathBuf` [#259](https://github.com/TedDriggs/darling/pull/259)
+- Improve `FromMeta` implementation for enums [#260](https://github.com/TedDriggs/darling/pull/260)
+  - Properly implement unit arms in `FromMeta::from_list` to provide a consistent API for heterogeneous enums that include a mix of unit, newtype and struct variants
+  - Add `#[darling(word)]` attribute for unit enum variants (See [#63](https://github.com/TedDriggs/darling/issues/63) for details)
+
+## v0.20.3 (July 12, 2023)
+
+- Add `FromMeta` impl for `u128` and `i128` [#243](https://github.com/TedDriggs/darling/pull/243)
+
+## v0.20.2 (May 25, 2023)
+
+- Allow darling users to omit quotation marks for paths and idents [#236](https://github.com/TedDriggs/darling/pull/236)
+- Add new util functions for controlling how quotation marks are handled when reading into `Expr` fields [#235](https://github.com/TedDriggs/darling/pull/235)
+
 ## v0.20.1 (May 2, 2023)
 
 - Add `Clone` impl for `NestedMeta` [#230](https://github.com/TedDriggs/darling/pull/230)

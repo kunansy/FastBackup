@@ -1,10 +1,8 @@
 use core::hash::{BuildHasher, Hash};
 
-use super::{Equivalent, IndexMap};
+use super::{Bucket, Entries, Equivalent, IndexMap};
 
-pub struct PrivateMarker {}
-
-/// Opt-in mutable access to keys.
+/// Opt-in mutable access to [`IndexMap`] keys.
 ///
 /// These methods expose `&mut K`, mutable references to the key as it is stored
 /// in the map.
@@ -13,20 +11,31 @@ pub struct PrivateMarker {}
 ///
 /// If keys are modified erroneously, you can no longer look them up.
 /// This is sound (memory safe) but a logical error hazard (just like
-/// implementing PartialEq, Eq, or Hash incorrectly would be).
+/// implementing `PartialEq`, `Eq`, or `Hash` incorrectly would be).
 ///
 /// `use` this trait to enable its methods for `IndexMap`.
-pub trait MutableKeys {
+///
+/// This trait is sealed and cannot be implemented for types outside this crate.
+pub trait MutableKeys: private::Sealed {
     type Key;
     type Value;
 
     /// Return item index, mutable reference to key and value
+    ///
+    /// Computes in **O(1)** time (average).
     fn get_full_mut2<Q: ?Sized>(
         &mut self,
         key: &Q,
     ) -> Option<(usize, &mut Self::Key, &mut Self::Value)>
     where
         Q: Hash + Equivalent<Self::Key>;
+
+    /// Return mutable reference to key and value at an index.
+    ///
+    /// Valid indices are *0 <= index < self.len()*
+    ///
+    /// Computes in **O(1)** time.
+    fn get_index_mut2(&mut self, index: usize) -> Option<(&mut Self::Key, &mut Self::Value)>;
 
     /// Scan through each key-value pair in the map and keep those where the
     /// closure `keep` returns `true`.
@@ -38,28 +47,32 @@ pub trait MutableKeys {
     fn retain2<F>(&mut self, keep: F)
     where
         F: FnMut(&mut Self::Key, &mut Self::Value) -> bool;
-
-    /// This method is not useful in itself – it is there to “seal” the trait
-    /// for external implementation, so that we can add methods without
-    /// causing breaking changes.
-    fn __private_marker(&self) -> PrivateMarker;
 }
 
 /// Opt-in mutable access to keys.
 ///
-/// See [`MutableKeys`](trait.MutableKeys.html) for more information.
+/// See [`MutableKeys`] for more information.
 impl<K, V, S> MutableKeys for IndexMap<K, V, S>
 where
-    K: Eq + Hash,
     S: BuildHasher,
 {
     type Key = K;
     type Value = V;
+
     fn get_full_mut2<Q: ?Sized>(&mut self, key: &Q) -> Option<(usize, &mut K, &mut V)>
     where
         Q: Hash + Equivalent<K>,
     {
-        self.get_full_mut2_impl(key)
+        if let Some(i) = self.get_index_of(key) {
+            let entry = &mut self.as_entries_mut()[i];
+            Some((i, &mut entry.key, &mut entry.value))
+        } else {
+            None
+        }
+    }
+
+    fn get_index_mut2(&mut self, index: usize) -> Option<(&mut K, &mut V)> {
+        self.as_entries_mut().get_mut(index).map(Bucket::muts)
     }
 
     fn retain2<F>(&mut self, keep: F)
@@ -68,8 +81,10 @@ where
     {
         self.retain_mut(keep)
     }
+}
 
-    fn __private_marker(&self) -> PrivateMarker {
-        PrivateMarker {}
-    }
+mod private {
+    pub trait Sealed {}
+
+    impl<K, V, S> Sealed for super::IndexMap<K, V, S> {}
 }

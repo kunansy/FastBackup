@@ -20,6 +20,7 @@ const _: () = {
     extern crate pin_project as _pin_project;
     #[allow(dead_code)]
     #[allow(clippy::mut_mut)]
+    #[allow(clippy::missing_docs_in_private_items)]
     struct __TupleStructProjection<'pin, T, U>(
         ::pin_project::__private::Pin<&'pin mut (T)>,
         ::pin_project::__private::Pin<&'pin mut (T)>,
@@ -30,6 +31,7 @@ const _: () = {
         TupleStruct<T, U>: 'pin;
     #[allow(dead_code)]
     #[allow(clippy::ref_option_ref)]
+    #[allow(clippy::missing_docs_in_private_items)]
     struct __TupleStructProjectionRef<'pin, T, U>(
         ::pin_project::__private::Pin<&'pin (T)>,
         ::pin_project::__private::Pin<&'pin (T)>,
@@ -39,6 +41,7 @@ const _: () = {
     where
         TupleStruct<T, U>: 'pin;
     #[allow(dead_code)]
+    #[allow(clippy::missing_docs_in_private_items)]
     struct __TupleStructProjectionOwned<T, U>(
         ::pin_project::__private::PhantomData<T>,
         ::pin_project::__private::PhantomData<T>,
@@ -47,6 +50,7 @@ const _: () = {
     );
     impl<T, U> TupleStruct<T, U> {
         #[allow(dead_code)]
+        #[inline]
         fn project<'pin>(
             self: _pin_project::__private::Pin<&'pin mut Self>,
         ) -> __TupleStructProjection<'pin, T, U> {
@@ -62,6 +66,7 @@ const _: () = {
         }
         #[allow(dead_code)]
         #[allow(clippy::missing_const_for_fn)]
+        #[inline]
         fn project_ref<'pin>(
             self: _pin_project::__private::Pin<&'pin Self>,
         ) -> __TupleStructProjectionRef<'pin, T, U> {
@@ -76,6 +81,7 @@ const _: () = {
             }
         }
         #[allow(dead_code)]
+        #[inline]
         fn project_replace(
             self: _pin_project::__private::Pin<&mut Self>,
             __replacement: Self,

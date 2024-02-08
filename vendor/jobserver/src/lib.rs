@@ -82,10 +82,12 @@
 #![doc(html_root_url = "https://docs.rs/jobserver/0.1")]
 
 use std::env;
+use std::ffi::OsString;
 use std::io;
 use std::process::Command;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
+mod error;
 #[cfg(unix)]
 #[path = "unix.rs"]
 mod imp;
@@ -151,6 +153,34 @@ struct HelperInner {
     consumer_done: bool,
 }
 
+use error::FromEnvErrorInner;
+pub use error::{FromEnvError, FromEnvErrorKind};
+
+/// Return type for `from_env_ext` function.
+#[derive(Debug)]
+pub struct FromEnv {
+    /// Result of trying to get jobserver client from env.
+    pub client: Result<Client, FromEnvError>,
+    /// Name and value of the environment variable.
+    /// `None` if no relevant environment variable is found.
+    pub var: Option<(&'static str, OsString)>,
+}
+
+impl FromEnv {
+    fn new_ok(client: Client, var_name: &'static str, var_value: OsString) -> FromEnv {
+        FromEnv {
+            client: Ok(client),
+            var: Some((var_name, var_value)),
+        }
+    }
+    fn new_err(kind: FromEnvErrorInner, var_name: &'static str, var_value: OsString) -> FromEnv {
+        FromEnv {
+            client: Err(FromEnvError { inner: kind }),
+            var: Some((var_name, var_value)),
+        }
+    }
+}
+
 impl Client {
     /// Creates a new jobserver initialized with the given parallelism limit.
     ///
@@ -196,9 +226,10 @@ impl Client {
     ///
     /// # Return value
     ///
+    /// `FromEnv` contains result and relevant environment variable.
     /// If a jobserver was found in the environment and it looks correct then
-    /// `Some` of the connected client will be returned. If no jobserver was
-    /// found then `None` will be returned.
+    /// result with the connected client will be returned. In other cases
+    /// result will contain `Err(FromEnvErr)`.
     ///
     /// Note that on Unix the `Client` returned **takes ownership of the file
     /// descriptors specified in the environment**. Jobservers on Unix are
@@ -210,6 +241,9 @@ impl Client {
     /// Additionally on Unix this function will configure the file descriptors
     /// with `CLOEXEC` so they're not automatically inherited by spawned
     /// children.
+    ///
+    /// On unix if `check_pipe` enabled this function will check if provided
+    /// files are actually pipes.
     ///
     /// # Safety
     ///
@@ -227,28 +261,46 @@ impl Client {
     ///
     /// Note, though, that on Windows it should be safe to call this function
     /// any number of times.
-    pub unsafe fn from_env() -> Option<Client> {
-        let var = match env::var("CARGO_MAKEFLAGS")
-            .or_else(|_| env::var("MAKEFLAGS"))
-            .or_else(|_| env::var("MFLAGS"))
+    pub unsafe fn from_env_ext(check_pipe: bool) -> FromEnv {
+        let (env, var_os) = match ["CARGO_MAKEFLAGS", "MAKEFLAGS", "MFLAGS"]
+            .iter()
+            .map(|&env| env::var_os(env).map(|var| (env, var)))
+            .find_map(|p| p)
         {
-            Ok(s) => s,
-            Err(_) => return None,
+            Some((env, var_os)) => (env, var_os),
+            None => return FromEnv::new_err(FromEnvErrorInner::NoEnvVar, "", Default::default()),
         };
-        let mut arg = "--jobserver-fds=";
-        let pos = match var.find(arg) {
-            Some(i) => i,
+
+        let var = match var_os.to_str() {
+            Some(var) => var,
             None => {
-                arg = "--jobserver-auth=";
-                match var.find(arg) {
-                    Some(i) => i,
-                    None => return None,
-                }
+                let err = FromEnvErrorInner::CannotParse("not valid UTF-8".to_string());
+                return FromEnv::new_err(err, env, var_os);
             }
         };
 
+        let (arg, pos) = match ["--jobserver-fds=", "--jobserver-auth="]
+            .iter()
+            .map(|&arg| var.find(arg).map(|pos| (arg, pos)))
+            .find_map(|pos| pos)
+        {
+            Some((arg, pos)) => (arg, pos),
+            None => return FromEnv::new_err(FromEnvErrorInner::NoJobserver, env, var_os),
+        };
+
         let s = var[pos + arg.len()..].split(' ').next().unwrap();
-        imp::Client::open(s).map(|c| Client { inner: Arc::new(c) })
+        match imp::Client::open(s, check_pipe) {
+            Ok(c) => FromEnv::new_ok(Client { inner: Arc::new(c) }, env, var_os),
+            Err(err) => FromEnv::new_err(err, env, var_os),
+        }
+    }
+
+    /// Attempts to connect to the jobserver specified in this process's
+    /// environment.
+    ///
+    /// Wraps `from_env_ext` and discards error details.
+    pub unsafe fn from_env() -> Option<Client> {
+        Self::from_env_ext(false).client.ok()
     }
 
     /// Acquires a token from this jobserver client.

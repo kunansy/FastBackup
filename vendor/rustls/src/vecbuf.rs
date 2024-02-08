@@ -1,5 +1,6 @@
-use std::cmp;
-use std::collections::VecDeque;
+use alloc::collections::VecDeque;
+use alloc::vec::Vec;
+use core::cmp;
 use std::io;
 use std::io::Read;
 
@@ -107,10 +108,10 @@ impl ChunkVecBuffer {
 
     #[cfg(read_buf)]
     /// Read data out of this object, writing it into `cursor`.
-    pub(crate) fn read_buf(&mut self, mut cursor: io::BorrowedCursor<'_>) -> io::Result<()> {
+    pub(crate) fn read_buf(&mut self, mut cursor: core::io::BorrowedCursor<'_>) -> io::Result<()> {
         while !self.is_empty() && cursor.capacity() > 0 {
             let chunk = self.chunks[0].as_slice();
-            let used = std::cmp::min(chunk.len(), cursor.capacity());
+            let used = core::cmp::min(chunk.len(), cursor.capacity());
             cursor.append(&chunk[..used]);
             self.consume(used);
         }
@@ -121,8 +122,8 @@ impl ChunkVecBuffer {
     fn consume(&mut self, mut used: usize) {
         while let Some(mut buf) = self.chunks.pop_front() {
             if used < buf.len() {
-                self.chunks
-                    .push_front(buf.split_off(used));
+                buf.drain(..used);
+                self.chunks.push_front(buf);
                 break;
             } else {
                 used -= buf.len();
@@ -148,7 +149,7 @@ impl ChunkVecBuffer {
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use super::ChunkVecBuffer;
 
     #[test]
@@ -167,7 +168,8 @@ mod test {
     #[cfg(read_buf)]
     #[test]
     fn read_buf() {
-        use std::{io::BorrowedBuf, mem::MaybeUninit};
+        use core::io::BorrowedBuf;
+        use core::mem::MaybeUninit;
 
         {
             let mut cvb = ChunkVecBuffer::new(None);

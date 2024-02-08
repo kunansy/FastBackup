@@ -46,6 +46,27 @@ pub trait Euclid: Sized + Div<Self, Output = Self> + Rem<Self, Output = Self> {
     /// assert_eq!(Euclid::rem_euclid(&-a, &-b), 1);
     /// ```
     fn rem_euclid(&self, v: &Self) -> Self;
+
+    /// Returns both the quotient and remainder from Euclidean division.
+    ///
+    /// By default, it internally calls both `Euclid::div_euclid` and `Euclid::rem_euclid`,
+    /// but it can be overridden in order to implement some optimization.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use num_traits::Euclid;
+    /// let x = 5u8;
+    /// let y = 3u8;
+    ///
+    /// let div = Euclid::div_euclid(&x, &y);
+    /// let rem = Euclid::rem_euclid(&x, &y);
+    ///
+    /// assert_eq!((div, rem), Euclid::div_rem_euclid(&x, &y));
+    /// ```
+    fn div_rem_euclid(&self, v: &Self) -> (Self, Self) {
+        (self.div_euclid(v), self.rem_euclid(v))
+    }
 }
 
 macro_rules! euclid_forward_impl {
@@ -116,12 +137,8 @@ macro_rules! euclid_uint_impl {
     )*}
 }
 
-euclid_int_impl!(isize i8 i16 i32 i64);
-euclid_uint_impl!(usize u8 u16 u32 u64);
-#[cfg(has_i128)]
-euclid_int_impl!(i128);
-#[cfg(has_i128)]
-euclid_uint_impl!(u128);
+euclid_int_impl!(isize i8 i16 i32 i64 i128);
+euclid_uint_impl!(usize u8 u16 u32 u64 u128);
 
 #[cfg(all(has_div_euclid, feature = "std"))]
 euclid_forward_impl!(f32 f64);
@@ -130,7 +147,7 @@ euclid_forward_impl!(f32 f64);
 impl Euclid for f32 {
     #[inline]
     fn div_euclid(&self, v: &f32) -> f32 {
-        let q = <f32 as ::float::FloatCore>::trunc(self / v);
+        let q = <f32 as crate::float::FloatCore>::trunc(self / v);
         if self % v < 0.0 {
             return if *v > 0.0 { q - 1.0 } else { q + 1.0 };
         }
@@ -141,7 +158,7 @@ impl Euclid for f32 {
     fn rem_euclid(&self, v: &f32) -> f32 {
         let r = self % v;
         if r < 0.0 {
-            r + <f32 as ::float::FloatCore>::abs(*v)
+            r + <f32 as crate::float::FloatCore>::abs(*v)
         } else {
             r
         }
@@ -152,7 +169,7 @@ impl Euclid for f32 {
 impl Euclid for f64 {
     #[inline]
     fn div_euclid(&self, v: &f64) -> f64 {
-        let q = <f64 as ::float::FloatCore>::trunc(self / v);
+        let q = <f64 as crate::float::FloatCore>::trunc(self / v);
         if self % v < 0.0 {
             return if *v > 0.0 { q - 1.0 } else { q + 1.0 };
         }
@@ -163,7 +180,7 @@ impl Euclid for f64 {
     fn rem_euclid(&self, v: &f64) -> f64 {
         let r = self % v;
         if r < 0.0 {
-            r + <f64 as ::float::FloatCore>::abs(*v)
+            r + <f64 as crate::float::FloatCore>::abs(*v)
         } else {
             r
         }
@@ -178,6 +195,26 @@ pub trait CheckedEuclid: Euclid {
     /// Finds the euclid remainder of dividing two numbers, checking for underflow, overflow and
     /// division by zero. If any of that happens, `None` is returned.
     fn checked_rem_euclid(&self, v: &Self) -> Option<Self>;
+
+    /// Returns both the quotient and remainder from checked Euclidean division.
+    ///
+    /// By default, it internally calls both `CheckedEuclid::checked_div_euclid` and `CheckedEuclid::checked_rem_euclid`,
+    /// but it can be overridden in order to implement some optimization.
+    /// # Examples
+    ///
+    /// ```
+    /// # use num_traits::CheckedEuclid;
+    /// let x = 5u8;
+    /// let y = 3u8;
+    ///
+    /// let div = CheckedEuclid::checked_div_euclid(&x, &y);
+    /// let rem = CheckedEuclid::checked_rem_euclid(&x, &y);
+    ///
+    /// assert_eq!(Some((div.unwrap(), rem.unwrap())), CheckedEuclid::checked_div_rem_euclid(&x, &y));
+    /// ```
+    fn checked_div_rem_euclid(&self, v: &Self) -> Option<(Self, Self)> {
+        Some((self.checked_div_euclid(v)?, self.checked_rem_euclid(v)?))
+    }
 }
 
 macro_rules! checked_euclid_forward_impl {
@@ -251,12 +288,8 @@ macro_rules! checked_euclid_uint_impl {
     )*}
 }
 
-checked_euclid_int_impl!(isize i8 i16 i32 i64);
-checked_euclid_uint_impl!(usize u8 u16 u32 u64);
-#[cfg(has_i128)]
-checked_euclid_int_impl!(i128);
-#[cfg(has_i128)]
-checked_euclid_uint_impl!(u128);
+checked_euclid_int_impl!(isize i8 i16 i32 i64 i128);
+checked_euclid_uint_impl!(usize u8 u16 u32 u64 u128);
 
 #[cfg(test)]
 mod tests {
@@ -270,8 +303,11 @@ mod tests {
                     {
                         let x: $t = 10;
                         let y: $t = 3;
-                        assert_eq!(Euclid::div_euclid(&x, &y), 3);
-                        assert_eq!(Euclid::rem_euclid(&x, &y), 1);
+                        let div = Euclid::div_euclid(&x, &y);
+                        let rem = Euclid::rem_euclid(&x, &y);
+                        assert_eq!(div, 3);
+                        assert_eq!(rem, 1);
+                        assert_eq!((div, rem), Euclid::div_rem_euclid(&x, &y));
                     }
                 )+
             };
@@ -292,6 +328,7 @@ mod tests {
                         assert_eq!(Euclid::div_euclid(&-x, &y), 4);
                         assert_eq!(Euclid::rem_euclid(&x, &y), 1);
                         assert_eq!(Euclid::rem_euclid(&-x, &y), 2);
+                        assert_eq!((Euclid::div_euclid(&x, &y), Euclid::rem_euclid(&x, &y)), Euclid::div_rem_euclid(&x, &y));
                         let x: $t = $t::min_value() + 1;
                         let y: $t = -1;
                         assert_eq!(Euclid::div_euclid(&x, &y), $t::max_value());
@@ -300,7 +337,7 @@ mod tests {
             };
         }
 
-        test_euclid!(isize i8 i16 i32 i64);
+        test_euclid!(isize i8 i16 i32 i64 i128);
     }
 
     #[test]
@@ -312,13 +349,14 @@ mod tests {
                         let x: $t = 12.1;
                         let y: $t = 3.2;
                         assert!(Euclid::div_euclid(&x, &y) * y + Euclid::rem_euclid(&x, &y) - x
-                        <= 46.4 * <$t as ::float::FloatCore>::epsilon());
+                        <= 46.4 * <$t as crate::float::FloatCore>::epsilon());
                         assert!(Euclid::div_euclid(&x, &-y) * -y + Euclid::rem_euclid(&x, &-y) - x
-                        <= 46.4 * <$t as ::float::FloatCore>::epsilon());
+                        <= 46.4 * <$t as crate::float::FloatCore>::epsilon());
                         assert!(Euclid::div_euclid(&-x, &y) * y + Euclid::rem_euclid(&-x, &y) + x
-                        <= 46.4 * <$t as ::float::FloatCore>::epsilon());
+                        <= 46.4 * <$t as crate::float::FloatCore>::epsilon());
                         assert!(Euclid::div_euclid(&-x, &-y) * -y + Euclid::rem_euclid(&-x, &-y) + x
-                        <= 46.4 * <$t as ::float::FloatCore>::epsilon());
+                        <= 46.4 * <$t as crate::float::FloatCore>::epsilon());
+                        assert_eq!((Euclid::div_euclid(&x, &y), Euclid::rem_euclid(&x, &y)), Euclid::div_rem_euclid(&x, &y));
                     }
                 )+
             };
@@ -342,6 +380,6 @@ mod tests {
             };
         }
 
-        test_euclid_checked!(isize i8 i16 i32 i64);
+        test_euclid_checked!(isize i8 i16 i32 i64 i128);
     }
 }

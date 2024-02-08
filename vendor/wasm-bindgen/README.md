@@ -7,7 +7,7 @@
   </p>
 
   <p>
-    <a href="https://dev.azure.com/rustwasm/wasm-bindgen/_build/latest?definitionId=1&branchName=master"><img src="https://img.shields.io/azure-devops/build/rustwasm/wasm-bindgen/1.svg?style=flat-square" alt="Build Status" /></a>
+    <a href="https://github.com/rustwasm/wasm-bindgen/actions/workflows/main.yml?query=branch%3Amain"><img src="https://github.com/rustwasm/wasm-bindgen/actions/workflows/main.yml/badge.svg?branch=main" alt="Build Status" /></a>
     <a href="https://crates.io/crates/wasm-bindgen"><img src="https://img.shields.io/crates/v/wasm-bindgen.svg?style=flat-square" alt="Crates.io version" /></a>
     <a href="https://crates.io/crates/wasm-bindgen"><img src="https://img.shields.io/crates/d/wasm-bindgen.svg?style=flat-square" alt="Download" /></a>
     <a href="https://docs.rs/wasm-bindgen"><img src="https://img.shields.io/badge/docs-latest-blue.svg?style=flat-square" alt="docs.rs docs" /></a>
@@ -25,6 +25,24 @@
 
   <sub>Built with 🦀🕸 by <a href="https://rustwasm.github.io/">The Rust and WebAssembly Working Group</a></sub>
 </div>
+
+## Install `wasm-bindgen-cli`
+
+You can install it using `cargo install`:
+
+```
+cargo install wasm-bindgen-cli
+```
+
+Or, you can download it from the
+[release page](https://github.com/rustwasm/wasm-bindgen/releases).
+
+If you have [`cargo-binstall`](https://crates.io/crates/cargo-binstall) installed,
+then you can install the pre-built artifacts by running:
+
+```
+cargo binstall wasm-bindgen-cli
+```
 
 ## Example
 

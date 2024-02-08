@@ -64,12 +64,15 @@ impl Error {
             | ErrorCode::ExpectedObjectCommaOrEnd
             | ErrorCode::ExpectedSomeIdent
             | ErrorCode::ExpectedSomeValue
+            | ErrorCode::ExpectedDoubleQuote
             | ErrorCode::InvalidEscape
             | ErrorCode::InvalidNumber
             | ErrorCode::NumberOutOfRange
             | ErrorCode::InvalidUnicodeCodePoint
             | ErrorCode::ControlCharacterWhileParsingString
             | ErrorCode::KeyMustBeAString
+            | ErrorCode::ExpectedNumericKey
+            | ErrorCode::FloatKeyMustBeFinite
             | ErrorCode::LoneLeadingSurrogateInHexEscape
             | ErrorCode::TrailingComma
             | ErrorCode::TrailingCharacters
@@ -264,6 +267,9 @@ pub(crate) enum ErrorCode {
     /// Expected this character to start a JSON value.
     ExpectedSomeValue,
 
+    /// Expected this character to be a `"`.
+    ExpectedDoubleQuote,
+
     /// Invalid hex escape code.
     InvalidEscape,
 
@@ -281,6 +287,12 @@ pub(crate) enum ErrorCode {
 
     /// Object key is not a string.
     KeyMustBeAString,
+
+    /// Contents of key were supposed to be a number.
+    ExpectedNumericKey,
+
+    /// Object key is a non-finite float value.
+    FloatKeyMustBeFinite,
 
     /// Lone leading surrogate in hex escape.
     LoneLeadingSurrogateInHexEscape,
@@ -348,6 +360,7 @@ impl Display for ErrorCode {
             ErrorCode::ExpectedObjectCommaOrEnd => f.write_str("expected `,` or `}`"),
             ErrorCode::ExpectedSomeIdent => f.write_str("expected ident"),
             ErrorCode::ExpectedSomeValue => f.write_str("expected value"),
+            ErrorCode::ExpectedDoubleQuote => f.write_str("expected `\"`"),
             ErrorCode::InvalidEscape => f.write_str("invalid escape"),
             ErrorCode::InvalidNumber => f.write_str("invalid number"),
             ErrorCode::NumberOutOfRange => f.write_str("number out of range"),
@@ -356,6 +369,12 @@ impl Display for ErrorCode {
                 f.write_str("control character (\\u0000-\\u001F) found while parsing a string")
             }
             ErrorCode::KeyMustBeAString => f.write_str("key must be a string"),
+            ErrorCode::ExpectedNumericKey => {
+                f.write_str("invalid value: expected key to be a number in quotes")
+            }
+            ErrorCode::FloatKeyMustBeFinite => {
+                f.write_str("float key must be finite (got NaN or +/-inf)")
+            }
             ErrorCode::LoneLeadingSurrogateInHexEscape => {
                 f.write_str("lone leading surrogate in hex escape")
             }
@@ -419,11 +438,20 @@ impl de::Error for Error {
 
     #[cold]
     fn invalid_type(unexp: de::Unexpected, exp: &dyn de::Expected) -> Self {
-        if let de::Unexpected::Unit = unexp {
-            Error::custom(format_args!("invalid type: null, expected {}", exp))
-        } else {
-            Error::custom(format_args!("invalid type: {}, expected {}", unexp, exp))
-        }
+        Error::custom(format_args!(
+            "invalid type: {}, expected {}",
+            JsonUnexpected(unexp),
+            exp,
+        ))
+    }
+
+    #[cold]
+    fn invalid_value(unexp: de::Unexpected, exp: &dyn de::Expected) -> Self {
+        Error::custom(format_args!(
+            "invalid value: {}, expected {}",
+            JsonUnexpected(unexp),
+            exp,
+        ))
     }
 }
 
@@ -431,6 +459,22 @@ impl ser::Error for Error {
     #[cold]
     fn custom<T: Display>(msg: T) -> Error {
         make_error(msg.to_string())
+    }
+}
+
+struct JsonUnexpected<'a>(de::Unexpected<'a>);
+
+impl<'a> Display for JsonUnexpected<'a> {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        match self.0 {
+            de::Unexpected::Unit => formatter.write_str("null"),
+            de::Unexpected::Float(value) => write!(
+                formatter,
+                "floating point `{}`",
+                ryu::Buffer::new().format(value),
+            ),
+            unexp => Display::fmt(&unexp, formatter),
+        }
     }
 }
 

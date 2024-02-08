@@ -1,4 +1,3 @@
-use crate::runtime::Handle;
 use crate::task::JoinHandle;
 
 use std::future::Future;
@@ -15,6 +14,10 @@ cfg_rt! {
     /// spawned task may execute on the current thread, or it may be sent to a
     /// different thread to be executed. The specifics depend on the current
     /// [`Runtime`](crate::runtime::Runtime) configuration.
+    ///
+    /// It is guaranteed that spawn will not synchronously poll the task being spawned.
+    /// This means that calling spawn while holding a lock does not pose a risk of
+    /// deadlocking with the spawned task.
     ///
     /// There is no guarantee that a spawned task will execute to completion.
     /// When a runtime is shutdown, all outstanding tasks are dropped,
@@ -158,14 +161,14 @@ cfg_rt! {
     /// error[E0391]: cycle detected when processing `main`
     /// ```
     #[track_caller]
-    pub fn spawn<T>(future: T) -> JoinHandle<T::Output>
+    pub fn spawn<F>(future: F) -> JoinHandle<F::Output>
     where
-        T: Future + Send + 'static,
-        T::Output: Send + 'static,
+        F: Future + Send + 'static,
+        F::Output: Send + 'static,
     {
         // preventing stack overflows on debug mode, by quickly sending the
         // task to the heap.
-        if cfg!(debug_assertions) && std::mem::size_of::<T>() > 2048 {
+        if cfg!(debug_assertions) && std::mem::size_of::<F>() > 2048 {
             spawn_inner(Box::pin(future), None)
         } else {
             spawn_inner(future, None)
@@ -178,10 +181,26 @@ cfg_rt! {
         T: Future + Send + 'static,
         T::Output: Send + 'static,
     {
-        use crate::runtime::task;
+        use crate::runtime::{context, task};
+
+        #[cfg(all(
+            tokio_unstable,
+            tokio_taskdump,
+            feature = "rt",
+            target_os = "linux",
+            any(
+                target_arch = "aarch64",
+                target_arch = "x86",
+                target_arch = "x86_64"
+            )
+        ))]
+        let future = task::trace::Trace::root(future);
         let id = task::Id::next();
         let task = crate::util::trace::task(future, "task", name, id.as_u64());
-        let handle = Handle::current();
-        handle.inner.spawn(task, id)
+
+        match context::with_current(|handle| handle.spawn(task, id)) {
+            Ok(join_handle) => join_handle,
+            Err(e) => panic!("{}", e),
+        }
     }
 }

@@ -1,4 +1,4 @@
-#![doc(html_root_url = "https://docs.rs/prost-build/0.11.9")]
+#![doc(html_root_url = "https://docs.rs/prost-build/0.12.2")]
 #![allow(clippy::option_as_ref_deref, clippy::format_push_string)]
 
 //! `prost-build` compiles `.proto` files into Rust.
@@ -253,8 +253,11 @@ pub struct Config {
     out_dir: Option<PathBuf>,
     extern_paths: Vec<(String, String)>,
     default_package_filename: String,
+    enable_type_names: bool,
+    type_name_domains: PathMap<String>,
     protoc_args: Vec<OsString>,
     disable_comments: PathMap<()>,
+    skip_debug: PathMap<()>,
     skip_protoc_run: bool,
     include_file: Option<PathBuf>,
     prost_path: Option<String>,
@@ -629,6 +632,19 @@ impl Config {
         self
     }
 
+    /// Skips generating `impl Debug` for types
+    pub fn skip_debug<I, S>(&mut self, paths: I) -> &mut Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.skip_debug.clear();
+        for matcher in paths {
+            self.skip_debug.insert(matcher.as_ref().to_string(), ());
+        }
+        self
+    }
+
     /// Declare an externally provided Protobuf package or type.
     ///
     /// `extern_path` allows `prost` types in external crates to be referenced in generated code.
@@ -825,6 +841,46 @@ impl Config {
         self
     }
 
+    /// Configures the code generator to include type names.
+    ///
+    /// Message types will implement `Name` trait, which provides type and package name.
+    /// This is needed for encoding messages as `Any` type.
+    pub fn enable_type_names(&mut self) -> &mut Self {
+        self.enable_type_names = true;
+        self
+    }
+
+    /// Specify domain names to use with message type URLs.
+    ///
+    /// # Domains
+    ///
+    /// **`paths`** - a path matching any number of types. It works the same way as in
+    /// [`btree_map`](#method.btree_map), just with the field name omitted.
+    ///
+    /// **`domain`** - an arbitrary string to be used as a prefix for type URLs.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # let mut config = prost_build::Config::new();
+    /// // Full type URL of the message `google.profile.Person`,
+    /// // will be `type.googleapis.com/google.profile.Person`.
+    /// config.type_name_domain(&["."], "type.googleapis.com");
+    /// ```
+    pub fn type_name_domain<I, S, D>(&mut self, paths: I, domain: D) -> &mut Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+        D: AsRef<str>,
+    {
+        self.type_name_domains.clear();
+        for matcher in paths {
+            self.type_name_domains
+                .insert(matcher.as_ref().to_string(), domain.as_ref().to_string());
+        }
+        self
+    }
+
     /// Configures the path that's used for deriving `Message` for generated messages.
     /// This is mainly useful for generating crates that wish to re-export prost.
     /// Defaults to `::prost::Message` if not specified.
@@ -909,12 +965,13 @@ impl Config {
     /// # Example `build.rs`
     ///
     /// ```rust,no_run
+    /// # use prost_types::FileDescriptorSet;
     /// # fn fds() -> FileDescriptorSet { todo!() }
     /// fn main() -> std::io::Result<()> {
     ///   let file_descriptor_set = fds();
     ///
     ///   prost_build::Config::new()
-    ///     .compile_fds(file_descriptor_set)?;
+    ///     .compile_fds(file_descriptor_set)
     /// }
     /// ```
     pub fn compile_fds(&mut self, fds: FileDescriptorSet) -> Result<()> {
@@ -1242,8 +1299,11 @@ impl default::Default for Config {
             out_dir: None,
             extern_paths: Vec::new(),
             default_package_filename: "_".to_string(),
+            enable_type_names: false,
+            type_name_domains: PathMap::default(),
             protoc_args: Vec::new(),
             disable_comments: PathMap::default(),
+            skip_debug: PathMap::default(),
             skip_protoc_run: false,
             include_file: None,
             prost_path: None,
@@ -1266,8 +1326,11 @@ impl fmt::Debug for Config {
             .field("out_dir", &self.out_dir)
             .field("extern_paths", &self.extern_paths)
             .field("default_package_filename", &self.default_package_filename)
+            .field("enable_type_names", &self.enable_type_names)
+            .field("type_name_domains", &self.type_name_domains)
             .field("protoc_args", &self.protoc_args)
             .field("disable_comments", &self.disable_comments)
+            .field("skip_debug", &self.skip_debug)
             .field("prost_path", &self.prost_path)
             .finish()
     }
@@ -1418,11 +1481,12 @@ pub fn compile_protos(protos: &[impl AsRef<Path>], includes: &[impl AsRef<Path>]
 ///
 /// # Example
 /// ```rust,no_run
+/// # use prost_types::FileDescriptorSet;
 /// # fn fds() -> FileDescriptorSet { todo!() }
 /// fn main() -> std::io::Result<()> {
 ///   let file_descriptor_set = fds();
 ///
-///   prost_build::compile_fds(file_descriptor_set)?;
+///   prost_build::compile_fds(file_descriptor_set)
 /// }
 /// ```
 pub fn compile_fds(fds: FileDescriptorSet) -> Result<()> {
@@ -1608,6 +1672,11 @@ mod tests {
             .as_path()
             .display()
             .to_string();
+        #[cfg(feature = "format")]
+        let expected_content =
+            read_all_content("src/fixtures/helloworld/_expected_helloworld_formatted.rs")
+                .replace("\r\n", "\n");
+        #[cfg(not(feature = "format"))]
         let expected_content = read_all_content("src/fixtures/helloworld/_expected_helloworld.rs")
             .replace("\r\n", "\n");
         let content = read_all_content(&out_file).replace("\r\n", "\n");

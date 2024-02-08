@@ -2,17 +2,19 @@ use super::compression::{compress, CompressionEncoding, SingleMessageCompression
 use super::{EncodeBuf, Encoder, DEFAULT_MAX_SEND_MESSAGE_SIZE, HEADER_SIZE};
 use crate::{Code, Status};
 use bytes::{BufMut, Bytes, BytesMut};
-use futures_core::{Stream, TryStream};
-use futures_util::{ready, StreamExt, TryStreamExt};
 use http::HeaderMap;
 use http_body::Body;
 use pin_project::pin_project;
 use std::{
     pin::Pin,
-    task::{Context, Poll},
+    task::{ready, Context, Poll},
 };
+use tokio_stream::{Stream, StreamExt};
+
+use fuse::Fuse;
 
 pub(super) const BUFFER_SIZE: usize = 8 * 1024;
+const YIELD_THRESHOLD: usize = 32 * 1024;
 
 pub(crate) fn encode_server<T, U>(
     encoder: T,
@@ -25,14 +27,13 @@ where
     T: Encoder<Error = Status>,
     U: Stream<Item = Result<T::Item, Status>>,
 {
-    let stream = encode(
+    let stream = EncodedBytes::new(
         encoder,
         source,
         compression_encoding,
         compression_override,
         max_message_size,
-    )
-    .into_stream();
+    );
 
     EncodeBody::new_server(stream)
 }
@@ -47,55 +48,125 @@ where
     T: Encoder<Error = Status>,
     U: Stream<Item = T::Item>,
 {
-    let stream = encode(
+    let stream = EncodedBytes::new(
         encoder,
         source.map(Ok),
         compression_encoding,
         SingleMessageCompressionOverride::default(),
         max_message_size,
-    )
-    .into_stream();
+    );
     EncodeBody::new_client(stream)
 }
 
-fn encode<T, U>(
-    mut encoder: T,
-    source: U,
-    compression_encoding: Option<CompressionEncoding>,
-    compression_override: SingleMessageCompressionOverride,
-    max_message_size: Option<usize>,
-) -> impl TryStream<Ok = Bytes, Error = Status>
+/// Combinator for efficient encoding of messages into reasonably sized buffers.
+/// EncodedBytes encodes ready messages from its delegate stream into a BytesMut,
+/// splitting off and yielding a buffer when either:
+///  * The delegate stream polls as not ready, or
+///  * The encoded buffer surpasses YIELD_THRESHOLD.
+#[pin_project(project = EncodedBytesProj)]
+#[derive(Debug)]
+pub(crate) struct EncodedBytes<T, U>
 where
     T: Encoder<Error = Status>,
     U: Stream<Item = Result<T::Item, Status>>,
 {
-    let mut buf = BytesMut::with_capacity(BUFFER_SIZE);
+    #[pin]
+    source: Fuse<U>,
+    encoder: T,
+    compression_encoding: Option<CompressionEncoding>,
+    max_message_size: Option<usize>,
+    buf: BytesMut,
+    uncompression_buf: BytesMut,
+}
 
-    let compression_encoding = if compression_override == SingleMessageCompressionOverride::Disable
-    {
-        None
-    } else {
-        compression_encoding
-    };
+impl<T, U> EncodedBytes<T, U>
+where
+    T: Encoder<Error = Status>,
+    U: Stream<Item = Result<T::Item, Status>>,
+{
+    fn new(
+        encoder: T,
+        source: U,
+        compression_encoding: Option<CompressionEncoding>,
+        compression_override: SingleMessageCompressionOverride,
+        max_message_size: Option<usize>,
+    ) -> Self {
+        let buf = BytesMut::with_capacity(BUFFER_SIZE);
 
-    let mut uncompression_buf = if compression_encoding.is_some() {
-        BytesMut::with_capacity(BUFFER_SIZE)
-    } else {
-        BytesMut::new()
-    };
+        let compression_encoding =
+            if compression_override == SingleMessageCompressionOverride::Disable {
+                None
+            } else {
+                compression_encoding
+            };
 
-    source.map(move |result| {
-        let item = result?;
+        let uncompression_buf = if compression_encoding.is_some() {
+            BytesMut::with_capacity(BUFFER_SIZE)
+        } else {
+            BytesMut::new()
+        };
 
-        encode_item(
-            &mut encoder,
-            &mut buf,
-            &mut uncompression_buf,
+        return EncodedBytes {
+            source: Fuse::new(source),
+            encoder,
             compression_encoding,
             max_message_size,
-            item,
-        )
-    })
+            buf,
+            uncompression_buf,
+        };
+    }
+}
+
+impl<T, U> Stream for EncodedBytes<T, U>
+where
+    T: Encoder<Error = Status>,
+    U: Stream<Item = Result<T::Item, Status>>,
+{
+    type Item = Result<Bytes, Status>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let EncodedBytesProj {
+            mut source,
+            encoder,
+            compression_encoding,
+            max_message_size,
+            buf,
+            uncompression_buf,
+        } = self.project();
+
+        loop {
+            match source.as_mut().poll_next(cx) {
+                Poll::Pending if buf.is_empty() => {
+                    return Poll::Pending;
+                }
+                Poll::Ready(None) if buf.is_empty() => {
+                    return Poll::Ready(None);
+                }
+                Poll::Pending | Poll::Ready(None) => {
+                    return Poll::Ready(Some(Ok(buf.split_to(buf.len()).freeze())));
+                }
+                Poll::Ready(Some(Ok(item))) => {
+                    if let Err(status) = encode_item(
+                        encoder,
+                        buf,
+                        uncompression_buf,
+                        *compression_encoding,
+                        *max_message_size,
+                        item,
+                    ) {
+                        return Poll::Ready(Some(Err(status)));
+                    }
+
+                    if buf.len() >= YIELD_THRESHOLD {
+                        return Poll::Ready(Some(Ok(buf.split_to(buf.len()).freeze())));
+                    }
+                }
+                Poll::Ready(Some(Err(status))) => {
+                    return Poll::Ready(Some(Err(status)));
+                }
+            }
+        }
+    }
 }
 
 fn encode_item<T>(
@@ -105,10 +176,12 @@ fn encode_item<T>(
     compression_encoding: Option<CompressionEncoding>,
     max_message_size: Option<usize>,
     item: T::Item,
-) -> Result<Bytes, Status>
+) -> Result<(), Status>
 where
     T: Encoder<Error = Status>,
 {
+    let offset = buf.len();
+
     buf.reserve(HEADER_SIZE);
     unsafe {
         buf.advance_mut(HEADER_SIZE);
@@ -132,14 +205,14 @@ where
     }
 
     // now that we know length, we can write the header
-    finish_encoding(compression_encoding, max_message_size, buf)
+    finish_encoding(compression_encoding, max_message_size, &mut buf[offset..])
 }
 
 fn finish_encoding(
     compression_encoding: Option<CompressionEncoding>,
     max_message_size: Option<usize>,
-    buf: &mut BytesMut,
-) -> Result<Bytes, Status> {
+    buf: &mut [u8],
+) -> Result<(), Status> {
     let len = buf.len() - HEADER_SIZE;
     let limit = max_message_size.unwrap_or(DEFAULT_MAX_SEND_MESSAGE_SIZE);
     if len > limit {
@@ -163,7 +236,7 @@ fn finish_encoding(
         buf.put_u32(len as u32);
     }
 
-    Ok(buf.split_to(len + HEADER_SIZE).freeze())
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -251,8 +324,8 @@ where
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Self::Data, Self::Error>>> {
-        let mut self_proj = self.project();
-        match ready!(self_proj.inner.try_poll_next_unpin(cx)) {
+        let self_proj = self.project();
+        match ready!(self_proj.inner.poll_next(cx)) {
             Some(Ok(d)) => Some(Ok(d)).into(),
             Some(Err(status)) => match self_proj.state.role {
                 Role::Client => Some(Err(status)).into(),
@@ -270,5 +343,59 @@ where
         _cx: &mut Context<'_>,
     ) -> Poll<Result<Option<HeaderMap>, Status>> {
         Poll::Ready(self.project().state.trailers())
+    }
+}
+
+mod fuse {
+    use std::{
+        pin::Pin,
+        task::{ready, Context, Poll},
+    };
+
+    use tokio_stream::Stream;
+
+    /// Stream for the [`fuse`](super::StreamExt::fuse) method.
+    #[derive(Debug)]
+    #[pin_project::pin_project]
+    #[must_use = "streams do nothing unless polled"]
+    pub(crate) struct Fuse<St> {
+        #[pin]
+        stream: St,
+        done: bool,
+    }
+
+    impl<St> Fuse<St> {
+        pub(crate) fn new(stream: St) -> Self {
+            Self {
+                stream,
+                done: false,
+            }
+        }
+    }
+
+    impl<S: Stream> Stream for Fuse<S> {
+        type Item = S::Item;
+
+        fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<S::Item>> {
+            let this = self.project();
+
+            if *this.done {
+                return Poll::Ready(None);
+            }
+
+            let item = ready!(this.stream.poll_next(cx));
+            if item.is_none() {
+                *this.done = true;
+            }
+            Poll::Ready(item)
+        }
+
+        fn size_hint(&self) -> (usize, Option<usize>) {
+            if self.done {
+                (0, Some(0))
+            } else {
+                self.stream.size_hint()
+            }
+        }
     }
 }

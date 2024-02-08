@@ -11,15 +11,17 @@
 
 [package]
 edition = "2018"
-rust-version = "1.43"
+rust-version = "1.64"
 name = "zstd-sys"
-version = "2.0.8+zstd.1.5.5"
+version = "2.0.9+zstd.1.5.5"
 authors = ["Alexandre Bury <alexandre.bury@gmail.com>"]
 build = "build.rs"
 links = "zstd"
 include = [
-    "/LICENSE",
-    "/*.*",
+    "/LICENSE*",
+    "!/*.sh",
+    "/build.rs",
+    "/*.h",
     "/src/",
     "/wasm-shim/**/*.h",
     "/zstd/LICENSE",
@@ -48,11 +50,8 @@ features = ["experimental"]
 [lib]
 doctest = false
 
-[dependencies.libc]
-version = "0.2.45"
-
 [build-dependencies.bindgen]
-version = "0.64"
+version = "0.68"
 features = [
     "runtime",
     "which-rustfmt",

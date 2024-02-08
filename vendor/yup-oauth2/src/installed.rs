@@ -12,9 +12,9 @@ use std::error::Error as StdError;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use http::Uri;
 use hyper::client::connect::Connection;
 use hyper::header;
-use http::Uri;
 use percent_encoding::{percent_encode, AsciiSet, CONTROLS};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::oneshot;
@@ -33,6 +33,7 @@ fn build_authentication_request_url<T>(
     client_id: &str,
     scopes: &[T],
     redirect_uri: Option<&str>,
+    force_account_selection: bool,
 ) -> String
 where
     T: AsRef<str>,
@@ -51,15 +52,17 @@ where
         }
     }
 
-    vec![
+    let mut params = vec![
         format!("scope={}", scopes_string),
         "&access_type=offline".to_string(),
         format!("&redirect_uri={}", redirect_uri.unwrap_or(OOB_REDIRECT_URI)),
         "&response_type=code".to_string(),
         format!("&client_id={}", client_id),
-    ]
-    .into_iter()
-    .fold(url, |mut u, param| {
+    ];
+    if force_account_selection {
+        params.push("&prompt=select_account+consent".to_string());
+    }
+    params.into_iter().fold(url, |mut u, param| {
         u.push_str(&percent_encode(param.as_ref(), &QUERY_SET).to_string());
         u
     })
@@ -87,6 +90,7 @@ pub struct InstalledFlow {
     pub(crate) app_secret: ApplicationSecret,
     pub(crate) method: InstalledFlowReturnMethod,
     pub(crate) flow_delegate: Box<dyn InstalledFlowDelegate>,
+    pub(crate) force_account_selection: bool,
 }
 
 impl InstalledFlow {
@@ -108,6 +112,7 @@ impl InstalledFlow {
             app_secret,
             method,
             flow_delegate: Box::new(DefaultInstalledFlowDelegate),
+            force_account_selection: false,
         }
     }
 
@@ -132,7 +137,7 @@ impl InstalledFlow {
         match self.method {
             InstalledFlowReturnMethod::HTTPRedirect => {
                 self.ask_auth_code_via_http(hyper_client, None, &self.app_secret, scopes)
-                .await
+                    .await
             }
             InstalledFlowReturnMethod::HTTPPortRedirect(port) => {
                 self.ask_auth_code_via_http(hyper_client, Some(port), &self.app_secret, scopes)
@@ -163,6 +168,7 @@ impl InstalledFlow {
             &app_secret.client_id,
             scopes,
             self.flow_delegate.redirect_uri(),
+            self.force_account_selection,
         );
         log::debug!("Presenting auth url to user: {}", url);
         let auth_code = self
@@ -205,6 +211,7 @@ impl InstalledFlow {
             &app_secret.client_id,
             scopes,
             Some(redirect_uri.as_ref()),
+            self.force_account_selection,
         );
         log::debug!("Presenting auth url to user: {}", url);
         let _ = self
@@ -294,7 +301,7 @@ impl InstalledFlowServer {
         });
         let addr: std::net::SocketAddr = match port {
             Some(port) => ([127, 0, 0, 1], port).into(),
-            None => ([127, 0, 0, 1], 0).into()
+            None => ([127, 0, 0, 1], 0).into(),
         };
         let server = hyper::server::Server::try_bind(&addr)?;
         let server = server.http1_only(true).serve(service);
@@ -415,7 +422,8 @@ mod tests {
                 "812741506391-h38jh0j4fv0ce1krdkiq0hfvt6n5am\
                  rf.apps.googleusercontent.com",
                 &["email", "profile"],
-                None
+                None,
+                false
             )
         );
     }
@@ -432,7 +440,8 @@ mod tests {
                 "812741506391-h38jh0j4fv0ce1krdkiq0hfvt6n5am\
                  rf.apps.googleusercontent.com",
                 &["email", "profile"],
-                None
+                None,
+                false
             )
         );
     }

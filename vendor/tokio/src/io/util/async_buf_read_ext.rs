@@ -146,7 +146,7 @@ cfg_io_util! {
         ///    [`next_line`] method.
         ///  * Use [`tokio_util::codec::LinesCodec`][LinesCodec].
         ///
-        /// [LinesCodec]: https://docs.rs/tokio-util/0.6/tokio_util/codec/struct.LinesCodec.html
+        /// [LinesCodec]: https://docs.rs/tokio-util/latest/tokio_util/codec/struct.LinesCodec.html
         /// [`read_until`]: Self::read_until
         /// [`lines`]: Self::lines
         /// [`next_line`]: crate::io::Lines::next_line
@@ -294,7 +294,7 @@ cfg_io_util! {
         where
             Self: Unpin,
         {
-            std::pin::Pin::new(self).consume(amt)
+            std::pin::Pin::new(self).consume(amt);
         }
 
         /// Returns a stream over the lines of this reader.
@@ -302,7 +302,7 @@ cfg_io_util! {
         ///
         /// The stream returned from this function will yield instances of
         /// [`io::Result`]`<`[`Option`]`<`[`String`]`>>`. Each string returned will *not* have a newline
-        /// byte (the 0xA byte) or CRLF (0xD, 0xA bytes) at the end.
+        /// byte (the 0xA byte) or `CRLF` (0xD, 0xA bytes) at the end.
         ///
         /// [`io::Result`]: std::io::Result
         /// [`Option`]: core::option::Option

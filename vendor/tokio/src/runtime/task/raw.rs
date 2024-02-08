@@ -6,7 +6,8 @@ use std::ptr::NonNull;
 use std::task::{Poll, Waker};
 
 /// Raw task handle
-pub(super) struct RawTask {
+#[derive(Clone)]
+pub(crate) struct RawTask {
     ptr: NonNull<Header>,
 }
 
@@ -162,7 +163,7 @@ impl RawTask {
         S: Schedule,
     {
         let ptr = Box::into_raw(Cell::<_, S>::new(task, scheduler, State::new(), id));
-        let ptr = unsafe { NonNull::new_unchecked(ptr as *mut Header) };
+        let ptr = unsafe { NonNull::new_unchecked(ptr.cast()) };
 
         RawTask { ptr }
     }
@@ -195,7 +196,7 @@ impl RawTask {
     }
 
     /// Safety: mutual exclusion is required to call this function.
-    pub(super) fn poll(self) {
+    pub(crate) fn poll(self) {
         let vtable = self.header().vtable;
         unsafe { (vtable.poll)(self.ptr) }
     }
@@ -240,11 +241,26 @@ impl RawTask {
     pub(super) fn ref_inc(self) {
         self.header().state.ref_inc();
     }
-}
 
-impl Clone for RawTask {
-    fn clone(&self) -> Self {
-        RawTask { ptr: self.ptr }
+    /// Get the queue-next pointer
+    ///
+    /// This is for usage by the injection queue
+    ///
+    /// Safety: make sure only one queue uses this and access is synchronized.
+    pub(crate) unsafe fn get_queue_next(self) -> Option<RawTask> {
+        self.header()
+            .queue_next
+            .with(|ptr| *ptr)
+            .map(|p| RawTask::from_raw(p))
+    }
+
+    /// Sets the queue-next pointer
+    ///
+    /// This is for usage by the injection queue
+    ///
+    /// Safety: make sure only one queue uses this and access is synchronized.
+    pub(crate) unsafe fn set_queue_next(self, val: Option<RawTask>) {
+        self.header().set_next(val.map(|task| task.ptr));
     }
 }
 
@@ -282,7 +298,7 @@ unsafe fn try_read_output<T: Future, S: Schedule>(
 
 unsafe fn drop_join_handle_slow<T: Future, S: Schedule>(ptr: NonNull<Header>) {
     let harness = Harness::<T, S>::from_raw(ptr);
-    harness.drop_join_handle_slow()
+    harness.drop_join_handle_slow();
 }
 
 unsafe fn drop_abort_handle<T: Future, S: Schedule>(ptr: NonNull<Header>) {
@@ -292,5 +308,5 @@ unsafe fn drop_abort_handle<T: Future, S: Schedule>(ptr: NonNull<Header>) {
 
 unsafe fn shutdown<T: Future, S: Schedule>(ptr: NonNull<Header>) {
     let harness = Harness::<T, S>::from_raw(ptr);
-    harness.shutdown()
+    harness.shutdown();
 }

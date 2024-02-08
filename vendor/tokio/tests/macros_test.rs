@@ -1,4 +1,4 @@
-#![cfg(all(feature = "full", not(tokio_wasi)))] // Wasi doesn't support threading
+#![cfg(all(feature = "full", not(target_os = "wasi")))] // Wasi doesn't support threading
 
 use tokio::test;
 
@@ -25,10 +25,16 @@ async fn unused_braces_test() { assert_eq!(1 + 1, 2) }
 fn trait_method() {
     trait A {
         fn f(self);
+
+        fn g(self);
     }
     impl A for () {
         #[tokio::main]
-        async fn f(self) {}
+        async fn f(self) {
+            self.g()
+        }
+
+        fn g(self) {}
     }
     ().f()
 }

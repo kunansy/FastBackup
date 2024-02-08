@@ -7,7 +7,7 @@ use core::fmt;
 
 use super::internals::{DateImpl, Of, YearFlags};
 
-#[cfg(feature = "rkyv")]
+#[cfg(any(feature = "rkyv", feature = "rkyv-16", feature = "rkyv-32", feature = "rkyv-64"))]
 use rkyv::{Archive, Deserialize, Serialize};
 
 /// ISO 8601 week.
@@ -17,7 +17,13 @@ use rkyv::{Archive, Deserialize, Serialize};
 /// One can retrieve this type from the existing [`Datelike`](../trait.Datelike.html) types
 /// via the [`Datelike::iso_week`](../trait.Datelike.html#tymethod.iso_week) method.
 #[derive(PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
-#[cfg_attr(feature = "rkyv", derive(Archive, Deserialize, Serialize))]
+#[cfg_attr(
+    any(feature = "rkyv", feature = "rkyv-16", feature = "rkyv-32", feature = "rkyv-64"),
+    derive(Archive, Deserialize, Serialize),
+    archive(compare(PartialEq, PartialOrd)),
+    archive_attr(derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash))
+)]
+#[cfg_attr(feature = "rkyv-validation", archive(check_bytes))]
 pub struct IsoWeek {
     // note that this allows for larger year range than `NaiveDate`.
     // this is crucial because we have an edge case for the first and last week supported,
@@ -147,6 +153,8 @@ impl fmt::Debug for IsoWeek {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "rkyv-validation")]
+    use super::IsoWeek;
     use crate::naive::{internals, NaiveDate};
     use crate::Datelike;
 
@@ -158,11 +166,13 @@ mod tests {
         assert_eq!(minweek.year(), internals::MIN_YEAR);
         assert_eq!(minweek.week(), 1);
         assert_eq!(minweek.week0(), 0);
+        #[cfg(feature = "alloc")]
         assert_eq!(format!("{:?}", minweek), NaiveDate::MIN.format("%G-W%V").to_string());
 
         assert_eq!(maxweek.year(), internals::MAX_YEAR + 1);
         assert_eq!(maxweek.week(), 1);
         assert_eq!(maxweek.week0(), 0);
+        #[cfg(feature = "alloc")]
         assert_eq!(format!("{:?}", maxweek), NaiveDate::MAX.format("%G-W%V").to_string());
     }
 
@@ -198,5 +208,17 @@ mod tests {
 
         assert!(monday.iso_week() >= friday.iso_week());
         assert!(monday.iso_week() <= friday.iso_week());
+    }
+
+    #[test]
+    #[cfg(feature = "rkyv-validation")]
+    fn test_rkyv_validation() {
+        let minweek = NaiveDate::MIN.iso_week();
+        let bytes = rkyv::to_bytes::<_, 4>(&minweek).unwrap();
+        assert_eq!(rkyv::from_bytes::<IsoWeek>(&bytes).unwrap(), minweek);
+
+        let maxweek = NaiveDate::MAX.iso_week();
+        let bytes = rkyv::to_bytes::<_, 4>(&maxweek).unwrap();
+        assert_eq!(rkyv::from_bytes::<IsoWeek>(&bytes).unwrap(), maxweek);
     }
 }

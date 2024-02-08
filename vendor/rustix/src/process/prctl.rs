@@ -5,63 +5,20 @@
 
 #![allow(unsafe_code)]
 
-use core::convert::{TryFrom, TryInto};
-use core::mem::{size_of, MaybeUninit};
+use core::mem::size_of;
 use core::ptr::{null, null_mut, NonNull};
 
 use bitflags::bitflags;
 
 use crate::backend::c::{c_int, c_uint, c_void};
-use crate::backend::process::syscalls;
-use crate::backend::process::types::Signal;
+use crate::backend::prctl::syscalls;
 use crate::fd::{AsRawFd, BorrowedFd};
 use crate::ffi::CStr;
 use crate::io;
+use crate::prctl::*;
 use crate::process::{Pid, RawPid};
+use crate::signal::Signal;
 use crate::utils::{as_mut_ptr, as_ptr};
-
-//
-// Helper functions.
-//
-
-#[inline]
-pub(crate) unsafe fn prctl_1arg(option: c_int) -> io::Result<c_int> {
-    const NULL: *mut c_void = null_mut();
-    syscalls::prctl(option, NULL, NULL, NULL, NULL)
-}
-
-#[inline]
-pub(crate) unsafe fn prctl_2args(option: c_int, arg2: *mut c_void) -> io::Result<c_int> {
-    const NULL: *mut c_void = null_mut();
-    syscalls::prctl(option, arg2, NULL, NULL, NULL)
-}
-
-#[inline]
-pub(crate) unsafe fn prctl_3args(
-    option: c_int,
-    arg2: *mut c_void,
-    arg3: *mut c_void,
-) -> io::Result<c_int> {
-    syscalls::prctl(option, arg2, arg3, null_mut(), null_mut())
-}
-
-#[inline]
-pub(crate) unsafe fn prctl_get_at_arg2_optional<P>(option: i32) -> io::Result<P> {
-    let mut value: MaybeUninit<P> = MaybeUninit::uninit();
-    prctl_2args(option, value.as_mut_ptr().cast())?;
-    Ok(value.assume_init())
-}
-
-#[inline]
-pub(crate) unsafe fn prctl_get_at_arg2<P, T>(option: i32) -> io::Result<T>
-where
-    P: Default,
-    T: TryFrom<P, Error = io::Errno>,
-{
-    let mut value: P = Default::default();
-    prctl_2args(option, as_mut_ptr(&mut value).cast())?;
-    TryFrom::try_from(value)
-}
 
 //
 // PR_GET_PDEATHSIG/PR_SET_PDEATHSIG
@@ -139,7 +96,7 @@ impl TryFrom<i32> for DumpableBehavior {
     }
 }
 
-/// Get the current state of the calling process's `dumpable` attribute.
+/// Get the current state of the calling process' `dumpable` attribute.
 ///
 /// # References
 ///  - [`prctl(PR_GET_DUMPABLE,...)`]
@@ -180,6 +137,9 @@ const PR_GET_UNALIGN: c_int = 5;
 
 bitflags! {
     /// `PR_UNALIGN_*` flags for use with [`unaligned_access_control`] and
+    /// [`set_unaligned_access_control`].
+    #[repr(transparent)]
+    #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
     pub struct UnalignedAccessControl: u32 {
         /// Silently fix up unaligned user accesses.
         #[doc(alias = "NOPRINT")]
@@ -188,6 +148,9 @@ bitflags! {
         /// Generate a [`Signal::Bus`] signal on unaligned user access.
         #[doc(alias = "PR_UNALIGN_SIGBUS")]
         const SIGBUS = 2;
+
+        /// <https://docs.rs/bitflags/*/bitflags/#externally-defined-flags>
+        const _ = !0;
     }
 }
 
@@ -227,6 +190,8 @@ const PR_GET_FPEMU: c_int = 9;
 bitflags! {
     /// `PR_FPEMU_*` flags for use with [`floating_point_emulation_control`]
     /// and [`set_floating_point_emulation_control`].
+    #[repr(transparent)]
+    #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
     pub struct FloatingPointEmulationControl: u32 {
         /// Silently emulate floating point operations accesses.
         #[doc(alias = "PR_UNALIGN_NOPRINT")]
@@ -275,6 +240,8 @@ const PR_GET_FPEXC: c_int = 11;
 
 bitflags! {
     /// Zero means floating point exceptions are disabled.
+    #[repr(transparent)]
+    #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
     pub struct FloatingPointExceptionMode: u32 {
         /// Async non-recoverable exception mode.
         const NONRECOV = 1;
@@ -443,8 +410,8 @@ const PR_SET_ENDIAN: c_int = 20;
 ///
 /// # Safety
 ///
-/// Please ensure the conditions necessary to safely call this function,
-/// as detailed in the references above.
+/// Please ensure the conditions necessary to safely call this function, as
+/// detailed in the references above.
 ///
 /// [`prctl(PR_SET_ENDIAN,...)`]: https://man7.org/linux/man-pages/man2/prctl.2.html
 #[inline]
@@ -682,8 +649,8 @@ pub enum VirtualMemoryMapAddress {
 ///
 /// # Safety
 ///
-/// Please ensure the conditions necessary to safely call this function,
-/// as detailed in the references above.
+/// Please ensure the conditions necessary to safely call this function, as
+/// detailed in the references above.
 ///
 /// [`prctl(PR_SET_MM,...)`]: https://man7.org/linux/man-pages/man2/prctl.2.html
 #[inline]
@@ -706,7 +673,7 @@ pub unsafe fn set_virtual_memory_map_address(
 #[inline]
 #[doc(alias = "PR_SET_MM")]
 #[doc(alias = "PR_SET_MM_EXE_FILE")]
-pub fn set_executable_file(fd: BorrowedFd) -> io::Result<()> {
+pub fn set_executable_file(fd: BorrowedFd<'_>) -> io::Result<()> {
     let fd = usize::try_from(fd.as_raw_fd()).map_err(|_r| io::Errno::RANGE)?;
     unsafe { prctl_3args(PR_SET_MM, PR_SET_MM_EXE_FILE as *mut _, fd as *mut _) }.map(|_r| ())
 }
@@ -718,8 +685,8 @@ pub fn set_executable_file(fd: BorrowedFd) -> io::Result<()> {
 ///
 /// # Safety
 ///
-/// Please ensure the conditions necessary to safely call this function,
-/// as detailed in the references above.
+/// Please ensure the conditions necessary to safely call this function, as
+/// detailed in the references above.
 ///
 /// [`prctl(PR_SET_MM,PR_SET_MM_AUXV,...)`]: https://man7.org/linux/man-pages/man2/prctl.2.html
 #[inline]
@@ -797,8 +764,8 @@ pub struct PrctlMmMap {
 ///
 /// # Safety
 ///
-/// Please ensure the conditions necessary to safely call this function,
-/// as detailed in the references above.
+/// Please ensure the conditions necessary to safely call this function, as
+/// detailed in the references above.
 ///
 /// [`prctl(PR_SET_MM,PR_SET_MM_MAP,...)`]: https://man7.org/linux/man-pages/man2/prctl.2.html
 #[inline]
@@ -986,30 +953,39 @@ impl TryFrom<u32> for SpeculationFeature {
 
 bitflags! {
     /// `PR_SPEC_*` flags for use with [`control_speculative_feature`].
+    #[repr(transparent)]
+    #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
     pub struct SpeculationFeatureControl: u32 {
         /// The speculation feature is enabled, mitigation is disabled.
         const ENABLE = 1_u32 << 1;
         /// The speculation feature is disabled, mitigation is enabled.
         const DISABLE = 1_u32 << 2;
-        /// The speculation feature is disabled, mitigation is enabled, and it cannot be undone.
+        /// The speculation feature is disabled, mitigation is enabled, and it
+        /// cannot be undone.
         const FORCE_DISABLE = 1_u32 << 3;
-        /// The speculation feature is disabled, mitigation is enabled, and the state will be cleared on `execve`.
+        /// The speculation feature is disabled, mitigation is enabled, and the
+        /// state will be cleared on `execve`.
         const DISABLE_NOEXEC = 1_u32 << 4;
     }
 }
 
 bitflags! {
     /// Zero means the processors are not vulnerable.
+    #[repr(transparent)]
+    #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
     pub struct SpeculationFeatureState: u32 {
-        /// Mitigation can be controlled per thread by `PR_SET_SPECULATION_CTRL`.
+        /// Mitigation can be controlled per thread by
+        /// `PR_SET_SPECULATION_CTRL`.
         const PRCTL = 1_u32 << 0;
         /// The speculation feature is enabled, mitigation is disabled.
         const ENABLE = 1_u32 << 1;
         /// The speculation feature is disabled, mitigation is enabled.
         const DISABLE = 1_u32 << 2;
-        /// The speculation feature is disabled, mitigation is enabled, and it cannot be undone.
+        /// The speculation feature is disabled, mitigation is enabled, and it
+        /// cannot be undone.
         const FORCE_DISABLE = 1_u32 << 3;
-        /// The speculation feature is disabled, mitigation is enabled, and the state will be cleared on `execve`.
+        /// The speculation feature is disabled, mitigation is enabled, and the
+        /// state will be cleared on `execve`.
         const DISABLE_NOEXEC = 1_u32 << 4;
     }
 }
@@ -1087,22 +1063,6 @@ pub fn configure_io_flusher_behavior(enable: bool) -> io::Result<()> {
 
 const PR_PAC_GET_ENABLED_KEYS: c_int = 61;
 
-bitflags! {
-    /// `PR_PAC_AP*`.
-    pub struct PointerAuthenticationKeys: u32 {
-        /// Instruction authentication key `A`.
-        const INSTRUCTION_AUTHENTICATION_KEY_A = 1_u32 << 0;
-        /// Instruction authentication key `B`.
-        const INSTRUCTION_AUTHENTICATION_KEY_B = 1_u32 << 1;
-        /// Data authentication key `A`.
-        const DATA_AUTHENTICATION_KEY_A = 1_u32 << 2;
-        /// Data authentication key `B`.
-        const DATA_AUTHENTICATION_KEY_B = 1_u32 << 3;
-        /// Generic authentication `A` key.
-        const GENERIC_AUTHENTICATION_KEY_A = 1_u32 << 4;
-    }
-}
-
 /// Get enabled pointer authentication keys.
 ///
 /// # References
@@ -1125,8 +1085,8 @@ const PR_PAC_SET_ENABLED_KEYS: c_int = 60;
 ///
 /// # Safety
 ///
-/// Please ensure the conditions necessary to safely call this function,
-/// as detailed in the references above.
+/// Please ensure the conditions necessary to safely call this function, as
+/// detailed in the references above.
 ///
 /// [`prctl(PR_PAC_SET_ENABLED_KEYS,...)`]: https://www.kernel.org/doc/html/v5.18/arm64/pointer-authentication.html
 #[inline]

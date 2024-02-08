@@ -5,6 +5,56 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 6.0.1 (2024-01-05)
+
+Added another encoding/decoding wrapper for base64.
+
+### Commit Statistics
+
+<csr-read-only-do-not-edit/>
+
+ - 3 commits contributed to the release over the course of 100 calendar days.
+ - 135 days passed between releases.
+ - 0 commits were understood as [conventional](https://www.conventionalcommits.org).
+ - 0 issues like '(#ID)' were seen in commit messages
+
+### Commit Details
+
+<csr-read-only-do-not-edit/>
+
+<details><summary>view details</summary>
+
+ * **Uncategorized**
+    - Prepare changelog prior to google-apis-common release. ([`3e0829c`](https://github.com/Byron/google-apis-rs/commit/3e0829caf73a3bb2f7430bb2fc8109d43d5b61d9))
+    - Merge pull request #464 from andrewbaxter/standard-base64 ([`23aecc3`](https://github.com/Byron/google-apis-rs/commit/23aecc38e8b03ab3d50641e5581aca63dde76cb3))
+    - Attempt to add 'standard' base64 bytes support ([`ee4ed07`](https://github.com/Byron/google-apis-rs/commit/ee4ed07af102f7ae5f685b78327737b233a4023e))
+</details>
+
+## 6.0.0 (2023-08-23)
+
+A maintenance release with updated yup-oauth2 dependency
+
+### Commit Statistics
+
+<csr-read-only-do-not-edit/>
+
+ - 3 commits contributed to the release over the course of 126 calendar days.
+ - 126 days passed between releases.
+ - 0 commits were understood as [conventional](https://www.conventionalcommits.org).
+ - 0 issues like '(#ID)' were seen in commit messages
+
+### Commit Details
+
+<csr-read-only-do-not-edit/>
+
+<details><summary>view details</summary>
+
+ * **Uncategorized**
+    - Release google-apis-common v6.0.0 ([`573d543`](https://github.com/Byron/google-apis-rs/commit/573d5437a379c19b9c13be1f8b1251ad135a2e9e))
+    - Update changelog prior to common crate releases ([`0cf81f1`](https://github.com/Byron/google-apis-rs/commit/0cf81f1df4fa79b8eaffdb56d892d392dc580812))
+    - Bump yup-oauth2 to the latest version, bringing in `hyper-rustls` v0.24. ([`58189b3`](https://github.com/Byron/google-apis-rs/commit/58189b31498fb324175721ab5bb46e8e12379636))
+</details>
+
 ## 5.0.4 (2023-04-19)
 
 ### Bug Fixes
@@ -17,7 +67,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <csr-read-only-do-not-edit/>
 
- - 1 commit contributed to the release.
+ - 2 commits contributed to the release.
  - 1 commit was understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -28,6 +78,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <details><summary>view details</summary>
 
  * **Uncategorized**
+    - Release google-apis-common v5.0.4 ([`343b479`](https://github.com/Byron/google-apis-rs/commit/343b4792088e3eaa4562050ee5a7c56f9ed26268))
     - Pin `yup-oauth2` to the latest known working version of yup-oauth2. ([`f5b37c3`](https://github.com/Byron/google-apis-rs/commit/f5b37c3f71989c25bff9d7954ede21c3455e56cb))
 </details>
 

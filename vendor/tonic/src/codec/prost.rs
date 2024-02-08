@@ -155,7 +155,7 @@ mod tests {
         let msg = Vec::from(&[0u8; 1024][..]);
 
         let messages = std::iter::repeat_with(move || Ok::<_, Status>(msg.clone())).take(10000);
-        let source = futures_util::stream::iter(messages);
+        let source = tokio_stream::iter(messages);
 
         let body = encode_server(
             encoder,
@@ -165,7 +165,7 @@ mod tests {
             None,
         );
 
-        futures_util::pin_mut!(body);
+        tokio::pin!(body);
 
         while let Some(r) = body.data().await {
             r.unwrap();
@@ -179,7 +179,7 @@ mod tests {
         let msg = vec![0u8; MAX_MESSAGE_SIZE + 1];
 
         let messages = std::iter::once(Ok::<_, Status>(msg));
-        let source = futures_util::stream::iter(messages);
+        let source = tokio_stream::iter(messages);
 
         let body = encode_server(
             encoder,
@@ -189,7 +189,7 @@ mod tests {
             Some(MAX_MESSAGE_SIZE),
         );
 
-        futures_util::pin_mut!(body);
+        tokio::pin!(body);
 
         assert!(body.data().await.is_none());
         assert_eq!(
@@ -213,7 +213,7 @@ mod tests {
         let msg = vec![0u8; u32::MAX as usize + 1];
 
         let messages = std::iter::once(Ok::<_, Status>(msg));
-        let source = futures_util::stream::iter(messages);
+        let source = tokio_stream::iter(messages);
 
         let body = encode_server(
             encoder,
@@ -223,7 +223,7 @@ mod tests {
             Some(usize::MAX),
         );
 
-        futures_util::pin_mut!(body);
+        tokio::pin!(body);
 
         assert!(body.data().await.is_none());
         assert_eq!(
@@ -329,9 +329,8 @@ mod tests {
             #[allow(clippy::drop_ref)]
             fn poll_trailers(
                 self: Pin<&mut Self>,
-                cx: &mut Context<'_>,
+                _cx: &mut Context<'_>,
             ) -> Poll<Result<Option<http::HeaderMap>, Self::Error>> {
-                drop(cx);
                 Poll::Ready(Ok(None))
             }
         }
