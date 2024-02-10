@@ -27,12 +27,6 @@ ENV TZ Etc/UTC
 
 LABEL maintainer="Kirill <k@kunansy.ru>"
 
-RUN apt-get update \
-    && apt-get upgrade -y \
-    && apt-get autoremove -y \
-    && apt-get clean && apt-get autoclean \
-    && rm -rf /var/lib/apt/lists/*
-
 WORKDIR app
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=builder /build/target/${TARGET}/release/backup-server ./
