@@ -31,7 +31,7 @@ jobs:
           context: .
           platforms: linux/amd64
           push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/fast-backup:0.5.3
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/fast-backup:0.5.4
           build-args: TARGET="x86_64-unknown-linux-gnu"
       -
         name: Build and push arm
@@ -40,5 +40,5 @@ jobs:
           context: .
           platforms: linux/arm64
           push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/fast-backup:0.5.3
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/fast-backup:0.5.4
           build-args: TARGET="aarch64-apple-darwin"
