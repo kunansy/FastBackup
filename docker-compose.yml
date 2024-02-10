@@ -12,7 +12,7 @@ services:
     volumes:
       - ./data:/app/data:rw
     networks:
-      - readingtracker_tracker-net
+      - tracker-net
     healthcheck:
       test: exit 0
       interval: 10s
@@ -20,5 +20,5 @@ services:
       retries: 3
 
 networks:
-  readingtracker_tracker-net:
+  tracker-net:
     external: true
