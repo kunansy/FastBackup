@@ -27,7 +27,7 @@ tonic-build = "0.10"
 [profile.release]
 # fat lto: https://doc.rust-lang.org/cargo/reference/profiles.html#lto
 lto = "fat"
-opt-level = "z"
+opt-level = 3
 
 [[bin]]
 name = "app"
