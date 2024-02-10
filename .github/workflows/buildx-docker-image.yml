@@ -32,7 +32,7 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/fast-backup:0.5.4
-          build-args: TARGET="x86_64-unknown-linux-gnu"
+          build-args: TARGET=x86_64-unknown-linux-gnu
       -
         name: Build and push arm
         uses: docker/build-push-action@v3
@@ -41,4 +41,4 @@ jobs:
           platforms: linux/arm64
           push: true
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/fast-backup:0.5.4
-          build-args: TARGET="aarch64-apple-darwin"
+          build-args: TARGET=aarch64-apple-darwin
