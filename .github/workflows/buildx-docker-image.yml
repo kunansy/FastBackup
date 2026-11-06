@@ -33,12 +33,3 @@ jobs:
           push: true
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/fast-backup:0.6.0
           build-args: TARGET=x86_64-unknown-linux-gnu
-      -
-        name: Build and push arm
-        uses: docker/build-push-action@v3
-        with:
-          context: .
-          platforms: linux/arm64
-          push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/fast-backup:0.6.0
-          build-args: TARGET=aarch64-unknown-linux-gnu
