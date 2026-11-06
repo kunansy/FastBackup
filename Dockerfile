@@ -8,7 +8,6 @@ RUN apt-get update  \
     && rustup target add ${TARGET}
 
 # Production host is an Intel Ice Lake VM: AVX-512 is exposed, SHA-NI is not.
-# Applies only to the x86_64 target, not to build scripts or the aarch64 image.
 ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C target-cpu=x86-64-v4"
 
 WORKDIR /build
@@ -23,12 +22,23 @@ RUN cargo build --release --bin backup-server --offline --target ${TARGET} --job
 FROM debian:bookworm-slim
 
 ARG TARGET=x86_64-unknown-linux-gnu
+# Client major version must be >= the server's one.
+ARG PG_MAJOR=18
 ENV RUST_BACKTRACE=full
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Etc/UTC
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && install -d /usr/share/postgresql-common/pgdg \
+    && curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+    && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends postgresql-client-${PG_MAJOR} \
+    && apt-get purge -y curl && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
+
 LABEL maintainer="Kirill <k@kunansy.ru>"
 
 WORKDIR /app
-COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=builder /build/target/${TARGET}/release/backup-server ./

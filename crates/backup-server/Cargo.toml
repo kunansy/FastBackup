@@ -18,5 +18,6 @@ backup-proto.workspace = true
 chrono.workspace = true
 env_logger.workspace = true
 log.workspace = true
+tempfile.workspace = true
 tokio.workspace = true
 tonic.workspace = true

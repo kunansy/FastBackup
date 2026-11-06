@@ -1,21 +1,12 @@
+mod clock;
 pub mod compression;
-pub mod errors;
+mod error;
+mod format;
+mod ports;
+mod target;
 
-pub use errors::Errors;
-
-pub type Res<T> = Result<T, Errors>;
-
-#[async_trait::async_trait]
-pub trait Storage {
-    async fn upload(&self, buf: &[u8], filename: &str, folder_id: Option<String>) -> Res<String>;
-
-    async fn download(&self, folder_id: &str) -> Res<(Vec<u8>, String)>;
-}
-
-pub trait DbConfig {
-    fn db_host(&self) -> &str;
-    fn db_port(&self) -> u16;
-    fn db_username(&self) -> &str;
-    fn db_password(&self) -> &str;
-    fn db_name(&self) -> &str;
-}
+pub use clock::{Clock, SystemClock};
+pub use error::{Error, Result};
+pub use format::{BackupFormat, backup_file_name, detect_format};
+pub use ports::{Dumper, Restorer, Storage};
+pub use target::{DbTarget, Secret};

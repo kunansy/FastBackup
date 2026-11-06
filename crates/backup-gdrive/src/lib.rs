@@ -14,7 +14,7 @@ use google_drive3::yup_oauth2::{
 use http_body_util::BodyExt;
 use hyper_rustls::HttpsConnector;
 
-use backup_core::{Errors, Res, Storage, compression::decompress};
+use backup_core::{Error, Result as Res, Storage, compression::decompress};
 
 type Connector = HttpsConnector<HttpConnector>;
 type Hub = DriveHub<Connector>;
@@ -24,8 +24,8 @@ const DRIVE_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const DRIVE_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 const DEFAULT_FOLDER_NAME: &str = "tracker";
 
-fn storage_error(context: &str, err: impl std::fmt::Display) -> Errors {
-    Errors::StorageError(format!("{context}: {err}"))
+fn storage_error(context: &str, err: impl std::fmt::Display) -> Error {
+    Error::Storage(format!("{context}: {err}"))
 }
 
 fn build_connector() -> Res<Connector> {
@@ -47,10 +47,12 @@ async fn with_timeout<F, T>(operation: &str, limit: Duration, fut: F) -> Res<T>
 where
     F: Future<Output = Res<T>>,
 {
-    tokio::time::timeout(limit, fut).await.map_err(|_| {
-        let msg = format!("{operation} timed out after {limit:?}");
-        Errors::StorageError(msg)
-    })?
+    tokio::time::timeout(limit, fut)
+        .await
+        .map_err(|_| Error::Timeout {
+            operation: operation.to_string(),
+            limit,
+        })?
 }
 
 pub struct GoogleDrive {
@@ -96,22 +98,20 @@ impl GoogleDrive {
         .await?;
 
         let mut files = files.files.ok_or_else(|| {
-            Errors::StorageError("Could not get files, response body is empty".to_string())
+            Error::Storage("Could not get files, response body is empty".to_string())
         })?;
 
         match files.len() {
-            0 => Err(Errors::StorageError(format!(
-                "File '{file_name}' not found"
-            ))),
+            0 => Err(Error::Storage(format!("File '{file_name}' not found"))),
             1 => {
                 let file_id = files[0]
                     .id
                     .take()
-                    .ok_or_else(|| Errors::StorageError("Field 'id' not found".to_string()))?;
+                    .ok_or_else(|| Error::Storage("Field 'id' not found".to_string()))?;
                 log::info!("File id = '{file_id}'");
                 Ok(file_id)
             }
-            len => Err(Errors::StorageError(format!(
+            len => Err(Error::Storage(format!(
                 "There are {len} items found for '{file_name}'"
             ))),
         }
@@ -182,11 +182,11 @@ impl GoogleDrive {
             .filter(|f| f.created_time.is_some())
             .max_by_key(|f| f.created_time)
             .ok_or_else(|| {
-                Errors::StorageError("Could not get files, response body is empty".to_string())
+                Error::Storage("Could not get files, response body is empty".to_string())
             })?;
 
         let (Some(file_id), Some(file_name)) = (newest.id, newest.name) else {
-            return Err(Errors::StorageError(
+            return Err(Error::Storage(
                 "Fields 'id' and 'name' are required".to_string(),
             ));
         };
@@ -248,13 +248,13 @@ impl Storage for GoogleDrive {
 mod tests {
     use std::time::Duration;
 
-    use backup_core::Errors;
+    use backup_core::Error;
 
     use super::with_timeout;
 
     #[tokio::test]
-    async fn test_with_timeout_returns_storage_error_when_future_hangs() {
-        let res: backup_core::Res<()> = with_timeout(
+    async fn test_with_timeout_returns_timeout_error_when_future_hangs() {
+        let res: backup_core::Result<()> = with_timeout(
             "Hanging op",
             Duration::from_millis(10),
             std::future::pending(),
@@ -262,10 +262,10 @@ mod tests {
         .await;
 
         match res {
-            Err(Errors::StorageError(msg)) => {
-                assert!(msg.starts_with("Hanging op timed out"), "{msg}")
+            Err(err @ Error::Timeout { .. }) => {
+                assert!(err.to_string().starts_with("Hanging op timed out"), "{err}")
             }
-            other => panic!("expected StorageError, {other:?} found"),
+            other => panic!("expected Timeout, {other:?} found"),
         }
     }
 
