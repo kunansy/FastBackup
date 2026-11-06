@@ -17,8 +17,13 @@ pub(crate) fn escape(value: &str) -> String {
     value.replace('\\', "\\\\").replace('\'', "\\'")
 }
 
+const FOLDER_MIME: &str = "application/vnd.google-apps.folder";
+
 pub(crate) fn folder_query(folder_id: &str) -> String {
-    format!("'{}' in parents and trashed = false", escape(folder_id))
+    format!(
+        "'{}' in parents and trashed = false and mimeType != '{FOLDER_MIME}'",
+        escape(folder_id)
+    )
 }
 
 pub(crate) fn latest_query(folder_id: &str) -> String {
@@ -42,7 +47,7 @@ mod tests {
     fn test_folder_query_escapes_id() {
         assert_eq!(
             folder_query("x' or name contains 'y"),
-            r"'x\' or name contains \'y' in parents and trashed = false"
+            r"'x\' or name contains \'y' in parents and trashed = false and mimeType != 'application/vnd.google-apps.folder'"
         );
     }
 
@@ -51,6 +56,7 @@ mod tests {
         assert_eq!(
             latest_query("folder"),
             "'folder' in parents and trashed = false \
+             and mimeType != 'application/vnd.google-apps.folder' \
              and not appProperties has { key='kind' and value='pre_restore' }"
         );
     }

@@ -81,13 +81,18 @@ impl GoogleDriveStorage {
         }
 
         let (_, list) = timed("Listing backups", self.opts.request_timeout, call.doit()).await?;
+        // Other files may live in the folder; one of them must not hide the backups.
         let items = list
             .files
             .unwrap_or_default()
             .into_iter()
-            .map(to_backup_info)
-            .collect::<Result<Vec<_>>>()
-            .map_err(CallError::Permanent)?;
+            .filter_map(|file| {
+                let name = file.name.clone().unwrap_or_default();
+                to_backup_info(file)
+                    .inspect_err(|e| log::warn!("Skipping '{name}': {e}"))
+                    .ok()
+            })
+            .collect();
 
         Ok(Page {
             items,
@@ -335,6 +340,23 @@ mod tests {
         );
         assert!(requests[1].contains("pageToken=t1"), "{}", requests[1]);
         assert!(requests[1].contains("folder1"), "{}", requests[1]);
+    }
+
+    #[tokio::test]
+    async fn test_list_skips_files_that_are_not_backups() {
+        let mut foreign = file_json("x", FOLDER, "m");
+        foreign["name"] = json!("notes.txt");
+        foreign["appProperties"] = json!(null);
+        let fake = FakeDrive::start(vec![Reply::json(
+            200,
+            json!({"files": [foreign, file_json("f1", FOLDER, "m")]}),
+        )])
+        .await;
+
+        let page = storage(&fake, 1).list(10, None).await.unwrap();
+
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].id, "f1");
     }
 
     #[tokio::test]
