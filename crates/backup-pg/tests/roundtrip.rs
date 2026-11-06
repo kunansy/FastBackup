@@ -141,3 +141,76 @@ async fn test_restore_into_empty_database() {
     let count = empty.query("SELECT count(*) FROM mvw_types").await.unwrap();
     assert_eq!(count.trim(), "3");
 }
+
+/// Per-table row fingerprints, sequence values and enum labels of a database.
+async fn fingerprint(pg: &PgTools) -> String {
+    let tables = pg
+        .query("SELECT string_agg(tablename, ',' ORDER BY tablename) FROM pg_tables WHERE schemaname = 'public'")
+        .await
+        .unwrap();
+    let mut parts = Vec::new();
+    for table in tables.trim().split(',').filter(|t| !t.is_empty()) {
+        let sql = format!(
+            "SELECT count(*) || ':' || coalesce(md5(string_agg(t::text, '|' ORDER BY t::text)), '-') FROM \"{table}\" t"
+        );
+        parts.push(format!("{table}={}", pg.query(&sql).await.unwrap().trim()));
+    }
+    let sequences = pg
+        .query("SELECT string_agg(sequencename || '=' || coalesce(last_value::text, 'null'), ',' ORDER BY sequencename) FROM pg_sequences WHERE schemaname = 'public'")
+        .await
+        .unwrap();
+    let enums = pg
+        .query("SELECT string_agg(t.typname || '=' || e.enumlabel, ',' ORDER BY t.typname, e.enumsortorder) FROM pg_enum e JOIN pg_type t ON t.oid = e.enumtypid")
+        .await
+        .unwrap();
+    let matviews = pg
+        .query("SELECT string_agg(matviewname, ',' ORDER BY matviewname) FROM pg_matviews WHERE schemaname = 'public'")
+        .await
+        .unwrap();
+    format!(
+        "{}\nsequences: {}\nenums: {}\nmatviews: {}",
+        parts.join("\n"),
+        sequences.trim(),
+        enums.trim(),
+        matviews.trim()
+    )
+}
+
+/// Dump a real database and restore it twice: into an empty database and over
+/// a modified copy. Set `PG_TEST_SOURCE_DB` to the database to copy.
+#[tokio::test]
+#[ignore = "requires PostgreSQL 18 server and client binaries"]
+async fn test_real_database_roundtrip() {
+    let Ok(source_name) = std::env::var("PG_TEST_SOURCE_DB") else {
+        eprintln!("PG_TEST_SOURCE_DB is not set, skipping");
+        return;
+    };
+    let source = tools_for(&source_name);
+    let expected = fingerprint(&source).await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let dump = dir.path().join("real.pgdump");
+    source.dump(&dump).await.expect("dump succeeds");
+
+    let copy = fresh_db("backup_test_real_copy").await;
+    copy.restore(&dump)
+        .await
+        .expect("restore into empty database");
+    assert_eq!(fingerprint(&copy).await, expected);
+
+    let tables = copy
+        .query("SELECT string_agg(format('DELETE FROM %I', tablename), '; ') FROM pg_tables WHERE schemaname = 'public'")
+        .await
+        .unwrap();
+    copy.query(tables.trim()).await.expect("copy emptied");
+    copy.query("DROP MATERIALIZED VIEW IF EXISTS mvw_repeat_notes")
+        .await
+        .unwrap();
+    assert_ne!(fingerprint(&copy).await, expected);
+
+    copy.restore(&dump)
+        .await
+        .expect("restore over modified copy");
+    assert_eq!(fingerprint(&copy).await, expected);
+    println!("{expected}");
+}

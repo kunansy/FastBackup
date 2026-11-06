@@ -61,6 +61,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 # Integration tests: PostgreSQL 18 server, its client binaries in PATH.
 PG_TEST_HOST=localhost cargo test --workspace -- --include-ignored --skip drive_smoke
+# Also round-trip a real database (read-only for it; copies go to backup_test_* databases).
+PG_TEST_SOURCE_DB=tracker PG_TEST_HOST=localhost cargo test -p backup-pg --test roundtrip -- --ignored
 # Real Google Drive.
 DRIVE_TEST_CREDS="$(cat key.json)" DRIVE_TEST_FOLDER_ID=... cargo test -p backup-gdrive -- --ignored
 ```
