@@ -19,13 +19,12 @@ async fn drive_smoke_upload_find_download_delete() {
     std::fs::write(&src, &content).unwrap();
 
     let uploaded = drive
-        .upload(UploadRequest {
-            path: &src,
-            name: "smoke_test.pgdump",
-            db_name: "smoke",
-            format: BackupFormat::PgCustom,
-            kind: BackupKind::Regular,
-        })
+        .upload(UploadRequest::pg_dump(
+            &src,
+            "smoke",
+            BackupKind::Regular,
+            chrono::Utc::now(),
+        ))
         .await
         .expect("uploaded");
     assert_eq!(uploaded.size_bytes, Some(content.len() as u64));

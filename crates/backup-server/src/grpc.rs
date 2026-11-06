@@ -167,12 +167,21 @@ mod tests {
     use backup_proto::backup_ref::Target;
     use backup_proto::backup_server::Backup;
     use backup_proto::download_chunk::Payload;
-    use backup_proto::{BackupRef, CreateBackupRequest, RestoreRequest};
+    use backup_proto::{
+        BackupRef, CreateBackupRequest, HealthcheckRequest, ListBackupsRequest, RestoreRequest,
+    };
     use tokio_stream::StreamExt;
     use tonic::{Code, Request};
 
     use super::{CHUNK_SIZE, GrpcBackup};
-    use crate::service::tests::{harness, info};
+    use crate::service::tests::{harness, harness_with, info};
+
+    fn restore_request(backup: Option<BackupRef>) -> Request<RestoreRequest> {
+        Request::new(RestoreRequest {
+            backup,
+            confirm_db_name: "tracker".into(),
+        })
+    }
 
     #[tokio::test]
     async fn test_download_streams_info_then_chunks() {
@@ -272,6 +281,89 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(err.code(), Code::FailedPrecondition);
+    }
+
+    #[tokio::test]
+    async fn test_restore_returns_restored_and_pre_restore_backups() {
+        let h = harness();
+        h.storage.put(
+            info("good", 1, BackupFormat::PgCustom, BackupKind::Regular),
+            b"x",
+        );
+        let grpc = GrpcBackup::new(h.service.clone());
+
+        let reply = grpc
+            .restore(restore_request(Some(BackupRef {
+                target: Some(Target::Id("good".into())),
+            })))
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert_eq!(reply.restored.unwrap().id, "good");
+        let safety = reply.pre_restore_backup.unwrap();
+        assert_eq!(safety.kind(), backup_proto::BackupKind::PreRestore);
+        assert!(safety.name.starts_with("pre_restore_backup_tracker_"));
+    }
+
+    #[tokio::test]
+    async fn test_restore_without_backup_ref_is_invalid() {
+        let h = harness();
+        let grpc = GrpcBackup::new(h.service.clone());
+
+        let err = grpc.restore(restore_request(None)).await.unwrap_err();
+
+        assert_eq!(err.code(), Code::InvalidArgument);
+        assert!(h.events.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_list_backups_pages_through_token() {
+        let h = harness();
+        for day in 1..=25 {
+            h.storage.put(
+                info(
+                    &format!("b{day}"),
+                    day,
+                    BackupFormat::PgCustom,
+                    BackupKind::Regular,
+                ),
+                b"x",
+            );
+        }
+        let grpc = GrpcBackup::new(h.service.clone());
+        let list = |page_token: &str| {
+            grpc.list_backups(Request::new(ListBackupsRequest {
+                page_size: 0,
+                page_token: page_token.into(),
+            }))
+        };
+
+        let first = list("").await.unwrap().into_inner();
+        let second = list(&first.next_page_token).await.unwrap().into_inner();
+
+        assert_eq!(first.backups.len(), 20);
+        assert_eq!(first.backups[0].id, "b25");
+        assert!(!first.next_page_token.is_empty());
+        assert_eq!(second.backups.len(), 5);
+        assert_eq!(second.backups[4].id, "b1");
+        assert!(second.next_page_token.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_healthcheck_reports_database_state() {
+        for healthy in [true, false] {
+            let h = harness_with(None, |db| db.healthy = healthy);
+            let grpc = GrpcBackup::new(h.service.clone());
+
+            let reply = grpc
+                .healthcheck(Request::new(HealthcheckRequest {}))
+                .await
+                .unwrap()
+                .into_inner();
+
+            assert_eq!(reply.is_ok, healthy);
+        }
     }
 
     #[tokio::test]

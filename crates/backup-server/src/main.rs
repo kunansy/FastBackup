@@ -49,11 +49,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pg = Arc::new(PgTools::new(
         cfg.db.clone(),
         cfg.comp_level,
+        cfg.pg_timeout,
         Arc::new(TokioCommandRunner),
     ));
 
     let service = Arc::new(BackupService::new(ServiceDeps {
-        db_name: cfg.db.name.clone(),
         dumper: pg.clone(),
         restorer: pg.clone(),
         health: pg,

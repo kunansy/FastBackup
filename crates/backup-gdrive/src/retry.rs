@@ -1,7 +1,7 @@
 use std::future::Future;
 use std::time::Duration;
 
-use backup_core::{Error, Result};
+use backup_core::Result;
 
 use crate::errors::CallError;
 
@@ -33,9 +33,11 @@ where
     loop {
         match call().await {
             Ok(value) => return Ok(value),
-            Err(CallError::Permanent(err)) => return Err(err),
+            Err(err @ (CallError::Permanent(_) | CallError::BadRequest(_))) => {
+                return Err(err.into_error());
+            }
             Err(CallError::Transient(msg)) if attempt >= policy.attempts => {
-                return Err(Error::Storage(msg));
+                return Err(CallError::Transient(msg).into_error());
             }
             Err(CallError::Transient(msg)) => {
                 log::warn!("{op} failed (attempt {attempt}/{}): {msg}", policy.attempts);
@@ -89,7 +91,7 @@ mod tests {
         })
         .await;
 
-        assert!(matches!(res, Err(Error::Storage(msg)) if msg == "down"));
+        assert!(matches!(res, Err(Error::Unavailable(msg)) if msg == "down"));
         assert_eq!(calls.load(Ordering::SeqCst), 3);
     }
 

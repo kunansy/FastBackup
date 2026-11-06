@@ -40,5 +40,11 @@ RUN apt-get update \
 
 LABEL maintainer="Kirill <k@kunansy.ru>"
 
+RUN groupadd --gid 10001 app \
+    && useradd --uid 10001 --gid app --no-create-home --shell /usr/sbin/nologin app
+
 WORKDIR /app
+RUN mkdir data && chown app:app data
 COPY --from=builder /build/target/${TARGET}/release/backup-server ./
+
+USER 10001:10001

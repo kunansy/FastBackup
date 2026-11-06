@@ -13,6 +13,10 @@ use crate::mapping::{is_in_folder, to_backup_info, upload_metadata};
 use crate::query::{FILE_FIELDS, NEWEST_FIRST, folder_query, latest_query, list_fields};
 use crate::retry::{RetryPolicy, retry};
 
+/// `latest` skips files that are not backups, so it reads pages, not one file.
+const LATEST_PAGE_SIZE: u32 = 10;
+const LATEST_MAX_PAGES: usize = 10;
+
 #[derive(Debug, Clone, Copy)]
 pub struct DriveOptions {
     /// Limit for metadata calls and for receiving download headers.
@@ -160,11 +164,11 @@ impl GoogleDriveStorage {
 #[async_trait::async_trait]
 impl Storage for GoogleDriveStorage {
     async fn upload(&self, req: UploadRequest<'_>) -> Result<BackupInfo> {
-        log::info!("Uploading '{}'", req.name);
+        log::info!("Uploading '{}'", req.name());
         let start = Instant::now();
 
-        let file = std::fs::File::open(req.path)
-            .map_err(|e| Error::io(format!("Could not open {:?}", req.path), e))?;
+        let file = std::fs::File::open(req.path())
+            .map_err(|e| Error::io(format!("Could not open {:?}", req.path()), e))?;
         let call = self
             .hub
             .files()
@@ -190,19 +194,39 @@ impl Storage for GoogleDriveStorage {
 
     async fn list(&self, page_size: u32, page_token: Option<&str>) -> Result<Page<BackupInfo>> {
         let query = folder_query(&self.folder_id);
-        retry(self.opts.retry, "Listing backups", || {
+        retry(self.opts.retry, "Listing backups", || async {
             self.list_once(&query, page_size, page_token)
+                .await
+                .map_err(|e| match e {
+                    CallError::BadRequest(_) if page_token.is_some() => {
+                        CallError::Permanent(Error::InvalidArgument("invalid page_token".into()))
+                    }
+                    other => other,
+                })
         })
         .await
     }
 
     async fn latest(&self) -> Result<Option<BackupInfo>> {
         let query = latest_query(&self.folder_id);
-        let page = retry(self.opts.retry, "Getting latest backup", || {
-            self.list_once(&query, 1, None)
-        })
-        .await?;
-        Ok(page.items.into_iter().next())
+        let mut token: Option<String> = None;
+        for _ in 0..LATEST_MAX_PAGES {
+            let page = retry(self.opts.retry, "Getting latest backup", || {
+                self.list_once(&query, LATEST_PAGE_SIZE, token.as_deref())
+            })
+            .await?;
+            if let Some(newest) = page.items.into_iter().next() {
+                return Ok(Some(newest));
+            }
+            match page.next_page_token {
+                Some(next) if !next.is_empty() => token = Some(next),
+                _ => return Ok(None),
+            }
+        }
+        Err(Error::FailedPrecondition(format!(
+            "no backup among the newest {} files in the folder",
+            LATEST_PAGE_SIZE as usize * LATEST_MAX_PAGES
+        )))
     }
 
     async fn get(&self, id: &str) -> Result<BackupInfo> {
@@ -359,6 +383,107 @@ mod tests {
         assert_eq!(page.items[0].id, "f1");
     }
 
+    fn foreign_file_json(id: &str) -> Value {
+        json!({
+            "id": id,
+            "name": "notes.txt",
+            "createdTime": "2026-02-01T00:00:00Z",
+            "parents": [FOLDER]
+        })
+    }
+
+    #[tokio::test]
+    async fn test_latest_skips_newer_foreign_files() {
+        let fake = FakeDrive::start(vec![
+            Reply::json(
+                200,
+                json!({"files": [foreign_file_json("n1")], "nextPageToken": "t2"}),
+            ),
+            Reply::json(
+                200,
+                json!({"files": [foreign_file_json("n2"), file_json("f1", FOLDER, "m")]}),
+            ),
+        ])
+        .await;
+
+        let latest = storage(&fake, 1).latest().await.unwrap().unwrap();
+
+        assert_eq!(latest.id, "f1");
+        let requests = fake.requests();
+        assert_eq!(requests.len(), 2, "{requests:?}");
+        assert!(requests[1].contains("pageToken=t2"), "{requests:?}");
+    }
+
+    #[tokio::test]
+    async fn test_latest_with_only_foreign_files() {
+        let fake = FakeDrive::start(vec![Reply::json(
+            200,
+            json!({"files": [foreign_file_json("n1")]}),
+        )])
+        .await;
+
+        assert_eq!(storage(&fake, 1).latest().await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn test_plain_text_forbidden_is_not_retried() {
+        let fake = FakeDrive::start(vec![Reply {
+            status: 403,
+            headers: vec![("Content-Type", "text/plain".into())],
+            body: b"forbidden".to_vec(),
+        }])
+        .await;
+
+        let err = storage(&fake, 3).list(10, None).await.unwrap_err();
+
+        assert!(matches!(err, Error::Storage(_)), "{err:?}");
+        assert_eq!(fake.requests().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_rate_limited_forbidden_is_retried() {
+        let rate_limited = Reply::json(
+            403,
+            json!({"error": {"code": 403, "message": "slow down",
+                             "errors": [{"reason": "rateLimitExceeded"}]}}),
+        );
+        let fake =
+            FakeDrive::start(vec![rate_limited, Reply::json(200, json!({"files": []}))]).await;
+
+        storage(&fake, 3).list(10, None).await.unwrap();
+
+        assert_eq!(fake.requests().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_bad_page_token_is_invalid_argument() {
+        let fake = FakeDrive::start(vec![drive_error(400)]).await;
+
+        let err = storage(&fake, 3).list(10, Some("junk")).await.unwrap_err();
+
+        assert!(matches!(err, Error::InvalidArgument(_)), "{err:?}");
+        assert_eq!(fake.requests().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_bad_request_without_client_token_is_internal() {
+        let fake = FakeDrive::start(vec![drive_error(400)]).await;
+
+        let err = storage(&fake, 3).delete("x").await.unwrap_err();
+
+        assert!(matches!(err, Error::Storage(_)), "{err:?}");
+        assert_eq!(fake.requests().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_exhausted_retries_are_unavailable() {
+        let fake = FakeDrive::start(vec![drive_error(503), drive_error(503)]).await;
+
+        let err = storage(&fake, 2).list(10, None).await.unwrap_err();
+
+        assert!(matches!(err, Error::Unavailable(_)), "{err:?}");
+    }
+
     #[tokio::test]
     async fn test_latest_on_empty_folder() {
         let fake = FakeDrive::start(vec![Reply::json(200, json!({"files": []}))]).await;
@@ -463,13 +588,12 @@ mod tests {
         .await;
 
         let info = storage(&fake, 1)
-            .upload(UploadRequest {
-                path: &src,
-                name: "backup_tracker_new1.pgdump",
-                db_name: "tracker",
-                format: BackupFormat::PgCustom,
-                kind: BackupKind::Regular,
-            })
+            .upload(UploadRequest::pg_dump(
+                &src,
+                "tracker",
+                BackupKind::Regular,
+                chrono::Utc::now(),
+            ))
             .await
             .unwrap();
 
@@ -482,6 +606,54 @@ mod tests {
         assert!(requests[0].contains("uploadType=resumable"), "{requests:?}");
         assert!(requests[0].contains("md5Checksum"), "{requests:?}");
         assert_eq!(requests[1], "POST /upload/session-1", "{requests:?}");
+    }
+
+    #[tokio::test]
+    async fn test_failed_upload_is_not_retried() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("x.pgdump");
+        std::fs::write(&src, b"dump!").unwrap();
+        let fake = FakeDrive::start(vec![drive_error(503)]).await;
+
+        let err = storage(&fake, 3)
+            .upload(UploadRequest::pg_dump(
+                &src,
+                "tracker",
+                BackupKind::Regular,
+                chrono::Utc::now(),
+            ))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, Error::Unavailable(_)), "{err:?}");
+        assert_eq!(fake.requests().len(), 1, "{:?}", fake.requests());
+    }
+
+    #[tokio::test]
+    async fn test_delete_retries_transient_error() {
+        let fake = FakeDrive::start(vec![
+            drive_error(503),
+            Reply {
+                status: 204,
+                headers: Vec::new(),
+                body: Vec::new(),
+            },
+        ])
+        .await;
+
+        storage(&fake, 3).delete("old").await.unwrap();
+
+        assert_eq!(fake.requests().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_delete_forbidden_fails() {
+        let fake = FakeDrive::start(vec![drive_error(403)]).await;
+
+        let err = storage(&fake, 3).delete("old").await.unwrap_err();
+
+        assert!(matches!(err, Error::Storage(_)), "{err:?}");
+        assert_eq!(fake.requests().len(), 1);
     }
 
     #[tokio::test]

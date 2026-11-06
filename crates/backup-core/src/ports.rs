@@ -4,11 +4,15 @@ use crate::{BackupInfo, Page, Result, UploadRequest};
 
 #[async_trait::async_trait]
 pub trait Dumper: Send + Sync {
+    fn db_name(&self) -> &str;
+
     async fn dump(&self, dst: &Path) -> Result<()>;
 }
 
 #[async_trait::async_trait]
 pub trait Restorer: Send + Sync {
+    fn db_name(&self) -> &str;
+
     async fn restore(&self, src: &Path) -> Result<()>;
 }
 

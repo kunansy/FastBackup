@@ -40,6 +40,13 @@ grpcurl -plaintext -import-path crates/backup-proto/proto -proto backup.proto \
 Environment variables, see [`env.example`](env.example).
 The image ships `postgresql-client-18`; its major version must not be lower than the server's.
 
+The server runs as uid/gid `10001`. Before deploying, make the mounted data folder
+writable for it:
+
+```sh
+sudo chown -R 10001:10001 ./data
+```
+
 ## Layout
 
 | Crate | Contents |

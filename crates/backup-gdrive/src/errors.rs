@@ -10,13 +10,16 @@ const RATE_LIMIT_REASONS: [&str; 2] = ["rateLimitExceeded", "userRateLimitExceed
 pub(crate) enum CallError {
     /// Worth retrying: network, timeout, rate limit, 5xx.
     Transient(String),
+    /// HTTP 400: a client error only when the client supplied the bad value.
+    BadRequest(String),
     Permanent(Error),
 }
 
 impl CallError {
     pub(crate) fn into_error(self) -> Error {
         match self {
-            Self::Transient(msg) => Error::Storage(msg),
+            Self::Transient(msg) => Error::Unavailable(msg),
+            Self::BadRequest(msg) => Error::Storage(msg),
             Self::Permanent(err) => err,
         }
     }
@@ -25,6 +28,7 @@ impl CallError {
 fn classify_status(op: &str, status: u16, reason: Option<&str>, detail: &str) -> CallError {
     let msg = format!("{op}: HTTP {status}: {detail}");
     match status {
+        400 => CallError::BadRequest(msg),
         404 => CallError::Permanent(Error::NotFound(msg)),
         429 | 500..=599 => CallError::Transient(msg),
         403 if reason.is_some_and(|r| RATE_LIMIT_REASONS.contains(&r)) => CallError::Transient(msg),
@@ -107,6 +111,40 @@ mod tests {
                 "{code} {reason}"
             );
         }
+    }
+
+    #[test]
+    fn test_bad_request_is_a_storage_error_by_default() {
+        let err = classify("List", bad_request(400, "invalid"));
+
+        assert!(matches!(err, CallError::BadRequest(_)), "{err:?}");
+        assert!(matches!(err.into_error(), Error::Storage(_)));
+    }
+
+    #[test]
+    fn test_unauthorized_is_permanent() {
+        assert!(matches!(
+            classify("List", bad_request(401, "authError")),
+            CallError::Permanent(Error::Storage(_))
+        ));
+    }
+
+    #[test]
+    fn test_transport_and_token_errors_are_transient() {
+        let errors = [
+            google_drive3::Error::Io(std::io::Error::other("reset")),
+            google_drive3::Error::MissingToken("oauth endpoint down".into()),
+        ];
+        for err in errors {
+            assert!(matches!(classify("List", err), CallError::Transient(_)));
+        }
+    }
+
+    #[test]
+    fn test_exhausted_transient_error_is_unavailable() {
+        let err = CallError::Transient("down".into()).into_error();
+
+        assert!(matches!(err, Error::Unavailable(msg) if msg == "down"));
     }
 
     #[test]

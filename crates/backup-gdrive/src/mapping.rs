@@ -25,7 +25,7 @@ pub(crate) fn to_backup_info(file: File) -> Result<BackupInfo> {
         size_bytes,
         md5: file.md5_checksum,
         format,
-        kind: BackupKind::parse(props.get(PROP_KIND).map(String::as_str)),
+        kind: BackupKind::parse(props.get(PROP_KIND).map(String::as_str))?,
     })
 }
 
@@ -39,13 +39,13 @@ pub(crate) fn is_in_folder(file: &File, folder_id: &str) -> bool {
 
 pub(crate) fn upload_metadata(req: &UploadRequest<'_>, folder_id: &str) -> File {
     let props = HashMap::from([
-        (PROP_FORMAT.to_string(), req.format.as_str().to_string()),
-        (PROP_KIND.to_string(), req.kind.as_str().to_string()),
-        (PROP_DB_NAME.to_string(), req.db_name.to_string()),
+        (PROP_FORMAT.to_string(), req.format().as_str().to_string()),
+        (PROP_KIND.to_string(), req.kind().as_str().to_string()),
+        (PROP_DB_NAME.to_string(), req.db_name().to_string()),
     ]);
 
     File {
-        name: Some(req.name.to_string()),
+        name: Some(req.name().to_string()),
         parents: Some(vec![folder_id.to_string()]),
         mime_type: Some(mime::APPLICATION_OCTET_STREAM.to_string()),
         app_properties: Some(props),
@@ -101,6 +101,13 @@ mod tests {
     }
 
     #[test]
+    fn test_unknown_kind_is_an_error() {
+        let props = HashMap::from([("kind".to_string(), "manual".to_string())]);
+
+        assert!(to_backup_info(file("x.pgdump", Some(props))).is_err());
+    }
+
+    #[test]
     fn test_missing_id_is_an_error() {
         let mut f = file("x.pgdump", None);
         f.id = None;
@@ -121,13 +128,12 @@ mod tests {
 
     #[test]
     fn test_upload_metadata_round_trips_through_mapping() {
-        let req = UploadRequest {
-            path: Path::new("/tmp/x"),
-            name: "backup_tracker_x.pgdump",
-            db_name: "tracker",
-            format: BackupFormat::PgCustom,
-            kind: BackupKind::PreRestore,
-        };
+        let req = UploadRequest::pg_dump(
+            Path::new("/tmp/x"),
+            "tracker",
+            BackupKind::PreRestore,
+            Utc::now(),
+        );
 
         let mut meta = upload_metadata(&req, "folder");
         assert_eq!(meta.parents, Some(vec!["folder".to_string()]));

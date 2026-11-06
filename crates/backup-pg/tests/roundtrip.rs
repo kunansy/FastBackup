@@ -3,6 +3,7 @@
 //! The user must be able to create databases.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use backup_core::{DbHealth, DbTarget, Dumper, Restorer, Secret};
 use backup_pg::{PgTools, TokioCommandRunner, ZstdLevel};
@@ -21,7 +22,12 @@ fn tools_for(db_name: &str) -> PgTools {
         password: Secret::new(env_or("PG_TEST_PASSWORD", "postgres")),
         name: db_name.to_string(),
     };
-    PgTools::new(target, ZstdLevel::default(), Arc::new(TokioCommandRunner))
+    PgTools::new(
+        target,
+        ZstdLevel::default(),
+        Duration::from_secs(300),
+        Arc::new(TokioCommandRunner),
+    )
 }
 
 /// Tests run in parallel, so each one gets its own database.

@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use backup_core::{DbTarget, Error, Result, Secret};
 use backup_pg::ZstdLevel;
@@ -7,6 +8,7 @@ use backup_pg::ZstdLevel;
 const DEFAULT_DATA_FOLDER: &str = "data";
 const DEFAULT_DB_PORT: u16 = 5432;
 const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:50051";
+const DEFAULT_PG_TIMEOUT_SECS: u64 = 60 * 60;
 
 #[derive(Debug, Clone)]
 pub struct Settings {
@@ -19,6 +21,8 @@ pub struct Settings {
     pub data_folder: PathBuf,
     /// Keep this many regular pg_dump backups; `None` keeps all.
     pub retention: Option<usize>,
+    /// Limit for one pg_dump or pg_restore run.
+    pub pg_timeout: Duration,
 }
 
 fn parse<T: std::str::FromStr>(key: &str, value: &str) -> Result<T>
@@ -64,6 +68,13 @@ impl Settings {
                 n => Some(n),
             },
         };
+        let pg_timeout = match get("PG_TIMEOUT_SECS") {
+            None => DEFAULT_PG_TIMEOUT_SECS,
+            Some(v) => match parse::<u64>("PG_TIMEOUT_SECS", &v)? {
+                0 => return Err(Error::Config("PG_TIMEOUT_SECS must be positive".into())),
+                n => n,
+            },
+        };
         let listen_addr = get("LISTEN_ADDR").unwrap_or_else(|| DEFAULT_LISTEN_ADDR.into());
 
         Ok(Self {
@@ -76,6 +87,7 @@ impl Settings {
                 .unwrap_or_else(|| DEFAULT_DATA_FOLDER.into())
                 .into(),
             retention,
+            pg_timeout: Duration::from_secs(pg_timeout),
         })
     }
 }
@@ -84,6 +96,7 @@ impl Settings {
 mod tests {
     use std::collections::HashMap;
     use std::path::Path;
+    use std::time::Duration;
 
     use backup_pg::ZstdLevel;
 
@@ -119,6 +132,7 @@ mod tests {
         assert_eq!(s.data_folder, Path::new("data"));
         assert_eq!(s.retention, None);
         assert_eq!(s.listen_addr.to_string(), "0.0.0.0:50051");
+        assert_eq!(s.pg_timeout, Duration::from_secs(3600));
     }
 
     #[test]
@@ -129,6 +143,7 @@ mod tests {
                 ("COMPRESSION_LEVEL", "9"),
                 ("DRIVE_RETENTION_COUNT", "30"),
                 ("LISTEN_ADDR", "127.0.0.1:6000"),
+                ("PG_TIMEOUT_SECS", "600"),
             ],
             "",
         )
@@ -138,6 +153,7 @@ mod tests {
         assert_eq!(s.comp_level, ZstdLevel::new(9).unwrap());
         assert_eq!(s.retention, Some(30));
         assert_eq!(s.listen_addr.port(), 6000);
+        assert_eq!(s.pg_timeout, Duration::from_secs(600));
     }
 
     #[test]
@@ -158,6 +174,8 @@ mod tests {
             ("DRIVE_RETENTION_COUNT", "0"),
             ("DRIVE_RETENTION_COUNT", "x"),
             ("LISTEN_ADDR", "nowhere"),
+            ("PG_TIMEOUT_SECS", "0"),
+            ("PG_TIMEOUT_SECS", "1h"),
         ] {
             assert!(parse(&[(key, value)], "").is_err(), "{key}={value}");
         }

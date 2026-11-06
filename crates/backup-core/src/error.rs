@@ -14,8 +14,14 @@ pub enum Error {
     Busy(String),
     #[error("{operation} timed out after {limit:?}")]
     Timeout { operation: String, limit: Duration },
+    #[error("invalid argument: {0}")]
+    InvalidArgument(String),
+    /// A permanent storage failure: retrying the same call will not help.
     #[error("storage error: {0}")]
     Storage(String),
+    /// The storage kept failing transiently until the retries ran out.
+    #[error("storage unavailable: {0}")]
+    Unavailable(String),
     #[error("`{program}` failed with {status}: {stderr}")]
     Process {
         program: String,

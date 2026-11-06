@@ -3,11 +3,12 @@ use std::path::Path;
 
 use chrono::{DateTime, Utc};
 
-use crate::{Error, Result};
+use crate::{BackupKind, Error, Result};
 
 const PG_CUSTOM_EXTENSION: &str = "pgdump";
 const LEGACY_EXTENSION: &str = "dump";
 const NAME_TIME_FORMAT: &str = "%Y-%m-%d_%H:%M:%S";
+const PRE_RESTORE_PREFIX: &str = "pre_restore_";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackupFormat {
@@ -34,9 +35,13 @@ impl BackupFormat {
     }
 }
 
-pub fn backup_file_name(db_name: &str, now: DateTime<Utc>) -> String {
+pub fn backup_file_name(db_name: &str, kind: BackupKind, now: DateTime<Utc>) -> String {
+    let prefix = match kind {
+        BackupKind::Regular => "",
+        BackupKind::PreRestore => PRE_RESTORE_PREFIX,
+    };
     format!(
-        "backup_{db_name}_{}.{PG_CUSTOM_EXTENSION}",
+        "{prefix}backup_{db_name}_{}.{PG_CUSTOM_EXTENSION}",
         now.format(NAME_TIME_FORMAT)
     )
 }
@@ -63,14 +68,25 @@ mod tests {
     use chrono::{TimeZone, Utc};
 
     use super::{BackupFormat, backup_file_name, detect_format};
+    use crate::BackupKind;
 
     #[test]
     fn test_backup_file_name_uses_clock_time_and_pgdump_extension() {
         let now = Utc.with_ymd_and_hms(2026, 11, 6, 12, 30, 5).unwrap();
 
         assert_eq!(
-            backup_file_name("tracker", now),
+            backup_file_name("tracker", BackupKind::Regular, now),
             "backup_tracker_2026-11-06_12:30:05.pgdump"
+        );
+    }
+
+    #[test]
+    fn test_pre_restore_file_name_is_prefixed() {
+        let now = Utc.with_ymd_and_hms(2026, 11, 6, 12, 30, 5).unwrap();
+
+        assert_eq!(
+            backup_file_name("tracker", BackupKind::PreRestore, now),
+            "pre_restore_backup_tracker_2026-11-06_12:30:05.pgdump"
         );
     }
 

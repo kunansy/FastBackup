@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use backup_core::{
     BackupFormat, BackupInfo, BackupKind, Clock, DbHealth, Dumper, Error, Page, Restorer, Result,
-    Storage, UploadRequest, backup_file_name, compression::decompress_file, retention_candidates,
+    Storage, UploadRequest, compression::decompress_file, retention_candidates,
 };
 use tempfile::NamedTempFile;
 use tokio::sync::{Mutex, MutexGuard};
@@ -13,7 +13,6 @@ const DEFAULT_PAGE_SIZE: u32 = 20;
 const MAX_PAGE_SIZE: u32 = 100;
 /// Upper bound for the retention scan, so a misbehaving storage cannot loop forever.
 const MAX_RETENTION_PAGES: usize = 100;
-const PRE_RESTORE_PREFIX: &str = "pre_restore_";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BackupTarget {
@@ -22,7 +21,6 @@ pub enum BackupTarget {
 }
 
 pub struct ServiceDeps {
-    pub db_name: String,
     pub dumper: Arc<dyn Dumper>,
     pub restorer: Arc<dyn Restorer>,
     pub health: Arc<dyn DbHealth>,
@@ -54,7 +52,7 @@ impl BackupService {
     }
 
     pub fn db_name(&self) -> &str {
-        &self.deps.db_name
+        self.deps.restorer.db_name()
     }
 
     fn lock(&self) -> Result<MutexGuard<'_, ()>> {
@@ -82,20 +80,13 @@ impl BackupService {
         let file = self.temp_file(".pgdump")?;
         self.deps.dumper.dump(file.path()).await?;
 
-        let mut name = backup_file_name(&self.deps.db_name, self.deps.clock.now());
-        if kind == BackupKind::PreRestore {
-            name.insert_str(0, PRE_RESTORE_PREFIX);
-        }
-        self.deps
-            .storage
-            .upload(UploadRequest {
-                path: file.path(),
-                name: &name,
-                db_name: &self.deps.db_name,
-                format: BackupFormat::PgCustom,
-                kind,
-            })
-            .await
+        let req = UploadRequest::pg_dump(
+            file.path(),
+            self.deps.dumper.db_name(),
+            kind,
+            self.deps.clock.now(),
+        );
+        self.deps.storage.upload(req).await
     }
 
     /// Best effort: the new backup is already stored, so failures are only logged.
@@ -106,14 +97,14 @@ impl BackupService {
         let all = match self.list_all().await {
             Ok(all) => all,
             Err(e) => {
-                log::warn!("Retention skipped, could not list backups: {e}");
+                log::error!("Retention skipped, could not list backups: {e}");
                 return;
             }
         };
         for backup in retention_candidates(&all, keep) {
             match self.deps.storage.delete(&backup.id).await {
                 Ok(()) => log::info!("Retention removed '{}'", backup.name),
-                Err(e) => log::warn!("Retention could not remove '{}': {e}", backup.name),
+                Err(e) => log::error!("Retention could not remove '{}': {e}", backup.name),
             }
         }
     }
@@ -180,7 +171,7 @@ impl BackupService {
         target: &BackupTarget,
         confirm_db_name: &str,
     ) -> Result<RestoreOutcome> {
-        if confirm_db_name != self.deps.db_name {
+        if confirm_db_name != self.db_name() {
             return Err(Error::FailedPrecondition(format!(
                 "confirm_db_name '{confirm_db_name}' does not match the configured database"
             )));
@@ -205,7 +196,7 @@ impl BackupService {
         self.deps.restorer.restore(file.path()).await?;
         log::info!(
             "Database '{}' restored from '{}' for {:?}",
-            self.deps.db_name,
+            self.db_name(),
             restored.name,
             start.elapsed()
         );
@@ -219,7 +210,7 @@ impl BackupService {
         match self.deps.health.ping().await {
             Ok(()) => true,
             Err(e) => {
-                log::warn!("Database healthcheck failed: {e}");
+                log::error!("Database healthcheck failed: {e}");
                 false
             }
         }
@@ -229,6 +220,7 @@ impl BackupService {
 #[cfg(test)]
 pub(crate) mod tests {
     use std::path::Path;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
     use backup_core::{
@@ -253,7 +245,12 @@ pub(crate) mod tests {
     pub(crate) struct FakeStorage {
         pub files: Mutex<Vec<(BackupInfo, Vec<u8>)>>,
         pub deleted: Mutex<Vec<String>>,
+        pub delete_calls: AtomicUsize,
         pub events: Arc<Mutex<Vec<String>>>,
+        pub fail_upload: AtomicBool,
+        pub fail_download: AtomicBool,
+        pub fail_list: AtomicBool,
+        pub fail_delete: AtomicBool,
     }
 
     impl FakeStorage {
@@ -272,32 +269,41 @@ pub(crate) mod tests {
             infos.sort_by_key(|i| std::cmp::Reverse(i.created_at));
             infos
         }
+
+        fn check(flag: &AtomicBool, op: &str) -> Result<()> {
+            match flag.load(Ordering::SeqCst) {
+                true => Err(Error::Unavailable(format!("{op} failed"))),
+                false => Ok(()),
+            }
+        }
     }
 
     #[async_trait::async_trait]
     impl Storage for FakeStorage {
         async fn upload(&self, req: UploadRequest<'_>) -> Result<BackupInfo> {
-            let content = std::fs::read(req.path).unwrap();
+            Self::check(&self.fail_upload, "upload")?;
+            let content = std::fs::read(req.path()).unwrap();
             let n = self.files.lock().unwrap().len();
             let info = BackupInfo {
                 id: format!("up{n}"),
-                name: req.name.to_string(),
+                name: req.name().to_string(),
                 created_at: Utc.with_ymd_and_hms(2030, 1, 1, 0, 0, 0).unwrap()
                     + Duration::seconds(n as i64),
                 size_bytes: Some(content.len() as u64),
                 md5: None,
-                format: req.format,
-                kind: req.kind,
+                format: req.format(),
+                kind: req.kind(),
             };
             self.events
                 .lock()
                 .unwrap()
-                .push(format!("upload {}", req.kind.as_str()));
+                .push(format!("upload {}", req.kind().as_str()));
             self.put(info.clone(), &content);
             Ok(info)
         }
 
         async fn list(&self, page_size: u32, page_token: Option<&str>) -> Result<Page<BackupInfo>> {
+            Self::check(&self.fail_list, "list")?;
             let skip: usize = page_token.map_or(0, |t| t.parse().unwrap());
             let infos = self.infos();
             let end = (skip + page_size as usize).min(infos.len());
@@ -322,6 +328,7 @@ pub(crate) mod tests {
         }
 
         async fn download(&self, backup: &BackupInfo, dst: &Path) -> Result<()> {
+            Self::check(&self.fail_download, "download")?;
             let files = self.files.lock().unwrap();
             let (_, content) = files.iter().find(|(i, _)| i.id == backup.id).unwrap();
             std::fs::write(dst, content).unwrap();
@@ -329,6 +336,8 @@ pub(crate) mod tests {
         }
 
         async fn delete(&self, id: &str) -> Result<()> {
+            self.delete_calls.fetch_add(1, Ordering::SeqCst);
+            Self::check(&self.fail_delete, "delete")?;
             self.files.lock().unwrap().retain(|(i, _)| i.id != id);
             self.deleted.lock().unwrap().push(id.to_string());
             Ok(())
@@ -340,6 +349,8 @@ pub(crate) mod tests {
         pub content: Vec<u8>,
         pub restored: Mutex<Vec<Vec<u8>>>,
         pub healthy: bool,
+        pub fail_dump: bool,
+        pub fail_restore: bool,
         pub dump_gate: Option<Arc<Notify>>,
         pub events: Arc<Mutex<Vec<String>>>,
     }
@@ -350,17 +361,34 @@ pub(crate) mod tests {
                 content: b"current-db".to_vec(),
                 restored: Mutex::new(Vec::new()),
                 healthy: true,
+                fail_dump: false,
+                fail_restore: false,
                 dump_gate: None,
                 events,
             }
         }
     }
 
+    fn process_error(program: &str) -> Error {
+        Error::Process {
+            program: program.into(),
+            status: "exit status: 1".into(),
+            stderr: "boom".into(),
+        }
+    }
+
     #[async_trait::async_trait]
     impl Dumper for FakeDb {
+        fn db_name(&self) -> &str {
+            "tracker"
+        }
+
         async fn dump(&self, dst: &Path) -> Result<()> {
             if let Some(gate) = &self.dump_gate {
                 gate.notified().await;
+            }
+            if self.fail_dump {
+                return Err(process_error("pg_dump"));
             }
             self.events.lock().unwrap().push("dump".into());
             std::fs::write(dst, &self.content).unwrap();
@@ -370,8 +398,15 @@ pub(crate) mod tests {
 
     #[async_trait::async_trait]
     impl Restorer for FakeDb {
+        fn db_name(&self) -> &str {
+            "tracker"
+        }
+
         async fn restore(&self, src: &Path) -> Result<()> {
             self.events.lock().unwrap().push("restore".into());
+            if self.fail_restore {
+                return Err(process_error("pg_restore"));
+            }
             self.restored
                 .lock()
                 .unwrap()
@@ -410,7 +445,6 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().unwrap();
 
         let service = Arc::new(BackupService::new(ServiceDeps {
-            db_name: "tracker".into(),
             dumper: db.clone(),
             restorer: db.clone(),
             health: db.clone(),
@@ -448,6 +482,25 @@ pub(crate) mod tests {
 
     fn temp_files_left(h: &Harness) -> usize {
         std::fs::read_dir(h._dir.path()).unwrap().count()
+    }
+
+    fn events(h: &Harness) -> Vec<String> {
+        h.events.lock().unwrap().clone()
+    }
+
+    fn put_good_backup(h: &Harness) {
+        h.storage.put(
+            info("good", 1, BackupFormat::PgCustom, BackupKind::Regular),
+            b"backup-content",
+        );
+    }
+
+    /// Yields until a spawned operation holds the write lock.
+    async fn wait_until_locked(h: &Harness) {
+        tokio::task::yield_now().await;
+        while h.service.write_lock.try_lock().is_ok() {
+            tokio::task::yield_now().await;
+        }
     }
 
     #[tokio::test]
@@ -503,10 +556,7 @@ pub(crate) mod tests {
             let service = h.service.clone();
             async move { service.create_backup().await }
         });
-        tokio::task::yield_now().await;
-        while h.service.write_lock.try_lock().is_ok() {
-            tokio::task::yield_now().await;
-        }
+        wait_until_locked(&h).await;
 
         let second = h.service.create_backup().await;
         assert!(matches!(second, Err(Error::Busy(_))), "{second:?}");
@@ -642,6 +692,179 @@ pub(crate) mod tests {
         assert!(h.events.lock().unwrap().is_empty());
     }
 
+    #[tokio::test]
+    async fn test_restore_aborts_when_pre_restore_dump_fails() {
+        let h = harness_with(None, |db| db.fail_dump = true);
+        put_good_backup(&h);
+
+        let err = h
+            .service
+            .restore(&BackupTarget::Id("good".into()), "tracker")
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, Error::Process { .. }), "{err:?}");
+        assert!(
+            !events(&h).contains(&"restore".to_string()),
+            "{:?}",
+            events(&h)
+        );
+        assert!(h.db.restored.lock().unwrap().is_empty());
+        assert_eq!(temp_files_left(&h), 0);
+    }
+
+    #[tokio::test]
+    async fn test_restore_aborts_when_pre_restore_upload_fails() {
+        let h = harness();
+        put_good_backup(&h);
+        h.storage.fail_upload.store(true, Ordering::SeqCst);
+
+        let err = h
+            .service
+            .restore(&BackupTarget::Id("good".into()), "tracker")
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, Error::Unavailable(_)), "{err:?}");
+        assert_eq!(events(&h), ["dump"]);
+        assert!(h.db.restored.lock().unwrap().is_empty());
+        assert_eq!(temp_files_left(&h), 0);
+    }
+
+    #[tokio::test]
+    async fn test_restore_aborts_when_download_fails() {
+        let h = harness();
+        put_good_backup(&h);
+        h.storage.fail_download.store(true, Ordering::SeqCst);
+
+        let err = h
+            .service
+            .restore(&BackupTarget::Id("good".into()), "tracker")
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, Error::Unavailable(_)), "{err:?}");
+        assert!(events(&h).is_empty(), "{:?}", events(&h));
+        assert_eq!(temp_files_left(&h), 0);
+    }
+
+    #[tokio::test]
+    async fn test_failed_restore_keeps_pre_restore_copy_and_releases_lock() {
+        let h = harness_with(None, |db| db.fail_restore = true);
+        put_good_backup(&h);
+
+        let err = h
+            .service
+            .restore(&BackupTarget::Id("good".into()), "tracker")
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, Error::Process { .. }), "{err:?}");
+        let kinds: Vec<BackupKind> = h.storage.infos().iter().map(|i| i.kind).collect();
+        assert!(kinds.contains(&BackupKind::PreRestore), "{kinds:?}");
+        assert_eq!(temp_files_left(&h), 0);
+        h.service.create_backup().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_restore_latest_without_regular_backups() {
+        let empty = harness();
+        let only_safety = harness();
+        only_safety.storage.put(
+            info("safety", 1, BackupFormat::PgCustom, BackupKind::PreRestore),
+            b"x",
+        );
+
+        for h in [empty, only_safety] {
+            let err = h
+                .service
+                .restore(&BackupTarget::Latest, "tracker")
+                .await
+                .unwrap_err();
+
+            assert!(matches!(err, Error::NotFound(_)), "{err:?}");
+            assert!(events(&h).is_empty(), "{:?}", events(&h));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_writes_are_rejected_while_restore_runs() {
+        let gate = Arc::new(Notify::new());
+        let g = gate.clone();
+        let h = harness_with(None, move |db| db.dump_gate = Some(g));
+        put_good_backup(&h);
+
+        let restore = tokio::spawn({
+            let service = h.service.clone();
+            async move {
+                service
+                    .restore(&BackupTarget::Id("good".into()), "tracker")
+                    .await
+            }
+        });
+        wait_until_locked(&h).await;
+
+        let backup = h.service.create_backup().await;
+        let second_restore = h.service.restore(&BackupTarget::Latest, "tracker").await;
+        assert!(matches!(backup, Err(Error::Busy(_))), "{backup:?}");
+        assert!(
+            matches!(second_restore, Err(Error::Busy(_))),
+            "{second_restore:?}"
+        );
+
+        gate.notify_one();
+        restore.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_backup_survives_failed_retention_list() {
+        let h = harness_with(Some(1), |_| {});
+        h.storage.fail_list.store(true, Ordering::SeqCst);
+
+        h.service.create_backup().await.unwrap();
+
+        assert_eq!(h.storage.delete_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn test_backup_survives_failed_retention_deletes() {
+        let h = harness_with(Some(1), |_| {});
+        for (id, day) in [("old1", 1), ("old2", 2)] {
+            h.storage.put(
+                info(id, day, BackupFormat::PgCustom, BackupKind::Regular),
+                b"x",
+            );
+        }
+        h.storage.fail_delete.store(true, Ordering::SeqCst);
+
+        h.service.create_backup().await.unwrap();
+
+        assert_eq!(h.storage.delete_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn test_retention_reads_every_page() {
+        let h = harness_with(Some(2), |_| {});
+        let base = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        for i in 0..250 {
+            let mut backup = info(
+                &format!("b{i}"),
+                1,
+                BackupFormat::PgCustom,
+                BackupKind::Regular,
+            );
+            backup.created_at = base + Duration::minutes(i);
+            h.storage.put(backup, b"x");
+        }
+
+        h.service.create_backup().await.unwrap();
+
+        // 250 old ones plus the new one, minus the 2 kept.
+        assert_eq!(h.storage.deleted.lock().unwrap().len(), 249);
+        let kept: Vec<String> = h.storage.infos().into_iter().map(|i| i.id).collect();
+        assert_eq!(kept, ["up250", "b249"]);
+    }
+
     /// Real pg tools, in-memory storage. Needs PostgreSQL 18, see backup-pg tests.
     #[tokio::test]
     #[ignore = "requires PostgreSQL 18 server and client binaries"]
@@ -661,6 +884,7 @@ pub(crate) mod tests {
             Arc::new(PgTools::new(
                 target(name),
                 ZstdLevel::default(),
+                std::time::Duration::from_secs(300),
                 Arc::new(TokioCommandRunner),
             ))
         };
@@ -681,7 +905,6 @@ pub(crate) mod tests {
         let storage = Arc::new(FakeStorage::default());
         let dir = tempfile::tempdir().unwrap();
         let service = BackupService::new(ServiceDeps {
-            db_name: "backup_service_test".into(),
             dumper: pg.clone(),
             restorer: pg.clone(),
             health: pg.clone(),

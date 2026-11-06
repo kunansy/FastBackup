@@ -2,11 +2,11 @@ use std::path::Path;
 
 use chrono::{DateTime, Utc};
 
-use crate::BackupFormat;
+use crate::{BackupFormat, Error, Result, backup_file_name};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackupKind {
-    /// Created on request or by schedule.
+    /// Created by CreateBackup.
     Regular,
     /// Safety copy taken right before a restore overwrote the database.
     PreRestore,
@@ -20,11 +20,15 @@ impl BackupKind {
         }
     }
 
-    /// Files without the property predate it and are regular backups.
-    pub fn parse(value: Option<&str>) -> Self {
+    /// Files without the property predate it and are regular backups. An unknown
+    /// value is an error, so retention never treats such a file as prunable.
+    pub fn parse(value: Option<&str>) -> Result<Self> {
         match value {
-            Some("pre_restore") => Self::PreRestore,
-            _ => Self::Regular,
+            None | Some("regular") => Ok(Self::Regular),
+            Some("pre_restore") => Ok(Self::PreRestore),
+            Some(other) => Err(Error::FailedPrecondition(format!(
+                "unknown backup kind '{other}'"
+            ))),
         }
     }
 }
@@ -46,13 +50,46 @@ pub struct Page<T> {
     pub next_page_token: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy)]
+/// A local dump to store; the name and format follow from the kind.
+#[derive(Debug, Clone)]
 pub struct UploadRequest<'a> {
-    pub path: &'a Path,
-    pub name: &'a str,
-    pub db_name: &'a str,
-    pub format: BackupFormat,
-    pub kind: BackupKind,
+    path: &'a Path,
+    name: String,
+    db_name: &'a str,
+    format: BackupFormat,
+    kind: BackupKind,
+}
+
+impl<'a> UploadRequest<'a> {
+    pub fn pg_dump(path: &'a Path, db_name: &'a str, kind: BackupKind, now: DateTime<Utc>) -> Self {
+        Self {
+            path,
+            name: backup_file_name(db_name, kind, now),
+            db_name,
+            format: BackupFormat::PgCustom,
+            kind,
+        }
+    }
+
+    pub fn path(&self) -> &Path {
+        self.path
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn db_name(&self) -> &str {
+        self.db_name
+    }
+
+    pub fn format(&self) -> BackupFormat {
+        self.format
+    }
+
+    pub fn kind(&self) -> BackupKind {
+        self.kind
+    }
 }
 
 /// Regular pg_dump backups beyond the newest `keep`. Legacy JSON backups and
@@ -68,10 +105,12 @@ pub fn retention_candidates(backups: &[BackupInfo], keep: usize) -> Vec<&BackupI
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use chrono::{TimeZone, Utc};
 
-    use super::{BackupInfo, BackupKind, retention_candidates};
-    use crate::BackupFormat;
+    use super::{BackupInfo, BackupKind, UploadRequest, retention_candidates};
+    use crate::{BackupFormat, Error};
 
     fn backup(id: &str, day: u32, format: BackupFormat, kind: BackupKind) -> BackupInfo {
         BackupInfo {
@@ -91,15 +130,33 @@ mod tests {
 
     #[test]
     fn test_kind_parse_defaults_to_regular() {
-        assert_eq!(BackupKind::parse(None), BackupKind::Regular);
+        assert_eq!(BackupKind::parse(None).unwrap(), BackupKind::Regular);
+        for kind in [BackupKind::Regular, BackupKind::PreRestore] {
+            assert_eq!(BackupKind::parse(Some(kind.as_str())).unwrap(), kind);
+        }
+    }
+
+    #[test]
+    fn test_kind_parse_rejects_unknown_value() {
+        let err = BackupKind::parse(Some("manual")).unwrap_err();
+
+        assert!(matches!(err, Error::FailedPrecondition(_)), "{err:?}");
+    }
+
+    #[test]
+    fn test_upload_request_derives_name_and_format() {
+        let now = Utc.with_ymd_and_hms(2026, 1, 2, 3, 4, 5).unwrap();
+
+        let req =
+            UploadRequest::pg_dump(Path::new("/tmp/x"), "tracker", BackupKind::PreRestore, now);
+
         assert_eq!(
-            BackupKind::parse(Some("pre_restore")),
-            BackupKind::PreRestore
+            req.name(),
+            "pre_restore_backup_tracker_2026-01-02_03:04:05.pgdump"
         );
-        assert_eq!(
-            BackupKind::parse(Some(BackupKind::Regular.as_str())),
-            BackupKind::Regular
-        );
+        assert_eq!(req.format(), BackupFormat::PgCustom);
+        assert_eq!(req.kind(), BackupKind::PreRestore);
+        assert_eq!(req.db_name(), "tracker");
     }
 
     #[test]
