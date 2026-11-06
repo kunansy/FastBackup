@@ -9,7 +9,7 @@ const DEFAULT_DATA_FOLDER: &str = "data";
 pub struct Settings {
     pub drive_creds: String,
     pub comp_level: ZstdLevel,
-    pub drive_folder_id: Option<String>,
+    pub drive_folder_id: String,
     /// Temporary dump files live here.
     pub data_folder: PathBuf,
 }
@@ -35,7 +35,8 @@ impl Settings {
         Ok(Self {
             drive_creds,
             comp_level,
-            drive_folder_id: get("DRIVE_FOLDER_ID"),
+            drive_folder_id: get("DRIVE_FOLDER_ID")
+                .ok_or_else(|| Error::Config("DRIVE_FOLDER_ID is required".into()))?,
             data_folder: get("DATA_FOLDER")
                 .unwrap_or_else(|| DEFAULT_DATA_FOLDER.to_string())
                 .into(),
@@ -62,10 +63,11 @@ mod tests {
 
     #[test]
     fn test_parse_ok_with_defaults() {
-        let s = Settings::from_source(source(&[("DRIVE_CREDS", "{}")])).unwrap();
+        let s = Settings::from_source(source(&[("DRIVE_CREDS", "{}"), ("DRIVE_FOLDER_ID", "f")]))
+            .unwrap();
 
         assert_eq!(s.comp_level, ZstdLevel::default());
-        assert_eq!(s.drive_folder_id, None);
+        assert_eq!(s.drive_folder_id, "f");
         assert_eq!(s.data_folder, Path::new("data"));
     }
 
@@ -75,15 +77,28 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_fails_without_drive_folder_id() {
+        assert!(Settings::from_source(source(&[("DRIVE_CREDS", "{}")])).is_err());
+    }
+
+    #[test]
     fn test_parse_fails_on_not_int_compression_level() {
-        let src = source(&[("DRIVE_CREDS", "{}"), ("COMPRESSION_LEVEL", "3.14")]);
+        let src = source(&[
+            ("DRIVE_CREDS", "{}"),
+            ("DRIVE_FOLDER_ID", "f"),
+            ("COMPRESSION_LEVEL", "3.14"),
+        ]);
 
         assert!(Settings::from_source(src).is_err());
     }
 
     #[test]
     fn test_parse_fails_on_out_of_range_compression_level() {
-        let src = source(&[("DRIVE_CREDS", "{}"), ("COMPRESSION_LEVEL", "42")]);
+        let src = source(&[
+            ("DRIVE_CREDS", "{}"),
+            ("DRIVE_FOLDER_ID", "f"),
+            ("COMPRESSION_LEVEL", "42"),
+        ]);
 
         assert!(Settings::from_source(src).is_err());
     }

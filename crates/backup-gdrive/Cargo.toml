@@ -9,9 +9,17 @@ license.workspace = true
 [dependencies]
 async-trait.workspace = true
 backup-core.workspace = true
-bytes.workspace = true
 google-drive3.workspace = true
+hex.workspace = true
 http-body-util.workspace = true
 hyper-rustls.workspace = true
 log.workspace = true
+md-5.workspace = true
+mime.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
+
+[dev-dependencies]
+chrono.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }

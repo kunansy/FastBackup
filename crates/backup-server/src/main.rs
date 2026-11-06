@@ -1,17 +1,22 @@
 mod logger;
 mod settings;
+mod status;
 
 use std::sync::Arc;
 
 use tokio::signal::unix::{SignalKind, signal};
 use tonic::{Request, Response, Status, transport::Server};
 
-use backup_core::{Clock, DbTarget, Dumper, Error, Secret, Storage, SystemClock, backup_file_name};
-use backup_gdrive::GoogleDrive;
+use backup_core::{
+    BackupFormat, BackupKind, Clock, DbTarget, Dumper, Error, Secret, Storage, SystemClock,
+    UploadRequest, backup_file_name, compression::decompress,
+};
+use backup_gdrive::{DriveOptions, GoogleDriveStorage};
 use backup_pg::{PgTools, TokioCommandRunner};
 use backup_proto::google_drive_server::{GoogleDrive as GoogleDriveService, GoogleDriveServer};
 use backup_proto::{BackupReply, DbRequest, DownloadReply, Empty, HealthcheckReply};
 use settings::Settings;
+use status::to_status;
 
 const LISTEN_ADDR: &str = "0.0.0.0:50051";
 
@@ -30,6 +35,7 @@ fn db_target(req: DbRequest) -> Result<DbTarget, Status> {
 struct Backup {
     cfg: Arc<Settings>,
     clock: Arc<dyn Clock>,
+    storage: Arc<dyn Storage>,
 }
 
 impl Backup {
@@ -37,29 +43,52 @@ impl Backup {
         PgTools::new(target, self.cfg.comp_level, Arc::new(TokioCommandRunner))
     }
 
-    async fn connect_drive(&self) -> Result<(GoogleDrive, String), Status> {
-        let drive = GoogleDrive::connect(&self.cfg.drive_creds)
-            .await
-            .map_err(|e| unavailable_error("Drive is unavailable", e))?;
-        let folder_id = drive
-            .resolve_folder_id(&self.cfg.drive_folder_id)
-            .await
-            .map_err(|e| unavailable_error("Drive is unavailable", e))?;
-        Ok((drive, folder_id))
+    fn temp_file(&self, suffix: &str) -> Result<tempfile::NamedTempFile, Error> {
+        tempfile::Builder::new()
+            .prefix("backup_")
+            .suffix(suffix)
+            .tempfile_in(&self.cfg.data_folder)
+            .map_err(|e| Error::io("Could not create temporary file", e))
     }
 
-    async fn dump_to_buffer(&self, pg: &PgTools) -> Result<Vec<u8>, Error> {
-        let file = tempfile::Builder::new()
-            .prefix("backup_")
-            .suffix(".pgdump")
-            .tempfile_in(&self.cfg.data_folder)
-            .map_err(|e| Error::io("Could not create temporary dump file", e))?;
-
+    async fn create_backup(&self, pg: &PgTools) -> Result<String, Error> {
+        let file = self.temp_file(".pgdump")?;
         pg.dump(file.path()).await?;
 
-        tokio::fs::read(file.path())
+        let name = backup_file_name(pg.db_name(), self.clock.now());
+        let info = self
+            .storage
+            .upload(UploadRequest {
+                path: file.path(),
+                name: &name,
+                db_name: pg.db_name(),
+                format: BackupFormat::PgCustom,
+                kind: BackupKind::Regular,
+            })
+            .await?;
+        Ok(info.id)
+    }
+
+    async fn download_latest_legacy(&self) -> Result<Vec<u8>, Error> {
+        let latest = self
+            .storage
+            .latest()
+            .await?
+            .ok_or_else(|| Error::NotFound("no backups".into()))?;
+        if latest.format != BackupFormat::LegacyJsonZstd {
+            return Err(Error::FailedPrecondition(format!(
+                "latest backup '{}' is {}, this RPC serves only legacy JSON backups",
+                latest.name,
+                latest.format.as_str()
+            )));
+        }
+
+        let file = self.temp_file(".dump")?;
+        self.storage.download(&latest, file.path()).await?;
+        let compressed = tokio::fs::read(file.path())
             .await
-            .map_err(|e| Error::io("Could not read dump file", e))
+            .map_err(|e| Error::io("Could not read downloaded file", e))?;
+        decompress(&compressed)
     }
 }
 
@@ -68,16 +97,11 @@ impl GoogleDriveService for Backup {
     async fn backup(&self, request: Request<DbRequest>) -> Result<Response<BackupReply>, Status> {
         log::info!("Request to backup");
         let pg = self.pg_tools(db_target(request.into_inner())?);
-        let filename = backup_file_name(pg.db_name(), self.clock.now());
 
-        let (dump, drive) = tokio::join!(self.dump_to_buffer(&pg), self.connect_drive());
-        let dump = dump.map_err(|e| internal_error("Dump failed", e))?;
-        let (drive, folder_id) = drive?;
-
-        let file_id = drive
-            .upload(&dump, &filename, Some(folder_id))
+        let file_id = self
+            .create_backup(&pg)
             .await
-            .map_err(|e| unavailable_error("Upload failed", e))?;
+            .map_err(|e| to_status("Backup failed", e))?;
 
         Ok(Response::new(BackupReply { file_id }))
     }
@@ -86,11 +110,10 @@ impl GoogleDriveService for Backup {
         &self,
         _request: Request<Empty>,
     ) -> Result<Response<DownloadReply>, Status> {
-        let (drive, folder_id) = self.connect_drive().await?;
-        let (file_content, _) = drive
-            .download(&folder_id)
+        let file_content = self
+            .download_latest_legacy()
             .await
-            .map_err(|e| unavailable_error("Download failed", e))?;
+            .map_err(|e| to_status("Download failed", e))?;
 
         Ok(Response::new(DownloadReply { file_content }))
     }
@@ -110,16 +133,6 @@ impl GoogleDriveService for Backup {
 
         Ok(Response::new(HealthcheckReply { is_ok }))
     }
-}
-
-fn internal_error(context: &str, err: impl std::fmt::Display) -> Status {
-    log::error!("{context}: {err}");
-    Status::internal(format!("{context}: {err}"))
-}
-
-fn unavailable_error(context: &str, err: impl std::fmt::Display) -> Status {
-    log::error!("{context}: {err}");
-    Status::unavailable(format!("{context}: {err}"))
 }
 
 async fn shutdown_signal() {
@@ -145,12 +158,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let cfg = Arc::new(Settings::from_env()?);
     let addr = LISTEN_ADDR.parse()?;
+    let storage = GoogleDriveStorage::connect(
+        &cfg.drive_creds,
+        cfg.drive_folder_id.clone(),
+        DriveOptions::default(),
+    )
+    .await?;
 
     log::info!("Start gRPC server on {addr}");
     Server::builder()
         .add_service(GoogleDriveServer::new(Backup {
             cfg,
             clock: Arc::new(SystemClock),
+            storage: Arc::new(storage),
         }))
         .serve_with_shutdown(addr, shutdown_signal())
         .await?;
