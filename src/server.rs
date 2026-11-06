@@ -66,13 +66,16 @@ impl GoogleDrive for Backup {
             google_drive::prepare_drive(&cfg.drive_creds, &cfg.drive_folder_id).await
         });
 
-        // TODO: manage errors
-        let (dump, filename) = dump_hdl.await.unwrap().unwrap();
-        let (drive, folder_id) = drive_hdl.await.unwrap().unwrap();
+        let (dump, filename) = dump_hdl.await
+            .map_err(|e| internal_error("Dump task failed", e))?
+            .map_err(|e| internal_error("Dump failed", e))?;
+        let (drive, folder_id) = drive_hdl.await
+            .map_err(|e| internal_error("Drive task failed", e))?
+            .map_err(|e| unavailable_error("Drive is unavailable", e))?;
 
         let file_id = drive.upload(&dump, &filename, Some(folder_id))
             .await
-            .map_err(|e| Status::aborted(e.to_string()))?;
+            .map_err(|e| unavailable_error("Upload failed", e))?;
 
         Ok(Response::new(BackupReply { file_id }))
     }
@@ -86,8 +89,12 @@ impl GoogleDrive for Backup {
             Some(cfg) => cfg
         };
 
-        let (drive, folder_id) = google_drive::prepare_drive(&cfg.drive_creds, &cfg.drive_folder_id).await.unwrap();
-        let (file_content, _) = drive.download(&folder_id).await.unwrap();
+        let (drive, folder_id) = google_drive::prepare_drive(&cfg.drive_creds, &cfg.drive_folder_id)
+            .await
+            .map_err(|e| unavailable_error("Drive is unavailable", e))?;
+        let (file_content, _) = drive.download(&folder_id)
+            .await
+            .map_err(|e| unavailable_error("Download failed", e))?;
 
         Ok(Response::new(DownloadReply { file_content }))
     }
@@ -98,6 +105,16 @@ impl GoogleDrive for Backup {
 
         Ok(Response::new(HealthcheckReply { is_ok }))
     }
+}
+
+fn internal_error(context: &str, err: impl std::fmt::Display) -> Status {
+    log::error!("{}: {}", context, err);
+    Status::internal(format!("{}: {}", context, err))
+}
+
+fn unavailable_error(context: &str, err: impl std::fmt::Display) -> Status {
+    log::error!("{}: {}", context, err);
+    Status::unavailable(format!("{}: {}", context, err))
 }
 
 #[tokio::main]
