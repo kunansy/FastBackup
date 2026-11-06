@@ -158,6 +158,7 @@ pub struct StreamReader<S, B> {
     inner: S,
     // This field is not pinned.
     chunk: Option<B>,
+    eof: bool,
 }
 
 impl<S, B, E> StreamReader<S, B>
@@ -169,7 +170,7 @@ where
     /// Convert a stream of byte chunks into an [`AsyncRead`].
     ///
     /// The item should be a [`Result`] with the ok variant being something that
-    /// implements the [`Buf`] trait (e.g. `Vec<u8>` or `Bytes`). The error
+    /// implements the [`Buf`] trait (e.g. `Cursor<Vec<u8>>` or `Bytes`). The error
     /// should be convertible into an [io error].
     ///
     /// [`Result`]: std::result::Result
@@ -179,6 +180,7 @@ where
         Self {
             inner: stream,
             chunk: None,
+            eof: false,
         }
     }
 
@@ -277,6 +279,8 @@ where
                 // This unwrap is very sad, but it can't be avoided.
                 let buf = self.project().chunk.as_ref().unwrap().chunk();
                 return Poll::Ready(Ok(buf));
+            } else if *self.as_mut().project().eof {
+                return Poll::Ready(Ok(&[]));
             } else {
                 match self.as_mut().project().inner.poll_next(cx) {
                     Poll::Ready(Some(Ok(chunk))) => {
@@ -284,7 +288,10 @@ where
                         *self.as_mut().project().chunk = Some(chunk);
                     }
                     Poll::Ready(Some(Err(err))) => return Poll::Ready(Err(err.into())),
-                    Poll::Ready(None) => return Poll::Ready(Ok(&[])),
+                    Poll::Ready(None) => {
+                        *self.as_mut().project().eof = true;
+                        return Poll::Ready(Ok(&[]));
+                    }
                     Poll::Pending => return Poll::Pending,
                 }
             }
@@ -302,7 +309,7 @@ where
 }
 
 // The code below is a manual expansion of the code that pin-project-lite would
-// generate. This is done because pin-project-lite fails by hitting the recusion
+// generate. This is done because pin-project-lite fails by hitting the recursion
 // limit on this struct. (Every line of documentation is handled recursively by
 // the macro.)
 
@@ -311,6 +318,7 @@ impl<S: Unpin, B> Unpin for StreamReader<S, B> {}
 struct StreamReaderProject<'a, S, B> {
     inner: Pin<&'a mut S>,
     chunk: &'a mut Option<B>,
+    eof: &'a mut bool,
 }
 
 impl<S, B> StreamReader<S, B> {
@@ -322,11 +330,12 @@ impl<S, B> StreamReader<S, B> {
         StreamReaderProject {
             inner: unsafe { Pin::new_unchecked(&mut me.inner) },
             chunk: &mut me.chunk,
+            eof: &mut me.eof,
         }
     }
 }
 
-impl<S: Sink<T, Error = E>, E, T> Sink<T> for StreamReader<S, E> {
+impl<S: Sink<T, Error = E>, B, E, T> Sink<T> for StreamReader<S, B> {
     type Error = E;
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.project().inner.poll_ready(cx)

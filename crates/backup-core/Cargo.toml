@@ -1,0 +1,16 @@
+[package]
+name = "backup-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+zstd.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

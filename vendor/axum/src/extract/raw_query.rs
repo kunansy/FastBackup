@@ -1,5 +1,4 @@
 use super::FromRequestParts;
-use async_trait::async_trait;
 use http::request::Parts;
 use std::convert::Infallible;
 
@@ -20,14 +19,11 @@ use std::convert::Infallible;
 /// }
 ///
 /// let app = Router::new().route("/users", get(handler));
-/// # async {
-/// # axum::Server::bind(&"".parse().unwrap()).serve(app.into_make_service()).await.unwrap();
-/// # };
+/// # let _: Router = app;
 /// ```
 #[derive(Debug)]
 pub struct RawQuery(pub Option<String>);
 
-#[async_trait]
 impl<S> FromRequestParts<S> for RawQuery
 where
     S: Send + Sync,

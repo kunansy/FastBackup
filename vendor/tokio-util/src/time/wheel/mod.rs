@@ -7,19 +7,20 @@ pub(crate) use self::stack::Stack;
 
 use std::borrow::Borrow;
 use std::fmt::Debug;
-use std::usize;
 
 /// Timing wheel implementation.
 ///
-/// This type provides the hashed timing wheel implementation that backs `Timer`
-/// and `DelayQueue`.
+/// This type provides the hashed timing wheel implementation that backs
+/// [`DelayQueue`].
 ///
 /// The structure is generic over `T: Stack`. This allows handling timeout data
 /// being stored on the heap or in a slab. In order to support the latter case,
 /// the slab must be passed into each function allowing the implementation to
 /// lookup timer entries.
 ///
-/// See `Timer` documentation for some implementation notes.
+/// See `Driver` documentation for some implementation notes.
+///
+/// [`DelayQueue`]: crate::time::DelayQueue
 #[derive(Debug)]
 pub(crate) struct Wheel<T> {
     /// The number of milliseconds elapsed since the wheel started.
@@ -35,7 +36,7 @@ pub(crate) struct Wheel<T> {
     /// * ~ 4 min slots / ~ 4 hr range
     /// * ~ 4 hr slots / ~ 12 day range
     /// * ~ 12 day slots / ~ 2 yr range
-    levels: Vec<Level<T>>,
+    levels: Box<[Level<T>]>,
 }
 
 /// Number of levels. Each level has 64 slots. By using 6 levels with 64 slots
@@ -74,8 +75,8 @@ where
     /// # Arguments
     ///
     /// * `when`: is the instant at which the entry should be fired. It is
-    ///           represented as the number of milliseconds since the creation
-    ///           of the timing wheel.
+    ///   represented as the number of milliseconds since the creation
+    ///   of the timing wheel.
     ///
     /// * `item`: The item to insert into the wheel.
     ///
@@ -89,7 +90,7 @@ where
     /// already passed. In this case, the caller should fire the timeout
     /// immediately.
     ///
-    /// `Err(Invalid)` indicates an invalid `when` argument as been supplied.
+    /// `Err(Invalid)` indicates an invalid `when` argument has been supplied.
     pub(crate) fn insert(
         &mut self,
         when: u64,
@@ -110,8 +111,7 @@ where
         debug_assert!({
             self.levels[level]
                 .next_expiration(self.elapsed)
-                .map(|e| e.deadline >= self.elapsed)
-                .unwrap_or(true)
+                .is_none_or(|e| e.deadline >= self.elapsed)
         });
 
         Ok(())
@@ -140,31 +140,23 @@ where
     }
 
     /// Next key that will expire
-    pub(crate) fn peek(&self) -> Option<T::Owned> {
+    pub(crate) fn peek(&self, store: &T::Store) -> Option<T::Owned> {
         self.next_expiration()
-            .and_then(|expiration| self.peek_entry(&expiration))
+            .and_then(|expiration| self.peek_entry(&expiration, store))
     }
 
     /// Advances the timer up to the instant represented by `now`.
     pub(crate) fn poll(&mut self, now: u64, store: &mut T::Store) -> Option<T::Owned> {
         loop {
-            let expiration = self.next_expiration().and_then(|expiration| {
-                if expiration.deadline > now {
-                    None
-                } else {
-                    Some(expiration)
-                }
-            });
-
-            match expiration {
-                Some(ref expiration) => {
-                    if let Some(item) = self.poll_expiration(expiration, store) {
+            match self.next_expiration() {
+                Some(expiration) if expiration.deadline <= now => {
+                    if let Some(item) = self.poll_expiration(&expiration, store) {
                         return Some(item);
                     }
 
                     self.set_elapsed(expiration.deadline);
                 }
-                None => {
+                _ => {
                     // in this case the poll did not indicate an expiration
                     // _and_ we were not able to find a next expiration in
                     // the current list of timers.  advance to the poll's
@@ -250,8 +242,8 @@ where
         self.levels[expiration.level].pop_entry_slot(expiration.slot, store)
     }
 
-    fn peek_entry(&self, expiration: &Expiration) -> Option<T::Owned> {
-        self.levels[expiration.level].peek_entry_slot(expiration.slot)
+    fn peek_entry(&self, expiration: &Expiration, store: &T::Store) -> Option<T::Owned> {
+        self.levels[expiration.level].peek_entry_slot(expiration.slot, store)
     }
 
     fn level_for(&self, when: u64) -> usize {
@@ -281,13 +273,7 @@ mod test {
     #[test]
     fn test_level_for() {
         for pos in 0..64 {
-            assert_eq!(
-                0,
-                level_for(0, pos),
-                "level_for({}) -- binary = {:b}",
-                pos,
-                pos
-            );
+            assert_eq!(0, level_for(0, pos), "level_for({pos}) -- binary = {pos:b}");
         }
 
         for level in 1..5 {
@@ -296,9 +282,7 @@ mod test {
                 assert_eq!(
                     level,
                     level_for(0, a as u64),
-                    "level_for({}) -- binary = {:b}",
-                    a,
-                    a
+                    "level_for({a}) -- binary = {a:b}"
                 );
 
                 if pos > level {
@@ -306,9 +290,7 @@ mod test {
                     assert_eq!(
                         level,
                         level_for(0, a as u64),
-                        "level_for({}) -- binary = {:b}",
-                        a,
-                        a
+                        "level_for({a}) -- binary = {a:b}"
                     );
                 }
 
@@ -317,9 +299,7 @@ mod test {
                     assert_eq!(
                         level,
                         level_for(0, a as u64),
-                        "level_for({}) -- binary = {:b}",
-                        a,
-                        a
+                        "level_for({a}) -- binary = {a:b}"
                     );
                 }
             }

@@ -6,17 +6,23 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use crate::error;
-use crate::format_description::{Component, FormatItem};
+use crate::format_description::{BorrowedFormatItem, Component};
 
 /// A complete description of how to format and parse a type.
 #[non_exhaustive]
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Eq)]
 pub enum OwnedFormatItem {
     /// Bytes that are formatted as-is.
     ///
-    /// **Note**: If you call the `format` method that returns a `String`, these bytes will be
-    /// passed through `String::from_utf8_lossy`.
+    /// **Note**: These bytes **should** be UTF-8, but are not required to be. The value is passed
+    /// through `String::from_utf8_lossy` when necessary.
+    #[deprecated(
+        since = "0.3.48",
+        note = "use `StringLiteral` instead; raw bytes are not recommended"
+    )]
     Literal(Box<[u8]>),
+    /// A string that is formatted as-is.
+    StringLiteral(Box<str>),
     /// A minimal representation of a single non-literal item.
     Component(Component),
     /// A series of literals or components that collectively form a partial or complete
@@ -34,9 +40,12 @@ pub enum OwnedFormatItem {
 }
 
 impl fmt::Debug for OwnedFormatItem {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            #[expect(deprecated)]
             Self::Literal(literal) => f.write_str(&String::from_utf8_lossy(literal)),
+            Self::StringLiteral(literal) => f.write_str(literal),
             Self::Component(component) => component.fmt(f),
             Self::Compound(compound) => compound.fmt(f),
             Self::Optional(item) => f.debug_tuple("Optional").field(item).finish(),
@@ -45,62 +54,77 @@ impl fmt::Debug for OwnedFormatItem {
     }
 }
 
-// region: conversions from FormatItem
-impl From<FormatItem<'_>> for OwnedFormatItem {
-    fn from(item: FormatItem<'_>) -> Self {
-        (&item).into()
-    }
-}
-
-impl From<&FormatItem<'_>> for OwnedFormatItem {
-    fn from(item: &FormatItem<'_>) -> Self {
-        match item {
-            FormatItem::Literal(literal) => Self::Literal(literal.to_vec().into_boxed_slice()),
-            FormatItem::Component(component) => Self::Component(*component),
-            FormatItem::Compound(compound) => Self::Compound(
-                compound
-                    .iter()
-                    .cloned()
-                    .map(Into::into)
-                    .collect::<Vec<_>>()
-                    .into_boxed_slice(),
-            ),
-            FormatItem::Optional(item) => Self::Optional(Box::new((*item).into())),
-            FormatItem::First(items) => Self::First(
-                items
-                    .iter()
-                    .cloned()
-                    .map(Into::into)
-                    .collect::<Vec<_>>()
-                    .into_boxed_slice(),
-            ),
+impl PartialEq for OwnedFormatItem {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            // trivial equality checks
+            #[expect(deprecated)]
+            (Self::Literal(a), Self::Literal(b)) => a == b,
+            (Self::StringLiteral(a), Self::StringLiteral(b)) => a == b,
+            (Self::Component(a), Self::Component(b)) => a == b,
+            (Self::Compound(a), Self::Compound(b)) => a == b,
+            (Self::Optional(a), Self::Optional(b)) => a == b,
+            (Self::First(a), Self::First(b)) => a == b,
+            // bytes vs string (back-compatibility)
+            #[expect(deprecated)]
+            (Self::Literal(a), Self::StringLiteral(b)) => &**a == b.as_bytes(),
+            #[expect(deprecated)]
+            (Self::StringLiteral(a), Self::Literal(b)) => a.as_bytes() == &**b,
+            _ => false,
         }
     }
 }
 
-impl From<Vec<FormatItem<'_>>> for OwnedFormatItem {
-    fn from(items: Vec<FormatItem<'_>>) -> Self {
+impl From<BorrowedFormatItem<'_>> for OwnedFormatItem {
+    #[inline]
+    fn from(item: BorrowedFormatItem<'_>) -> Self {
+        (&item).into()
+    }
+}
+
+impl From<&BorrowedFormatItem<'_>> for OwnedFormatItem {
+    #[inline]
+    fn from(item: &BorrowedFormatItem<'_>) -> Self {
+        match item {
+            #[expect(deprecated)]
+            BorrowedFormatItem::Literal(literal) => {
+                Self::Literal(literal.to_vec().into_boxed_slice())
+            }
+            BorrowedFormatItem::StringLiteral(literal) => {
+                use alloc::borrow::ToOwned as _;
+                Self::StringLiteral((*literal).to_owned().into_boxed_str())
+            }
+            BorrowedFormatItem::Component(component) => Self::Component(*component),
+            BorrowedFormatItem::Compound(compound) => {
+                Self::Compound(compound.iter().cloned().map(Into::into).collect())
+            }
+            BorrowedFormatItem::Optional(item) => Self::Optional(Box::new((*item).into())),
+            BorrowedFormatItem::First(items) => {
+                Self::First(items.iter().cloned().map(Into::into).collect())
+            }
+        }
+    }
+}
+
+impl From<Vec<BorrowedFormatItem<'_>>> for OwnedFormatItem {
+    #[inline]
+    fn from(items: Vec<BorrowedFormatItem<'_>>) -> Self {
         items.as_slice().into()
     }
 }
 
-impl<'a, T: AsRef<[FormatItem<'a>]> + ?Sized> From<&T> for OwnedFormatItem {
+impl<'a, T> From<&T> for OwnedFormatItem
+where
+    T: AsRef<[BorrowedFormatItem<'a>]> + ?Sized,
+{
+    #[inline]
     fn from(items: &T) -> Self {
-        Self::Compound(
-            items
-                .as_ref()
-                .iter()
-                .cloned()
-                .map(Into::into)
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
-        )
+        Self::Compound(items.as_ref().iter().cloned().map(Into::into).collect())
     }
 }
-// endregion conversions from FormatItem
 
-// region: from variants
 impl From<Component> for OwnedFormatItem {
+    #[inline]
     fn from(component: Component) -> Self {
         Self::Component(component)
     }
@@ -109,6 +133,7 @@ impl From<Component> for OwnedFormatItem {
 impl TryFrom<OwnedFormatItem> for Component {
     type Error = error::DifferentVariant;
 
+    #[inline]
     fn try_from(value: OwnedFormatItem) -> Result<Self, Self::Error> {
         match value {
             OwnedFormatItem::Component(component) => Ok(component),
@@ -118,6 +143,7 @@ impl TryFrom<OwnedFormatItem> for Component {
 }
 
 impl From<Vec<Self>> for OwnedFormatItem {
+    #[inline]
     fn from(items: Vec<Self>) -> Self {
         Self::Compound(items.into_boxed_slice())
     }
@@ -126,6 +152,7 @@ impl From<Vec<Self>> for OwnedFormatItem {
 impl TryFrom<OwnedFormatItem> for Vec<OwnedFormatItem> {
     type Error = error::DifferentVariant;
 
+    #[inline]
     fn try_from(value: OwnedFormatItem) -> Result<Self, Self::Error> {
         match value {
             OwnedFormatItem::Compound(items) => Ok(items.into_vec()),
@@ -133,30 +160,31 @@ impl TryFrom<OwnedFormatItem> for Vec<OwnedFormatItem> {
         }
     }
 }
-// endregion from variants
 
-// region: equality
 impl PartialEq<Component> for OwnedFormatItem {
+    #[inline]
     fn eq(&self, rhs: &Component) -> bool {
         matches!(self, Self::Component(component) if component == rhs)
     }
 }
 
 impl PartialEq<OwnedFormatItem> for Component {
+    #[inline]
     fn eq(&self, rhs: &OwnedFormatItem) -> bool {
         rhs == self
     }
 }
 
 impl PartialEq<&[Self]> for OwnedFormatItem {
+    #[inline]
     fn eq(&self, rhs: &&[Self]) -> bool {
         matches!(self, Self::Compound(compound) if &&**compound == rhs)
     }
 }
 
 impl PartialEq<OwnedFormatItem> for &[OwnedFormatItem] {
+    #[inline]
     fn eq(&self, rhs: &OwnedFormatItem) -> bool {
         rhs == self
     }
 }
-// endregion equality

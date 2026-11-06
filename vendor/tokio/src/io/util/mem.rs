@@ -1,13 +1,13 @@
 //! In-process memory IO types.
 
-use crate::io::{AsyncRead, AsyncWrite, ReadBuf};
+use crate::io::{split, AsyncRead, AsyncWrite, ReadBuf, ReadHalf, WriteHalf};
 use crate::loom::sync::Mutex;
 
 use bytes::{Buf, BytesMut};
 use std::{
     pin::Pin,
     sync::Arc,
-    task::{self, Poll, Waker},
+    task::{self, ready, Poll, Waker},
 };
 
 /// A bidirectional pipe to read and write bytes in memory.
@@ -47,15 +47,34 @@ use std::{
 #[derive(Debug)]
 #[cfg_attr(docsrs, doc(cfg(feature = "io-util")))]
 pub struct DuplexStream {
-    read: Arc<Mutex<Pipe>>,
-    write: Arc<Mutex<Pipe>>,
+    read: Arc<Mutex<SimplexStream>>,
+    write: Arc<Mutex<SimplexStream>>,
 }
 
-/// A unidirectional IO over a piece of memory.
+/// A unidirectional pipe to read and write bytes in memory.
 ///
-/// Data can be written to the pipe, and reading will return that data.
+/// It can be constructed by [`simplex`] function which will create a pair of
+/// reader and writer or by calling [`SimplexStream::new_unsplit`] that will
+/// create a handle for both reading and writing.
+///
+/// # Example
+///
+/// ```
+/// # async fn ex() -> std::io::Result<()> {
+/// # use tokio::io::{AsyncReadExt, AsyncWriteExt};
+/// let (mut receiver, mut sender) = tokio::io::simplex(64);
+///
+/// sender.write_all(b"ping").await?;
+///
+/// let mut buf = [0u8; 4];
+/// receiver.read_exact(&mut buf).await?;
+/// assert_eq!(&buf, b"ping");
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug)]
-struct Pipe {
+#[cfg_attr(docsrs, doc(cfg(feature = "io-util")))]
+pub struct SimplexStream {
     /// The buffer storing the bytes written, also read from.
     ///
     /// Using a `BytesMut` because it has efficient `Buf` and `BufMut`
@@ -81,10 +100,15 @@ struct Pipe {
 ///
 /// The `max_buf_size` argument is the maximum amount of bytes that can be
 /// written to a side before the write returns `Poll::Pending`.
+///
+/// # Panics
+///
+/// This function panics if `max_buf_size` is 0.
+#[track_caller]
 #[cfg_attr(docsrs, doc(cfg(feature = "io-util")))]
 pub fn duplex(max_buf_size: usize) -> (DuplexStream, DuplexStream) {
-    let one = Arc::new(Mutex::new(Pipe::new(max_buf_size)));
-    let two = Arc::new(Mutex::new(Pipe::new(max_buf_size)));
+    let one = Arc::new(Mutex::new(SimplexStream::new_unsplit(max_buf_size)));
+    let two = Arc::new(Mutex::new(SimplexStream::new_unsplit(max_buf_size)));
 
     (
         DuplexStream {
@@ -110,7 +134,10 @@ impl AsyncRead for DuplexStream {
         cx: &mut task::Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut *self.read.lock()).poll_read(cx, buf)
+        let mut wakers = Wakers::default();
+        let ret = Pin::new(&mut *self.read.lock()).poll_read_deferred(cx, buf, &mut wakers);
+        wakers.wake();
+        ret
     }
 }
 
@@ -121,7 +148,10 @@ impl AsyncWrite for DuplexStream {
         cx: &mut task::Context<'_>,
         buf: &[u8],
     ) -> Poll<std::io::Result<usize>> {
-        Pin::new(&mut *self.write.lock()).poll_write(cx, buf)
+        let mut wakers = Wakers::default();
+        let ret = Pin::new(&mut *self.write.lock()).poll_write_deferred(cx, buf, &mut wakers);
+        wakers.wake();
+        ret
     }
 
     fn poll_write_vectored(
@@ -129,7 +159,11 @@ impl AsyncWrite for DuplexStream {
         cx: &mut task::Context<'_>,
         bufs: &[std::io::IoSlice<'_>],
     ) -> Poll<Result<usize, std::io::Error>> {
-        Pin::new(&mut *self.write.lock()).poll_write_vectored(cx, bufs)
+        let mut wakers = Wakers::default();
+        let ret =
+            Pin::new(&mut *self.write.lock()).poll_write_vectored_deferred(cx, bufs, &mut wakers);
+        wakers.wake();
+        ret
     }
 
     fn is_write_vectored(&self) -> bool {
@@ -147,25 +181,106 @@ impl AsyncWrite for DuplexStream {
     #[allow(unused_mut)]
     fn poll_shutdown(
         mut self: Pin<&mut Self>,
-        cx: &mut task::Context<'_>,
+        _: &mut task::Context<'_>,
     ) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut *self.write.lock()).poll_shutdown(cx)
+        let read_waker = self.write.lock().close_write();
+        if let Some(waker) = read_waker {
+            waker.wake();
+        }
+        Poll::Ready(Ok(()))
     }
 }
 
 impl Drop for DuplexStream {
     fn drop(&mut self) {
         // notify the other side of the closure
-        self.write.lock().close_write();
-        self.read.lock().close_read();
+        let read_waker = self.write.lock().close_write();
+        let write_waker = self.read.lock().close_read();
+        // wake after releasing the locks, as the wakers may access the pipe
+        if let Some(waker) = read_waker {
+            waker.wake();
+        }
+        if let Some(waker) = write_waker {
+            waker.wake();
+        }
     }
 }
 
-// ===== impl Pipe =====
+/// Wakers taken out of a `SimplexStream` by a read or write.
+///
+/// A `DuplexStream` keeps its `SimplexStream`s behind a mutex, and wakes and
+/// drops these wakers only after releasing it, as they may access the pipe.
+/// The halves returned by `simplex()` are still polled under the mutex in
+/// `split`.
+#[derive(Default)]
+struct Wakers {
+    /// The waker of the other side of the pipe, which needs to be woken.
+    wake: Option<Waker>,
+    /// The previously registered waker, which was replaced by a new one.
+    replaced: Option<Waker>,
+}
 
-impl Pipe {
-    fn new(max_buf_size: usize) -> Self {
-        Pipe {
+impl Wakers {
+    fn wake(self) {
+        if let Some(waker) = self.wake {
+            waker.wake();
+        }
+        drop(self.replaced);
+    }
+}
+
+// ===== impl SimplexStream =====
+
+/// Creates unidirectional buffer that acts like in memory pipe.
+///
+/// The `max_buf_size` argument is the maximum amount of bytes that can be
+/// written to a buffer before it returns `Poll::Pending`.
+///
+/// # Unify reader and writer
+///
+/// The reader and writer half can be unified into a single structure
+/// of `SimplexStream` that supports both reading and writing or
+/// the `SimplexStream` can be already created as unified structure
+/// using [`SimplexStream::new_unsplit()`].
+///
+/// ```
+/// # async fn ex() -> std::io::Result<()> {
+/// # use tokio::io::{AsyncReadExt, AsyncWriteExt};
+/// let (reader, writer) = tokio::io::simplex(64);
+/// let mut simplex_stream = reader.unsplit(writer);
+/// simplex_stream.write_all(b"hello").await?;
+///
+/// let mut buf = [0u8; 5];
+/// simplex_stream.read_exact(&mut buf).await?;
+/// assert_eq!(&buf, b"hello");
+/// # Ok(())
+/// # }
+/// ```
+///
+/// # Panics
+///
+/// This function panics if `max_buf_size` is 0.
+#[track_caller]
+#[cfg_attr(docsrs, doc(cfg(feature = "io-util")))]
+pub fn simplex(max_buf_size: usize) -> (ReadHalf<SimplexStream>, WriteHalf<SimplexStream>) {
+    split(SimplexStream::new_unsplit(max_buf_size))
+}
+
+impl SimplexStream {
+    /// Creates unidirectional buffer that acts like in memory pipe. To create split
+    /// version with separate reader and writer you can use [`simplex`] function.
+    ///
+    /// The `max_buf_size` argument is the maximum amount of bytes that can be
+    /// written to a buffer before it returns `Poll::Pending`.
+    ///
+    /// # Panics
+    ///
+    /// This function panics if `max_buf_size` is 0.
+    #[track_caller]
+    #[cfg_attr(docsrs, doc(cfg(feature = "io-util")))]
+    pub fn new_unsplit(max_buf_size: usize) -> SimplexStream {
+        assert!(max_buf_size > 0, "`max_buf_size` must be greater than 0");
+        SimplexStream {
             buffer: BytesMut::new(),
             is_closed: false,
             max_buf_size,
@@ -174,27 +289,32 @@ impl Pipe {
         }
     }
 
-    fn close_write(&mut self) {
+    /// Closes the pipe and returns the reader's waker, which needs to be woken
+    /// so it learns that no more data will come.
+    #[must_use]
+    fn close_write(&mut self) -> Option<Waker> {
         self.is_closed = true;
-        // needs to notify any readers that no more data will come
-        if let Some(waker) = self.read_waker.take() {
-            waker.wake();
-        }
+        self.read_waker.take()
     }
 
-    fn close_read(&mut self) {
+    /// Closes the pipe and returns the writer's waker, which needs to be woken
+    /// so it learns that it has to abort.
+    #[must_use]
+    fn close_read(&mut self) -> Option<Waker> {
         self.is_closed = true;
-        // needs to notify any writers that they have to abort
-        if let Some(waker) = self.write_waker.take() {
-            waker.wake();
-        }
+        self.write_waker.take()
     }
 
     fn poll_read_internal(
         mut self: Pin<&mut Self>,
         cx: &mut task::Context<'_>,
         buf: &mut ReadBuf<'_>,
+        wakers: &mut Wakers,
     ) -> Poll<std::io::Result<()>> {
+        if buf.remaining() == 0 {
+            return Poll::Ready(Ok(()));
+        }
+
         if self.buffer.has_remaining() {
             let max = self.buffer.remaining().min(buf.remaining());
             buf.put_slice(&self.buffer[..max]);
@@ -202,15 +322,13 @@ impl Pipe {
             if max > 0 {
                 // The passed `buf` might have been empty, don't wake up if
                 // no bytes have been moved.
-                if let Some(waker) = self.write_waker.take() {
-                    waker.wake();
-                }
+                wakers.wake = self.write_waker.take();
             }
             Poll::Ready(Ok(()))
         } else if self.is_closed {
             Poll::Ready(Ok(()))
         } else {
-            self.read_waker = Some(cx.waker().clone());
+            wakers.replaced = self.read_waker.replace(cx.waker().clone());
             Poll::Pending
         }
     }
@@ -219,21 +337,24 @@ impl Pipe {
         mut self: Pin<&mut Self>,
         cx: &mut task::Context<'_>,
         buf: &[u8],
+        wakers: &mut Wakers,
     ) -> Poll<std::io::Result<usize>> {
         if self.is_closed {
             return Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()));
         }
+        if buf.is_empty() {
+            return Poll::Ready(Ok(0));
+        }
+
         let avail = self.max_buf_size - self.buffer.len();
         if avail == 0 {
-            self.write_waker = Some(cx.waker().clone());
+            wakers.replaced = self.write_waker.replace(cx.waker().clone());
             return Poll::Pending;
         }
 
         let len = buf.len().min(avail);
         self.buffer.extend_from_slice(&buf[..len]);
-        if let Some(waker) = self.read_waker.take() {
-            waker.wake();
-        }
+        wakers.wake = self.read_waker.take();
         Poll::Ready(Ok(len))
     }
 
@@ -241,13 +362,18 @@ impl Pipe {
         mut self: Pin<&mut Self>,
         cx: &mut task::Context<'_>,
         bufs: &[std::io::IoSlice<'_>],
+        wakers: &mut Wakers,
     ) -> Poll<Result<usize, std::io::Error>> {
         if self.is_closed {
             return Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()));
         }
+        if bufs.iter().all(|buf| buf.is_empty()) {
+            return Poll::Ready(Ok(0));
+        }
+
         let avail = self.max_buf_size - self.buffer.len();
         if avail == 0 {
-            self.write_waker = Some(cx.waker().clone());
+            wakers.replaced = self.write_waker.replace(cx.waker().clone());
             return Poll::Pending;
         }
 
@@ -262,24 +388,21 @@ impl Pipe {
             rem -= len;
         }
 
-        if let Some(waker) = self.read_waker.take() {
-            waker.wake();
-        }
+        wakers.wake = self.read_waker.take();
         Poll::Ready(Ok(avail - rem))
     }
-}
 
-impl AsyncRead for Pipe {
     cfg_coop! {
-        fn poll_read(
+        fn poll_read_deferred(
             self: Pin<&mut Self>,
             cx: &mut task::Context<'_>,
             buf: &mut ReadBuf<'_>,
+            wakers: &mut Wakers,
         ) -> Poll<std::io::Result<()>> {
             ready!(crate::trace::trace_leaf(cx));
-            let coop = ready!(crate::runtime::coop::poll_proceed(cx));
+            let coop = ready!(crate::task::coop::poll_proceed(cx));
 
-            let ret = self.poll_read_internal(cx, buf);
+            let ret = self.poll_read_internal(cx, buf, wakers);
             if ret.is_ready() {
                 coop.made_progress();
             }
@@ -288,72 +411,112 @@ impl AsyncRead for Pipe {
     }
 
     cfg_not_coop! {
-        fn poll_read(
+        fn poll_read_deferred(
             self: Pin<&mut Self>,
             cx: &mut task::Context<'_>,
             buf: &mut ReadBuf<'_>,
+            wakers: &mut Wakers,
         ) -> Poll<std::io::Result<()>> {
             ready!(crate::trace::trace_leaf(cx));
-            self.poll_read_internal(cx, buf)
+            self.poll_read_internal(cx, buf, wakers)
+        }
+    }
+
+    cfg_coop! {
+        fn poll_write_deferred(
+            self: Pin<&mut Self>,
+            cx: &mut task::Context<'_>,
+            buf: &[u8],
+            wakers: &mut Wakers,
+        ) -> Poll<std::io::Result<usize>> {
+            ready!(crate::trace::trace_leaf(cx));
+            let coop = ready!(crate::task::coop::poll_proceed(cx));
+
+            let ret = self.poll_write_internal(cx, buf, wakers);
+            if ret.is_ready() {
+                coop.made_progress();
+            }
+            ret
+        }
+    }
+
+    cfg_not_coop! {
+        fn poll_write_deferred(
+            self: Pin<&mut Self>,
+            cx: &mut task::Context<'_>,
+            buf: &[u8],
+            wakers: &mut Wakers,
+        ) -> Poll<std::io::Result<usize>> {
+            ready!(crate::trace::trace_leaf(cx));
+            self.poll_write_internal(cx, buf, wakers)
+        }
+    }
+
+    cfg_coop! {
+        fn poll_write_vectored_deferred(
+            self: Pin<&mut Self>,
+            cx: &mut task::Context<'_>,
+            bufs: &[std::io::IoSlice<'_>],
+            wakers: &mut Wakers,
+        ) -> Poll<Result<usize, std::io::Error>> {
+            ready!(crate::trace::trace_leaf(cx));
+            let coop = ready!(crate::task::coop::poll_proceed(cx));
+
+            let ret = self.poll_write_vectored_internal(cx, bufs, wakers);
+            if ret.is_ready() {
+                coop.made_progress();
+            }
+            ret
+        }
+    }
+
+    cfg_not_coop! {
+        fn poll_write_vectored_deferred(
+            self: Pin<&mut Self>,
+            cx: &mut task::Context<'_>,
+            bufs: &[std::io::IoSlice<'_>],
+            wakers: &mut Wakers,
+        ) -> Poll<Result<usize, std::io::Error>> {
+            ready!(crate::trace::trace_leaf(cx));
+            self.poll_write_vectored_internal(cx, bufs, wakers)
         }
     }
 }
 
-impl AsyncWrite for Pipe {
-    cfg_coop! {
-        fn poll_write(
-            self: Pin<&mut Self>,
-            cx: &mut task::Context<'_>,
-            buf: &[u8],
-        ) -> Poll<std::io::Result<usize>> {
-            ready!(crate::trace::trace_leaf(cx));
-            let coop = ready!(crate::runtime::coop::poll_proceed(cx));
+impl AsyncRead for SimplexStream {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let mut wakers = Wakers::default();
+        let ret = self.poll_read_deferred(cx, buf, &mut wakers);
+        wakers.wake();
+        ret
+    }
+}
 
-            let ret = self.poll_write_internal(cx, buf);
-            if ret.is_ready() {
-                coop.made_progress();
-            }
-            ret
-        }
+impl AsyncWrite for SimplexStream {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let mut wakers = Wakers::default();
+        let ret = self.poll_write_deferred(cx, buf, &mut wakers);
+        wakers.wake();
+        ret
     }
 
-    cfg_not_coop! {
-        fn poll_write(
-            self: Pin<&mut Self>,
-            cx: &mut task::Context<'_>,
-            buf: &[u8],
-        ) -> Poll<std::io::Result<usize>> {
-            ready!(crate::trace::trace_leaf(cx));
-            self.poll_write_internal(cx, buf)
-        }
-    }
-
-    cfg_coop! {
-        fn poll_write_vectored(
-            self: Pin<&mut Self>,
-            cx: &mut task::Context<'_>,
-            bufs: &[std::io::IoSlice<'_>],
-        ) -> Poll<Result<usize, std::io::Error>> {
-            ready!(crate::trace::trace_leaf(cx));
-            let coop = ready!(crate::runtime::coop::poll_proceed(cx));
-
-            let ret = self.poll_write_vectored_internal(cx, bufs);
-            if ret.is_ready() {
-                coop.made_progress();
-            }
-            ret
-        }
-    }
-
-    cfg_not_coop! {
-        fn poll_write_vectored(
-            self: Pin<&mut Self>,
-            cx: &mut task::Context<'_>,
-            bufs: &[std::io::IoSlice<'_>],
-        ) -> Poll<Result<usize, std::io::Error>> {
-            ready!(crate::trace::trace_leaf(cx));
-            self.poll_write_vectored_internal(cx, bufs)
-        }
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+        bufs: &[std::io::IoSlice<'_>],
+    ) -> Poll<Result<usize, std::io::Error>> {
+        let mut wakers = Wakers::default();
+        let ret = self.poll_write_vectored_deferred(cx, bufs, &mut wakers);
+        wakers.wake();
+        ret
     }
 
     fn is_write_vectored(&self) -> bool {
@@ -368,7 +531,9 @@ impl AsyncWrite for Pipe {
         mut self: Pin<&mut Self>,
         _: &mut task::Context<'_>,
     ) -> Poll<std::io::Result<()>> {
-        self.close_write();
+        if let Some(waker) = self.close_write() {
+            waker.wake();
+        }
         Poll::Ready(Ok(()))
     }
 }

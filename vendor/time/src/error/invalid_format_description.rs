@@ -63,9 +63,28 @@ pub enum InvalidFormatDescription {
         /// The zero-based index the error occurred at.
         index: usize,
     },
+    /// A modifier was present more than once.
+    #[non_exhaustive]
+    DuplicateModifier {
+        /// The name of the modifier that is duplicated.
+        name: &'static str,
+        /// The zero-based index of the second occurrence of the modifier.
+        index: usize,
+    },
+    /// A combination of modifiers is not valid.
+    #[non_exhaustive]
+    InvalidModifierCombination {
+        /// The modifier that is not valid in combination with the other modifiers.
+        modifier: &'static str,
+        /// The context in which the modifier is not valid.
+        context: &'static str,
+        /// The zero-based index the error occurred at.
+        index: usize,
+    },
 }
 
 impl From<InvalidFormatDescription> for crate::Error {
+    #[inline]
     fn from(original: InvalidFormatDescription) -> Self {
         Self::InvalidFormatDescription(original)
     }
@@ -74,6 +93,7 @@ impl From<InvalidFormatDescription> for crate::Error {
 impl TryFrom<crate::Error> for InvalidFormatDescription {
     type Error = error::DifferentVariant;
 
+    #[inline]
     fn try_from(err: crate::Error) -> Result<Self, Self::Error> {
         match err {
             crate::Error::InvalidFormatDescription(err) => Ok(err),
@@ -83,6 +103,7 @@ impl TryFrom<crate::Error> for InvalidFormatDescription {
 }
 
 impl fmt::Display for InvalidFormatDescription {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use InvalidFormatDescription::*;
         match self {
@@ -115,14 +136,28 @@ impl fmt::Display for InvalidFormatDescription {
                 context,
                 index,
             } => {
-                write!(
-                    f,
-                    "{what} is not supported in {context} at byte index {index}"
-                )
+                if context.is_empty() {
+                    write!(f, "{what} is not supported at byte index {index}")
+                } else {
+                    write!(
+                        f,
+                        "{what} is not supported in {context} at byte index {index}"
+                    )
+                }
             }
+            DuplicateModifier { name, index } => {
+                write!(f, "duplicate modifier `{name}` at byte index {index}")
+            }
+            InvalidModifierCombination {
+                modifier,
+                context,
+                index,
+            } => write!(
+                f,
+                "the `{modifier}` modifier is not valid at byte index {index} {context}"
+            ),
         }
     }
 }
 
-#[cfg(feature = "std")]
-impl std::error::Error for InvalidFormatDescription {}
+impl core::error::Error for InvalidFormatDescription {}

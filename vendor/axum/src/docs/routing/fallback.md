@@ -16,16 +16,18 @@ let app = Router::new()
     .fallback(fallback);
 
 async fn fallback(uri: Uri) -> (StatusCode, String) {
-    (StatusCode::NOT_FOUND, format!("No route for {}", uri))
+    (StatusCode::NOT_FOUND, format!("No route for {uri}"))
 }
-# async {
-# hyper::Server::bind(&"".parse().unwrap()).serve(app.into_make_service()).await.unwrap();
-# };
+# let _: Router = app;
 ```
 
 Fallbacks only apply to routes that aren't matched by anything in the
 router. If a handler is matched by a request but returns 404 the
-fallback is not called.
+fallback is not called. Note that this applies to [`MethodRouter`]s too: if the
+request hits a valid path but the [`MethodRouter`] does not have an appropriate
+method handler installed, the fallback is not called (use
+[`MethodRouter::fallback`] for this purpose instead).
+
 
 # Handling all requests without other routes
 
@@ -40,10 +42,8 @@ async fn handler() {}
 let app = Router::new().fallback(handler);
 
 # async {
-axum::Server::bind(&"0.0.0.0:3000".parse().unwrap())
-    .serve(app.into_make_service())
-    .await
-    .unwrap();
+let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+axum::serve(listener, app).await.unwrap();
 # };
 ```
 
@@ -55,9 +55,7 @@ use axum::handler::HandlerWithoutStateExt;
 async fn handler() {}
 
 # async {
-axum::Server::bind(&"0.0.0.0:3000".parse().unwrap())
-    .serve(handler.into_make_service())
-    .await
-    .unwrap();
+let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+axum::serve(listener, handler.into_make_service()).await.unwrap();
 # };
 ```

@@ -148,9 +148,9 @@ use crate::{
 /// "#;
 ///
 /// // Both serialization and deserialization work flawlessly.
-/// let serialized = serde_yaml::to_string(&values).unwrap();
+/// let serialized = yaml_serde::to_string(&values).unwrap();
 /// assert_eq!(expected, serialized);
-/// let deserialized: KVMap = serde_yaml::from_str(&serialized).unwrap();
+/// let deserialized: KVMap = yaml_serde::from_str(&serialized).unwrap();
 /// assert_eq!(values, deserialized);
 /// # }
 /// ```
@@ -188,7 +188,7 @@ where
             type Value = Vec<T>;
 
             fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                write!(formatter, "a map")
+                formatter.write_str("a map")
             }
 
             fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
@@ -234,10 +234,6 @@ where
     type SerializeMap = Impossible<S::Ok, S::Error>;
     type SerializeStruct = Impossible<S::Ok, S::Error>;
     type SerializeStructVariant = Impossible<S::Ok, S::Error>;
-
-    fn is_human_readable(&self) -> bool {
-        self.0.is_human_readable()
-    }
 
     fn serialize_bool(self, _v: bool) -> Result<Self::Ok, Self::Error> {
         Err(SerError::custom("wrong type for KeyValueMap"))
@@ -307,9 +303,9 @@ where
         Err(SerError::custom("wrong type for KeyValueMap"))
     }
 
-    fn serialize_some<T: ?Sized>(self, _value: &T) -> Result<Self::Ok, Self::Error>
+    fn serialize_some<T>(self, _value: &T) -> Result<Self::Ok, Self::Error>
     where
-        T: Serialize,
+        T: Serialize + ?Sized,
     {
         Err(SerError::custom("wrong type for KeyValueMap"))
     }
@@ -331,18 +327,18 @@ where
         Err(SerError::custom("wrong type for KeyValueMap"))
     }
 
-    fn serialize_newtype_struct<T: ?Sized>(
+    fn serialize_newtype_struct<T>(
         self,
         _name: &'static str,
         _value: &T,
     ) -> Result<Self::Ok, Self::Error>
     where
-        T: Serialize,
+        T: Serialize + ?Sized,
     {
         Err(SerError::custom("wrong type for KeyValueMap"))
     }
 
-    fn serialize_newtype_variant<T: ?Sized>(
+    fn serialize_newtype_variant<T>(
         self,
         _name: &'static str,
         _variant_index: u32,
@@ -350,7 +346,7 @@ where
         _value: &T,
     ) -> Result<Self::Ok, Self::Error>
     where
-        T: Serialize,
+        T: Serialize + ?Sized,
     {
         Err(SerError::custom("wrong type for KeyValueMap"))
     }
@@ -408,6 +404,10 @@ where
     ) -> Result<Self::SerializeStructVariant, Self::Error> {
         Err(SerError::custom("wrong type for KeyValueMap"))
     }
+
+    fn is_human_readable(&self) -> bool {
+        self.0.is_human_readable()
+    }
 }
 
 /// Serialize a single element but turn the sequence into a map logic.
@@ -415,7 +415,6 @@ where
 /// It uses [`ElementAsKeyValueSerializer`] for the map element serialization.
 ///
 /// The [`Serializer`] implementation handles `serialize_struct`, `serialize_map` and `serialize_seq` functions by deferring the work to [`SerializeStruct`], [`SerializeMap`] and [`SerializeSeq`] respectively.
-
 struct SerializeSeqElement<M> {
     delegate: M,
     is_human_readable: bool,
@@ -428,9 +427,9 @@ where
     type Ok = M::Ok;
     type Error = M::Error;
 
-    fn serialize_element<T: ?Sized>(&mut self, value: &T) -> Result<(), Self::Error>
+    fn serialize_element<T>(&mut self, value: &T) -> Result<(), Self::Error>
     where
-        T: Serialize,
+        T: Serialize + ?Sized,
     {
         value.serialize(ElementAsKeyValueSerializer {
             delegate: &mut self.delegate,
@@ -463,10 +462,6 @@ where
     type SerializeMap = KeyValueMapSerializer<'a, M>;
     type SerializeStruct = KeyValueStructSerializer<'a, M>;
     type SerializeStructVariant = Impossible<Self::Ok, Self::Error>;
-
-    fn is_human_readable(&self) -> bool {
-        self.is_human_readable
-    }
 
     fn serialize_bool(self, _v: bool) -> Result<Self::Ok, Self::Error> {
         Err(SerError::custom("wrong type for KeyValueMap"))
@@ -536,9 +531,9 @@ where
         Err(SerError::custom("wrong type for KeyValueMap"))
     }
 
-    fn serialize_some<T: ?Sized>(self, _value: &T) -> Result<Self::Ok, Self::Error>
+    fn serialize_some<T>(self, _value: &T) -> Result<Self::Ok, Self::Error>
     where
-        T: Serialize,
+        T: Serialize + ?Sized,
     {
         Err(SerError::custom("wrong type for KeyValueMap"))
     }
@@ -560,18 +555,18 @@ where
         Err(SerError::custom("wrong type for KeyValueMap"))
     }
 
-    fn serialize_newtype_struct<T: ?Sized>(
+    fn serialize_newtype_struct<T>(
         self,
         _name: &'static str,
         _value: &T,
     ) -> Result<Self::Ok, Self::Error>
     where
-        T: Serialize,
+        T: Serialize + ?Sized,
     {
         Err(SerError::custom("wrong type for KeyValueMap"))
     }
 
-    fn serialize_newtype_variant<T: ?Sized>(
+    fn serialize_newtype_variant<T>(
         self,
         _name: &'static str,
         _variant_index: u32,
@@ -579,7 +574,7 @@ where
         _value: &T,
     ) -> Result<Self::Ok, Self::Error>
     where
-        T: Serialize,
+        T: Serialize + ?Sized,
     {
         Err(SerError::custom("wrong type for KeyValueMap"))
     }
@@ -588,7 +583,7 @@ where
         Ok(KeyValueSeqSerializer {
             delegate: self.delegate,
             is_human_readable: self.is_human_readable,
-            content: Vec::with_capacity(len.unwrap_or(17) - 1),
+            content: utils::vec_with_capacity_cautious(Some(len.unwrap_or(17).saturating_sub(1))),
             key: None,
         })
     }
@@ -597,7 +592,7 @@ where
         Ok(KeyValueTupleSerializer {
             delegate: self.delegate,
             is_human_readable: self.is_human_readable,
-            content: Vec::with_capacity(len - 1),
+            content: utils::vec_with_capacity_cautious(Some(len.saturating_sub(1))),
             key: None,
         })
     }
@@ -611,7 +606,7 @@ where
             delegate: self.delegate,
             is_human_readable: self.is_human_readable,
             name,
-            content: Vec::with_capacity(len - 1),
+            content: utils::vec_with_capacity_cautious(Some(len.saturating_sub(1))),
             key: None,
         })
     }
@@ -630,7 +625,7 @@ where
         Ok(KeyValueMapSerializer {
             delegate: self.delegate,
             is_human_readable: self.is_human_readable,
-            content: Vec::with_capacity(len.unwrap_or(17) - 1),
+            content: utils::vec_with_capacity_cautious(Some(len.unwrap_or(17).saturating_sub(1))),
             next_is_magic_key: false,
             key: None,
             tmp: None,
@@ -646,7 +641,7 @@ where
             delegate: self.delegate,
             is_human_readable: self.is_human_readable,
             name,
-            content: Vec::with_capacity(len - 1),
+            content: utils::vec_with_capacity_cautious(Some(len.saturating_sub(1))),
             key: None,
         })
     }
@@ -660,6 +655,10 @@ where
     ) -> Result<Self::SerializeStructVariant, Self::Error> {
         Err(SerError::custom("wrong type for KeyValueMap"))
     }
+
+    fn is_human_readable(&self) -> bool {
+        self.is_human_readable
+    }
 }
 
 /// Serialize a sequence to a key and value pair of a map.
@@ -672,16 +671,16 @@ struct KeyValueSeqSerializer<'a, M> {
     key: Option<SerContent>,
 }
 
-impl<'a, M> SerializeSeq for KeyValueSeqSerializer<'a, M>
+impl<M> SerializeSeq for KeyValueSeqSerializer<'_, M>
 where
     M: SerializeMap,
 {
     type Ok = ();
     type Error = M::Error;
 
-    fn serialize_element<T: ?Sized>(&mut self, element: &T) -> Result<(), Self::Error>
+    fn serialize_element<T>(&mut self, element: &T) -> Result<(), Self::Error>
     where
-        T: Serialize,
+        T: Serialize + ?Sized,
     {
         let element: SerContent =
             element.serialize(ContentSerializer::new(self.is_human_readable))?;
@@ -698,7 +697,7 @@ where
             self.delegate
                 .serialize_entry(&key, &SerContent::Seq(self.content))
         } else {
-            Err(SerError::custom("TODO, missing value for `$key$` field"))
+            Err(SerError::custom("missing value for `$key$` field"))
         }
     }
 }
@@ -713,16 +712,16 @@ struct KeyValueTupleSerializer<'a, M> {
     key: Option<SerContent>,
 }
 
-impl<'a, M> SerializeTuple for KeyValueTupleSerializer<'a, M>
+impl<M> SerializeTuple for KeyValueTupleSerializer<'_, M>
 where
     M: SerializeMap,
 {
     type Ok = ();
     type Error = M::Error;
 
-    fn serialize_element<T: ?Sized>(&mut self, element: &T) -> Result<(), Self::Error>
+    fn serialize_element<T>(&mut self, element: &T) -> Result<(), Self::Error>
     where
-        T: Serialize,
+        T: Serialize + ?Sized,
     {
         let element: SerContent =
             element.serialize(ContentSerializer::new(self.is_human_readable))?;
@@ -739,7 +738,7 @@ where
             self.delegate
                 .serialize_entry(&key, &SerContent::Tuple(self.content))
         } else {
-            Err(SerError::custom("TODO, missing value for `$key$` field"))
+            Err(SerError::custom("missing value for `$key$` field"))
         }
     }
 }
@@ -755,16 +754,16 @@ struct KeyValueTupleStructSerializer<'a, M> {
     key: Option<SerContent>,
 }
 
-impl<'a, M> SerializeTupleStruct for KeyValueTupleStructSerializer<'a, M>
+impl<M> SerializeTupleStruct for KeyValueTupleStructSerializer<'_, M>
 where
     M: SerializeMap,
 {
     type Ok = ();
     type Error = M::Error;
 
-    fn serialize_field<T: ?Sized>(&mut self, field: &T) -> Result<(), Self::Error>
+    fn serialize_field<T>(&mut self, field: &T) -> Result<(), Self::Error>
     where
-        T: Serialize,
+        T: Serialize + ?Sized,
     {
         let field: SerContent = field.serialize(ContentSerializer::new(self.is_human_readable))?;
         if self.key.is_none() {
@@ -780,7 +779,7 @@ where
             self.delegate
                 .serialize_entry(&key, &SerContent::TupleStruct(self.name, self.content))
         } else {
-            Err(SerError::custom("TODO, missing value for `$key$` field"))
+            Err(SerError::custom("missing value for `$key$` field"))
         }
     }
 }
@@ -797,16 +796,16 @@ struct KeyValueMapSerializer<'a, M> {
     tmp: Option<SerContent>,
 }
 
-impl<'a, M> SerializeMap for KeyValueMapSerializer<'a, M>
+impl<M> SerializeMap for KeyValueMapSerializer<'_, M>
 where
     M: SerializeMap,
 {
     type Ok = ();
     type Error = M::Error;
 
-    fn serialize_key<T: ?Sized>(&mut self, key: &T) -> Result<(), Self::Error>
+    fn serialize_key<T>(&mut self, key: &T) -> Result<(), Self::Error>
     where
-        T: Serialize,
+        T: Serialize + ?Sized,
     {
         let key: SerContent = key.serialize(ContentSerializer::new(self.is_human_readable))?;
         if key.as_str() == Some(MAP_KEY_IDENTIFIER) {
@@ -817,9 +816,9 @@ where
         Ok(())
     }
 
-    fn serialize_value<T: ?Sized>(&mut self, value: &T) -> Result<(), Self::Error>
+    fn serialize_value<T>(&mut self, value: &T) -> Result<(), Self::Error>
     where
-        T: Serialize,
+        T: Serialize + ?Sized,
     {
         let value: SerContent = value.serialize(ContentSerializer::new(self.is_human_readable))?;
 
@@ -842,7 +841,7 @@ where
             self.delegate
                 .serialize_entry(&key, &SerContent::Map(self.content))
         } else {
-            Err(SerError::custom("TODO, missing value for `$key$` field"))
+            Err(SerError::custom("missing value for `$key$` field"))
         }
     }
 }
@@ -858,20 +857,16 @@ struct KeyValueStructSerializer<'a, M> {
     key: Option<SerContent>,
 }
 
-impl<'a, M> SerializeStruct for KeyValueStructSerializer<'a, M>
+impl<M> SerializeStruct for KeyValueStructSerializer<'_, M>
 where
     M: SerializeMap,
 {
     type Ok = ();
     type Error = M::Error;
 
-    fn serialize_field<T: ?Sized>(
-        &mut self,
-        key: &'static str,
-        value: &T,
-    ) -> Result<(), Self::Error>
+    fn serialize_field<T>(&mut self, key: &'static str, value: &T) -> Result<(), Self::Error>
     where
-        T: Serialize,
+        T: Serialize + ?Sized,
     {
         // Serialize to a Content type first
         let value: SerContent = value.serialize(ContentSerializer::new(self.is_human_readable))?;
@@ -889,7 +884,7 @@ where
             self.delegate
                 .serialize_entry(&key, &SerContent::Struct(self.name, self.content))
         } else {
-            Err(SerError::custom("TODO, missing value for `key` field"))
+            Err(SerError::custom("missing value for `$key$` field"))
         }
     }
 }
@@ -910,8 +905,11 @@ where
 {
     type Error = M::Error;
 
-    fn is_human_readable(&self) -> bool {
-        self.is_human_readable
+    fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_seq(visitor)
     }
 
     fn deserialize_seq<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -921,14 +919,11 @@ where
         visitor.visit_seq(self)
     }
 
-    fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        self.deserialize_seq(visitor)
+    fn is_human_readable(&self) -> bool {
+        self.is_human_readable
     }
 
-    serde::forward_to_deserialize_any! {
+    forward_to_deserialize_any! {
         bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
         bytes byte_buf option unit unit_struct newtype_struct tuple
         tuple_struct map struct enum identifier ignored_any
@@ -974,10 +969,6 @@ where
     M: MapAccess<'de>,
 {
     type Error = M::Error;
-
-    fn is_human_readable(&self) -> bool {
-        self.is_human_readable
-    }
 
     fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
@@ -1052,7 +1043,11 @@ where
         })
     }
 
-    serde::forward_to_deserialize_any! {
+    fn is_human_readable(&self) -> bool {
+        self.is_human_readable
+    }
+
+    forward_to_deserialize_any! {
         bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
         bytes byte_buf option unit unit_struct newtype_struct
         enum identifier ignored_any
@@ -1211,23 +1206,23 @@ where
         self.delegate.expecting(formatter)
     }
 
-    fn visit_map<A>(self, map: A) -> Result<Self::Value, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
-        self.delegate.visit_map(MapAccessWrapper {
-            delegate: map,
-            is_human_readable: self.is_human_readable,
-            first: self.first,
-        })
-    }
-
     fn visit_seq<A>(self, seq: A) -> Result<Self::Value, A::Error>
     where
         A: SeqAccess<'de>,
     {
         self.delegate.visit_seq(SeqAccessWrapper {
             delegate: seq,
+            is_human_readable: self.is_human_readable,
+            first: self.first,
+        })
+    }
+
+    fn visit_map<A>(self, map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        self.delegate.visit_map(MapAccessWrapper {
+            delegate: map,
             is_human_readable: self.is_human_readable,
             first: self.first,
         })
@@ -1251,7 +1246,7 @@ where
         K: DeserializeSeed<'de>,
     {
         if self.first.is_some() {
-            seed.deserialize(serde::de::value::StringDeserializer::new(
+            seed.deserialize(serde_core::de::value::StringDeserializer::new(
                 MAP_KEY_IDENTIFIER.to_string(),
             ))
             .map(Some)

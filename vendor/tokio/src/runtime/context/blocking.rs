@@ -32,7 +32,7 @@ pub(crate) fn try_enter_blocking_region() -> Option<BlockingRegionGuard> {
 
 /// Disallows blocking in the current runtime context until the guard is dropped.
 pub(crate) fn disallow_block_in_place() -> DisallowBlockInPlaceGuard {
-    let reset = CONTEXT.with(|c| {
+    let reset = CONTEXT.try_with(|c| {
         if let EnterRuntime::Entered {
             allow_block_in_place: true,
         } = c.runtime.get()
@@ -46,7 +46,7 @@ pub(crate) fn disallow_block_in_place() -> DisallowBlockInPlaceGuard {
         }
     });
 
-    DisallowBlockInPlaceGuard(reset)
+    DisallowBlockInPlaceGuard(reset.unwrap_or(false))
 }
 
 impl BlockingRegionGuard {
@@ -84,20 +84,24 @@ impl BlockingRegionGuard {
         let mut cx = Context::from_waker(&waker);
 
         pin!(f);
-        let when = Instant::now() + timeout;
+        let when = Instant::now().checked_add(timeout);
 
         loop {
-            if let Ready(v) = crate::runtime::coop::budget(|| f.as_mut().poll(&mut cx)) {
+            if let Ready(v) = crate::task::coop::budget(|| f.as_mut().poll(&mut cx)) {
                 return Ok(v);
             }
 
             let now = Instant::now();
 
-            if now >= when {
-                return Err(());
-            }
+            if let Some(when) = when {
+                if now >= when {
+                    return Err(());
+                }
 
-            park.park_timeout(when - now);
+                park.park_timeout(when - now);
+            } else {
+                park.park();
+            }
         }
     }
 }

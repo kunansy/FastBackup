@@ -1,9 +1,9 @@
-use crate::signal::os::{OsExtraData, OsStorage};
+use crate::signal::unix::{OsExtraData, OsStorage};
 use crate::sync::watch;
-use crate::util::once_cell::OnceCell;
 
 use std::ops;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
 
 pub(crate) type EventId = usize;
 
@@ -31,10 +31,8 @@ pub(crate) trait Storage {
     /// Gets the `EventInfo` for `id` if it exists.
     fn event_info(&self, id: EventId) -> Option<&EventInfo>;
 
-    /// Invokes `f` once for each defined `EventInfo` in this storage.
-    fn for_each<'a, F>(&'a self, f: F)
-    where
-        F: FnMut(&'a EventInfo);
+    /// Returns an iterator over the storage.
+    fn iter(&self) -> impl Iterator<Item = &EventInfo>;
 }
 
 impl Storage for Vec<EventInfo> {
@@ -42,18 +40,9 @@ impl Storage for Vec<EventInfo> {
         self.get(id)
     }
 
-    fn for_each<'a, F>(&'a self, f: F)
-    where
-        F: FnMut(&'a EventInfo),
-    {
-        self.iter().for_each(f);
+    fn iter(&self) -> impl Iterator<Item = &EventInfo> {
+        self.as_slice().iter()
     }
-}
-
-/// An interface for initializing a type. Useful for situations where we cannot
-/// inject a configured instance in the constructor of another type.
-pub(crate) trait Init {
-    fn init() -> Self;
 }
 
 /// Manages and distributes event notifications to any registered listeners.
@@ -76,7 +65,7 @@ impl<S: Storage> Registry<S> {
     fn register_listener(&self, event_id: EventId) -> watch::Receiver<()> {
         self.storage
             .event_info(event_id)
-            .unwrap_or_else(|| panic!("invalid event_id: {}", event_id))
+            .unwrap_or_else(|| panic!("invalid event_id: {event_id}"))
             .tx
             .subscribe()
     }
@@ -93,20 +82,13 @@ impl<S: Storage> Registry<S> {
     ///
     /// Returns `true` if an event was delivered to at least one listener.
     fn broadcast(&self) -> bool {
-        let mut did_notify = false;
-        self.storage.for_each(|event_info| {
+        self.storage
+            .iter()
             // Any signal of this kind arrived since we checked last?
-            if !event_info.pending.swap(false, Ordering::SeqCst) {
-                return;
-            }
-
+            .filter(|event_info| event_info.pending.swap(false, Ordering::SeqCst))
             // Ignore errors if there are no listeners
-            if event_info.tx.send(()).is_ok() {
-                did_notify = true;
-            }
-        });
-
-        did_notify
+            .map(|event_info| event_info.tx.send(()).is_ok())
+            .fold(false, |acc, x| acc | x)
     }
 }
 
@@ -150,23 +132,23 @@ impl Globals {
 
 fn globals_init() -> Globals
 where
-    OsExtraData: 'static + Send + Sync + Init,
-    OsStorage: 'static + Send + Sync + Init,
+    OsExtraData: 'static + Send + Sync + Default,
+    OsStorage: 'static + Send + Sync + Default,
 {
     Globals {
-        extra: OsExtraData::init(),
-        registry: Registry::new(OsStorage::init()),
+        extra: OsExtraData::default(),
+        registry: Registry::new(OsStorage::default()),
     }
 }
 
 pub(crate) fn globals() -> &'static Globals
 where
-    OsExtraData: 'static + Send + Sync + Init,
-    OsStorage: 'static + Send + Sync + Init,
+    OsExtraData: 'static + Send + Sync + Default,
+    OsStorage: 'static + Send + Sync + Default,
 {
-    static GLOBALS: OnceCell<Globals> = OnceCell::new();
+    static GLOBALS: OnceLock<Globals> = OnceLock::new();
 
-    GLOBALS.get(globals_init)
+    GLOBALS.get_or_init(globals_init)
 }
 
 #[cfg(all(test, not(loom)))]

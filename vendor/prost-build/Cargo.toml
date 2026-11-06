@@ -11,44 +11,59 @@
 
 [package]
 edition = "2021"
-rust-version = "1.60"
+rust-version = "1.85"
 name = "prost-build"
-version = "0.12.3"
+version = "0.14.4"
 authors = [
     "Dan Burkert <dan@danburkert.com>",
     "Lucio Franco <luciofranco14@gmail.com>",
+    "Casper Meijn <casper@meijn.net>",
     "Tokio Contributors <team@tokio.rs>",
 ]
-description = "A Protocol Buffers implementation for the Rust Language."
-documentation = "https://docs.rs/prost-build"
+build = false
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+description = "Generate Prost annotated Rust types from Protocol Buffers files."
 readme = "README.md"
 license = "Apache-2.0"
 repository = "https://github.com/tokio-rs/prost"
 
-[dependencies.bytes]
-version = "1"
-default-features = false
+[features]
+cleanup-markdown = [
+    "dep:pulldown-cmark",
+    "dep:pulldown-cmark-to-cmark",
+]
+default = ["format"]
+format = [
+    "dep:prettyplease",
+    "dep:syn",
+]
+
+[lib]
+name = "prost_build"
+path = "src/lib.rs"
 
 [dependencies.heck]
-version = "0.4"
+version = ">=0.4, <=0.5"
 
 [dependencies.itertools]
-version = ">=0.10, <0.12"
+version = ">=0.10, <=0.14"
 features = ["use_alloc"]
 default-features = false
 
 [dependencies.log]
-version = "0.4"
+version = "0.4.4"
 
 [dependencies.multimap]
-version = "0.8"
+version = ">=0.8, <=0.10"
 default-features = false
 
-[dependencies.once_cell]
-version = "1.17.1"
-
 [dependencies.petgraph]
-version = "0.6"
+version = "0.8"
+features = ["std"]
 default-features = false
 
 [dependencies.prettyplease]
@@ -56,20 +71,20 @@ version = "0.2"
 optional = true
 
 [dependencies.prost]
-version = "0.12.3"
+version = "0.14.4"
 default-features = false
 
 [dependencies.prost-types]
-version = "0.12.3"
+version = "0.14.4"
 default-features = false
 
 [dependencies.pulldown-cmark]
-version = "0.9.1"
+version = "0.13"
 optional = true
 default-features = false
 
 [dependencies.pulldown-cmark-to-cmark]
-version = "10.0.1"
+version = "22"
 optional = true
 
 [dependencies.regex]
@@ -87,21 +102,12 @@ optional = true
 
 [dependencies.tempfile]
 version = "3"
-
-[dependencies.which]
-version = "4"
-
-[dev-dependencies.env_logger]
-version = "0.10"
 default-features = false
 
-[features]
-cleanup-markdown = [
-    "pulldown-cmark",
-    "pulldown-cmark-to-cmark",
-]
-default = ["format"]
-format = [
-    "prettyplease",
-    "syn",
-]
+[dev-dependencies.env_logger]
+version = "0.11"
+default-features = false
+
+[lints.clippy]
+collapsible_if = "allow"
+io_other_error = "allow"

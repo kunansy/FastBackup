@@ -1,5 +1,13 @@
 #![warn(rust_2018_idioms)]
-#![cfg(all(feature = "full", not(target_os = "wasi")))] // Wasi does not support panic recovery
+#![cfg(any(
+    all(feature = "full", not(target_os = "wasi")), // Wasi does not support panic recovery
+    all(
+        target_os = "emscripten",
+        feature = "rt",
+        feature = "macros",
+        feature = "io-util"
+    )
+))]
 
 use tokio::io::{
     split, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf, ReadHalf, WriteHalf,
@@ -17,7 +25,7 @@ impl AsyncRead for RW {
         _cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        buf.put_slice(&[b'z']);
+        buf.put_slice(b"z");
         Poll::Ready(Ok(()))
     }
 }
@@ -101,12 +109,10 @@ fn method_delegation() {
         assert_eq!(1, r.read(&mut buf).await.unwrap());
         assert_eq!(b'z', buf[0]);
 
-        assert_eq!(1, w.write(&[b'x']).await.unwrap());
+        assert_eq!(1, w.write(b"x").await.unwrap());
         assert_eq!(
             2,
-            w.write_vectored(&[io::IoSlice::new(&[b'x'])])
-                .await
-                .unwrap()
+            w.write_vectored(&[io::IoSlice::new(b"x")]).await.unwrap()
         );
         assert!(w.is_write_vectored());
 

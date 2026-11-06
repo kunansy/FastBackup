@@ -10,7 +10,7 @@ pub struct ErrorDeclaration {
 impl ToTokens for ErrorDeclaration {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         tokens.append_all(quote! {
-            let mut __errors = ::darling::Error::accumulator();
+            let mut __errors = _darling::Error::accumulator();
         })
     }
 }
@@ -31,7 +31,7 @@ impl<'a> ErrorCheck<'a> {
     }
 }
 
-impl<'a> ToTokens for ErrorCheck<'a> {
+impl ToTokens for ErrorCheck<'_> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         let at_call = if let Some(ref s) = self.location {
             quote!(.map_err(|e| e.at(#s)))

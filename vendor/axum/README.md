@@ -1,10 +1,10 @@
 # axum
 
-`axum` is a web application framework that focuses on ergonomics and modularity.
+`axum` is an HTTP routing and request-handling library that focuses on ergonomics and modularity.
 
 [![Build status](https://github.com/tokio-rs/axum/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/tokio-rs/axum/actions/workflows/CI.yml)
 [![Crates.io](https://img.shields.io/crates/v/axum)](https://crates.io/crates/axum)
-[![Documentation](https://docs.rs/axum/badge.svg)](https://docs.rs/axum)
+[![Documentation](https://docs.rs/axum/badge.svg)][docs]
 
 More information about this crate can be found in the [crate documentation][docs].
 
@@ -17,7 +17,7 @@ More information about this crate can be found in the [crate documentation][docs
 - Take full advantage of the [`tower`] and [`tower-http`] ecosystem of
   middleware, services, and utilities.
 
-In particular the last point is what sets `axum` apart from other frameworks.
+In particular the last point is what sets `axum` apart from other libraries / frameworks.
 `axum` doesn't have its own middleware system but instead uses
 [`tower::Service`]. This means `axum` gets timeouts, tracing, compression,
 authorization, and more, for free. It also enables you to share middleware with
@@ -29,11 +29,9 @@ applications written using [`hyper`] or [`tonic`].
 use axum::{
     routing::{get, post},
     http::StatusCode,
-    response::IntoResponse,
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use std::net::SocketAddr;
 
 #[tokio::main]
 async fn main() {
@@ -47,14 +45,9 @@ async fn main() {
         // `POST /users` goes to `create_user`
         .route("/users", post(create_user));
 
-    // run our app with hyper
-    // `axum::Server` is a re-export of `hyper::Server`
-    let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
-    tracing::debug!("listening on {}", addr);
-    axum::Server::bind(&addr)
-        .serve(app.into_make_service())
-        .await
-        .unwrap();
+    // run our app with hyper, listening globally on port 3000
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    axum::serve(listener, app).await.unwrap();
 }
 
 // basic handler that responds with a static string
@@ -111,7 +104,7 @@ This crate uses `#![forbid(unsafe_code)]` to ensure everything is implemented in
 
 ## Minimum supported Rust version
 
-axum's MSRV is 1.63.
+axum's MSRV is 1.80.
 
 ## Examples
 

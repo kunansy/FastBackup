@@ -1,18 +1,18 @@
 use crate::codec::UserError;
 use crate::frame::{Reason, StreamId};
-use crate::{client, frame, server};
+use crate::{client, server};
 
 use crate::frame::DEFAULT_INITIAL_WINDOW_SIZE;
 use crate::proto::*;
 
-use bytes::{Buf, Bytes};
+use bytes::Bytes;
 use futures_core::Stream;
 use std::io;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::AsyncRead;
 
 /// An H2 connection
 #[derive(Debug)]
@@ -44,6 +44,9 @@ where
 
     /// Pending GOAWAY frames to write.
     go_away: GoAway,
+
+    /// A refused stream to reset before receiving another frame.
+    pending_refusal: Option<StreamId>,
 
     /// Ping/pong handler
     ping_pong: PingPong,
@@ -83,6 +86,31 @@ pub(crate) struct Config {
     pub remote_reset_stream_max: usize,
     pub local_error_reset_streams_max: Option<usize>,
     pub settings: frame::Settings,
+    pub data_frame_budget: DataFrameBudget,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum DataFrameBudget {
+    Auto,
+    Configured(usize),
+}
+
+impl DataFrameBudget {
+    pub(crate) fn resolve(self, connection_window: Option<WindowSize>) -> usize {
+        match self {
+            Self::Configured(budget) => budget,
+            Self::Auto => {
+                let window = connection_window.unwrap_or(DEFAULT_INITIAL_WINDOW_SIZE);
+                let budget = window as usize / 2;
+
+                budget.max(DEFAULT_DATA_FRAME_BUDGET)
+            }
+        }
+    }
+
+    pub(crate) fn is_auto(self) -> bool {
+        matches!(self, Self::Auto)
+    }
 }
 
 #[derive(Debug)]
@@ -106,10 +134,6 @@ where
     pub fn new(codec: Codec<T, Prioritized<B>>, config: Config) -> Connection<T, P, B> {
         fn streams_config(config: &Config) -> streams::Config {
             streams::Config {
-                local_init_window_sz: config
-                    .settings
-                    .initial_window_size()
-                    .unwrap_or(DEFAULT_INITIAL_WINDOW_SIZE),
                 initial_max_send_streams: config.initial_max_send_streams,
                 local_max_buffer_size: config.max_send_buffer_size,
                 local_next_stream_id: config.next_stream_id,
@@ -127,19 +151,23 @@ where
                     .max_concurrent_streams()
                     .map(|max| max as usize),
                 local_max_error_reset_streams: config.local_error_reset_streams_max,
+                data_frame_budget: config.data_frame_budget,
             }
         }
         let streams = Streams::new(streams_config(&config));
+        let span = tracing::debug_span!(parent: None, "Connection", peer = %P::NAME);
+        span.follows_from(tracing::Span::current());
         Connection {
             codec,
             inner: ConnectionInner {
                 state: State::Open,
                 error: None,
                 go_away: GoAway::new(),
+                pending_refusal: None,
                 ping_pong: PingPong::new(),
                 settings: Settings::new(config.settings),
                 streams,
-                span: tracing::debug_span!("Connection", peer = %P::NAME),
+                span,
                 _phantom: PhantomData,
             },
         }
@@ -198,7 +226,15 @@ where
             .inner
             .settings
             .poll_send(cx, &mut self.codec, &mut self.inner.streams))?;
-        ready!(self.inner.streams.send_pending_refusal(cx, &mut self.codec))?;
+        if let Some(id) = self.inner.pending_refusal {
+            // Keep the refusal pending if making room requires socket progress.
+            ready!(self.codec.poll_ready(cx))?;
+            self.inner.streams.count_pending_refusal()?;
+            self.codec
+                .buffer(frame::Reset::new(id, Reason::REFUSED_STREAM).into())
+                .expect("invalid RST_STREAM frame");
+            self.inner.pending_refusal = None;
+        }
 
         Poll::Ready(Ok(()))
     }
@@ -244,6 +280,18 @@ where
         if !self.inner.streams.has_streams_or_other_references() {
             self.inner.as_dyn().go_away_now(Reason::NO_ERROR);
         }
+    }
+
+    /// Checks if there are any streams
+    pub fn has_streams(&self) -> bool {
+        self.inner.streams.has_streams()
+    }
+
+    /// Checks if there are any streams or references left
+    pub fn has_streams_or_other_references(&self) -> bool {
+        // If we poll() and realize that there are no streams or references
+        // then we can close the connection by transitioning to GOAWAY
+        self.inner.streams.has_streams_or_other_references()
     }
 
     pub(crate) fn take_user_pings(&mut self) -> Option<UserPings> {
@@ -348,6 +396,10 @@ where
                         &mut self.inner.streams,
                     )?;
                 }
+                ReceivedFrame::Refused(id) => {
+                    debug_assert!(self.inner.pending_refusal.is_none());
+                    self.inner.pending_refusal = Some(id);
+                }
                 ReceivedFrame::Continue => (),
                 ReceivedFrame::Done => {
                     return Poll::Ready(Ok(()));
@@ -428,45 +480,55 @@ where
             // error. This is handled by setting a GOAWAY frame followed by
             // terminating the connection.
             Err(Error::GoAway(debug_data, reason, initiator)) => {
-                let e = Error::GoAway(debug_data.clone(), reason, initiator);
-                tracing::debug!(error = ?e, "Connection::poll; connection error");
-
-                // We may have already sent a GOAWAY for this error,
-                // if so, don't send another, just flush and close up.
-                if self
-                    .go_away
-                    .going_away()
-                    .map_or(false, |frame| frame.reason() == reason)
-                {
-                    tracing::trace!("    -> already going away");
-                    *self.state = State::Closing(reason, initiator);
-                    return Ok(());
-                }
-
-                // Reset all active streams
-                self.streams.handle_error(e);
-                self.go_away_now_data(reason, debug_data);
+                self.handle_go_away(reason, debug_data, initiator);
                 Ok(())
             }
             // Attempting to read a frame resulted in a stream level error.
-            // This is handled by resetting the frame then trying to read
-            // another frame.
+            // Locally detected stream errors are reported to the peer with
+            // RST_STREAM. Remotely initiated resets have already been applied
+            // by the streams state machine and must not be echoed back.
             Err(Error::Reset(id, reason, initiator)) => {
+                if initiator == Initiator::Remote {
+                    tracing::trace!(?id, ?reason, ?initiator, "stream reset");
+                    return Ok(());
+                }
+
                 debug_assert_eq!(initiator, Initiator::Library);
-                tracing::trace!(?id, ?reason, "stream error");
-                self.streams.send_reset(id, reason);
+                tracing::trace!(?id, ?reason, ?initiator, "stream error");
+                match self.streams.send_reset(id, reason) {
+                    Ok(()) => (),
+                    Err(crate::proto::error::GoAway { debug_data, reason }) => {
+                        self.handle_go_away(reason, debug_data, Initiator::Library);
+                    }
+                }
                 Ok(())
             }
             // Attempting to read a frame resulted in an I/O error. All
             // active streams must be reset.
             //
             // TODO: Are I/O errors recoverable?
-            Err(Error::Io(e, inner)) => {
-                tracing::debug!(error = ?e, "Connection::poll; IO error");
-                let e = Error::Io(e, inner);
+            Err(Error::Io(kind, inner)) => {
+                tracing::debug!(error = ?kind, "Connection::poll; IO error");
+                let e = Error::Io(kind, inner);
 
                 // Reset all active streams
                 self.streams.handle_error(e.clone());
+
+                // Some client implementations drop the connections without notifying its peer
+                // Attempting to read after the client dropped the connection results in UnexpectedEof
+                // If as a server, we don't have anything more to send, just close the connection
+                // without error
+                //
+                // See https://github.com/hyperium/hyper/issues/3427
+                if self.streams.is_buffer_empty()
+                    && matches!(kind, io::ErrorKind::UnexpectedEof)
+                    && (self.streams.is_server()
+                        || self.error.as_ref().map(|f| f.reason() == Reason::NO_ERROR)
+                            == Some(true))
+                {
+                    *self.state = State::Closed(Reason::NO_ERROR, Initiator::Library);
+                    return Ok(());
+                }
 
                 // Return the error
                 Err(e)
@@ -474,12 +536,36 @@ where
         }
     }
 
+    fn handle_go_away(&mut self, reason: Reason, debug_data: Bytes, initiator: Initiator) {
+        let e = Error::GoAway(debug_data.clone(), reason, initiator);
+        tracing::debug!(error = ?e, "Connection::poll; connection error");
+
+        // We may have already sent a GOAWAY for this error,
+        // if so, don't send another, just flush and close up.
+        if self
+            .go_away
+            .going_away()
+            .map_or(false, |frame| frame.reason() == reason)
+        {
+            tracing::trace!("    -> already going away");
+            *self.state = State::Closing(reason, initiator);
+            return;
+        }
+
+        // Reset all active streams
+        self.streams.handle_error(e);
+        self.go_away_now_data(reason, debug_data);
+    }
+
     fn recv_frame(&mut self, frame: Option<Frame>) -> Result<ReceivedFrame, Error> {
         use crate::frame::Frame::*;
         match frame {
             Some(Headers(frame)) => {
                 tracing::trace!(?frame, "recv HEADERS");
-                self.streams.recv_headers(frame)?;
+                match self.streams.recv_headers(frame)? {
+                    streams::RecvOutcome::Processed => (),
+                    streams::RecvOutcome::Refused(id) => return Ok(ReceivedFrame::Refused(id)),
+                }
             }
             Some(Data(frame)) => {
                 tracing::trace!(?frame, "recv DATA");
@@ -491,7 +577,10 @@ where
             }
             Some(PushPromise(frame)) => {
                 tracing::trace!(?frame, "recv PUSH_PROMISE");
-                self.streams.recv_push_promise(frame)?;
+                match self.streams.recv_push_promise(frame)? {
+                    streams::RecvOutcome::Processed => (),
+                    streams::RecvOutcome::Refused(id) => return Ok(ReceivedFrame::Refused(id)),
+                }
             }
             Some(Settings(frame)) => {
                 tracing::trace!(?frame, "recv SETTINGS");
@@ -538,6 +627,7 @@ where
 }
 
 enum ReceivedFrame {
+    Refused(StreamId),
     Settings(frame::Settings),
     Continue,
     Done,
@@ -596,5 +686,43 @@ where
     fn drop(&mut self) {
         // Ignore errors as this indicates that the mutex is poisoned.
         let _ = self.inner.streams.recv_eof(true);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auto_data_frame_budget_scales_with_connection_window() {
+        assert_eq!(
+            DataFrameBudget::Auto.resolve(None),
+            DEFAULT_INITIAL_WINDOW_SIZE as usize / 2
+        );
+        assert_eq!(
+            DataFrameBudget::Auto.resolve(Some(DEFAULT_INITIAL_WINDOW_SIZE)),
+            DEFAULT_INITIAL_WINDOW_SIZE as usize / 2
+        );
+        assert_eq!(DataFrameBudget::Auto.resolve(Some(1024 * 1024)), 512 * 1024);
+    }
+
+    #[test]
+    fn auto_data_frame_budget_has_minimum() {
+        assert_eq!(
+            DataFrameBudget::Auto.resolve(Some(1)),
+            DEFAULT_DATA_FRAME_BUDGET
+        );
+        assert_eq!(
+            DataFrameBudget::Auto.resolve(Some(MAX_WINDOW_SIZE)),
+            MAX_WINDOW_SIZE as usize / 2
+        );
+    }
+
+    #[test]
+    fn configured_data_frame_budget_is_unchanged() {
+        assert_eq!(
+            DataFrameBudget::Configured(123).resolve(Some(MAX_WINDOW_SIZE)),
+            123
+        );
     }
 }

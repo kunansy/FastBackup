@@ -1,5 +1,12 @@
 #![warn(rust_2018_idioms)]
-#![cfg(all(feature = "full", not(target_os = "wasi")))] // Wasi doesn't support bind
+// WASIp1 doesn't support bind
+#![cfg(all(
+    feature = "net",
+    feature = "macros",
+    feature = "rt",
+    feature = "io-util",
+    not(all(target_os = "wasi", target_env = "p1")),
+))]
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt, Interest};
 use tokio::net::{TcpListener, TcpStream};
@@ -7,13 +14,16 @@ use tokio::try_join;
 use tokio_test::task;
 use tokio_test::{assert_ok, assert_pending, assert_ready_ok};
 
+use std::future::poll_fn;
 use std::io;
 use std::task::Poll;
+#[cfg(not(target_os = "wasi"))]
 use std::time::Duration;
 
-use futures::future::poll_fn;
-
 #[tokio::test]
+#[cfg(not(target_os = "wasi"))] // WASI does not yet support `SO_LINGER`
+#[cfg_attr(miri, ignore = "Miri doesn't support `SO_LINGER`")]
+#[expect(deprecated)] // set_linger is deprecated
 async fn set_linger() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
 
@@ -24,13 +34,16 @@ async fn set_linger() {
     assert_ok!(stream.set_linger(Some(Duration::from_secs(1))));
     assert_eq!(stream.linger().unwrap().unwrap().as_secs(), 1);
 
+    assert_ok!(stream.set_zero_linger());
+    assert_eq!(stream.linger().unwrap().unwrap().as_secs(), 0);
+
     assert_ok!(stream.set_linger(None));
     assert!(stream.linger().unwrap().is_none());
 }
 
 #[tokio::test]
 async fn try_read_write() {
-    const DATA: &[u8] = b"this is some data to write to the socket";
+    const DATA: &[u8] = &[2u8; 4000];
 
     // Create listener
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -41,6 +54,13 @@ async fn try_read_write() {
         .unwrap();
     let (server, _) = listener.accept().await.unwrap();
     let mut written = DATA.to_vec();
+
+    // An accepted socket starts out assumed readable; a read that finds
+    // nothing clears that.
+    assert_eq!(
+        server.try_read(&mut [0; 1]).unwrap_err().kind(),
+        io::ErrorKind::WouldBlock
+    );
 
     // Track the server receiving data
     let mut readable = task::spawn(server.readable());
@@ -66,7 +86,7 @@ async fn try_read_write() {
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
                 break;
             }
-            Err(e) => panic!("error = {:?}", e),
+            Err(e) => panic!("error = {e:?}"),
         }
     }
 
@@ -85,7 +105,7 @@ async fn try_read_write() {
             match server.try_read(&mut read[i..]) {
                 Ok(n) => i += n,
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => continue,
-                Err(e) => panic!("error = {:?}", e),
+                Err(e) => panic!("error = {e:?}"),
             }
         }
 
@@ -93,6 +113,7 @@ async fn try_read_write() {
     }
 
     written.clear();
+    written.reserve(10 * 1024 * 1024);
     client.writable().await.unwrap();
 
     // Fill the write buffer using vectored I/O
@@ -103,11 +124,13 @@ async fn try_read_write() {
         assert_ready_ok!(writable.poll());
 
         match client.try_write_vectored(&data_bufs) {
-            Ok(n) => written.extend(&DATA[..n]),
+            Ok(n) => {
+                written.extend(&DATA[..n]);
+            }
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
                 break;
             }
-            Err(e) => panic!("error = {:?}", e),
+            Err(e) => panic!("error = {e:?}"),
         }
     }
 
@@ -130,7 +153,7 @@ async fn try_read_write() {
             match server.try_read_vectored(&mut bufs) {
                 Ok(n) => i += n,
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => continue,
-                Err(e) => panic!("error = {:?}", e),
+                Err(e) => panic!("error = {e:?}"),
             }
         }
 
@@ -140,13 +163,16 @@ async fn try_read_write() {
     // Now, we listen for shutdown
     drop(client);
 
-    loop {
-        let ready = server.ready(Interest::READABLE).await.unwrap();
+    #[cfg(not(target_os = "wasi"))] // WASI does not yet support `POLLHUP` or `POLLRDHUP`
+    {
+        loop {
+            let ready = server.ready(Interest::READABLE).await.unwrap();
 
-        if ready.is_read_closed() {
-            return;
-        } else {
-            tokio::task::yield_now().await;
+            if ready.is_read_closed() {
+                return;
+            } else {
+                tokio::task::yield_now().await;
+            }
         }
     }
 }
@@ -212,7 +238,10 @@ macro_rules! assert_not_writable_by_polling {
 async fn poll_read_ready() {
     let (mut client, mut server) = create_pair().await;
 
-    // Initial state - not readable.
+    // Initial state - an accepted socket is assumed readable until a read
+    // finds nothing.
+    assert_readable_by_polling!(server);
+    read_until_pending(&mut server);
     assert_not_readable_by_polling!(server);
 
     // There is data in the buffer - readable.
@@ -286,7 +315,7 @@ fn write_until_pending(stream: &mut TcpStream) -> usize {
 
 #[tokio::test]
 async fn try_read_buf() {
-    const DATA: &[u8] = b"this is some data to write to the socket";
+    const DATA: &[u8] = &[2u8; 4000];
 
     // Create listener
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -297,6 +326,13 @@ async fn try_read_buf() {
         .unwrap();
     let (server, _) = listener.accept().await.unwrap();
     let mut written = DATA.to_vec();
+
+    // An accepted socket starts out assumed readable; a read that finds
+    // nothing clears that.
+    assert_eq!(
+        server.try_read(&mut [0; 1]).unwrap_err().kind(),
+        io::ErrorKind::WouldBlock
+    );
 
     // Track the server receiving data
     let mut readable = task::spawn(server.readable());
@@ -322,7 +358,7 @@ async fn try_read_buf() {
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
                 break;
             }
-            Err(e) => panic!("error = {:?}", e),
+            Err(e) => panic!("error = {e:?}"),
         }
     }
 
@@ -341,7 +377,7 @@ async fn try_read_buf() {
             match server.try_read_buf(&mut read) {
                 Ok(n) => i += n,
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => continue,
-                Err(e) => panic!("error = {:?}", e),
+                Err(e) => panic!("error = {e:?}"),
             }
         }
 
@@ -351,13 +387,16 @@ async fn try_read_buf() {
     // Now, we listen for shutdown
     drop(client);
 
-    loop {
-        let ready = server.ready(Interest::READABLE).await.unwrap();
+    #[cfg(not(target_os = "wasi"))] // WASI does not yet support `POLLHUP` or `POLLRDHUP`
+    {
+        loop {
+            let ready = server.ready(Interest::READABLE).await.unwrap();
 
-        if ready.is_read_closed() {
-            return;
-        } else {
-            tokio::task::yield_now().await;
+            if ready.is_read_closed() {
+                return;
+            } else {
+                tokio::task::yield_now().await;
+            }
         }
     }
 }

@@ -37,29 +37,29 @@ use core::{cmp, iter, mem};
 //      sparc64 (`UMUL` only supported double-word arguments).
 
 // 32-BIT LIMB
-#[cfg(limb_width_32)]
+#[cfg(fast_arithmetic = "32")]
 pub type Limb = u32;
 
-#[cfg(limb_width_32)]
+#[cfg(fast_arithmetic = "32")]
 pub const POW5_LIMB: &[Limb] = &POW5_32;
 
-#[cfg(limb_width_32)]
+#[cfg(fast_arithmetic = "32")]
 pub const POW10_LIMB: &[Limb] = &POW10_32;
 
-#[cfg(limb_width_32)]
+#[cfg(fast_arithmetic = "32")]
 type Wide = u64;
 
 // 64-BIT LIMB
-#[cfg(limb_width_64)]
+#[cfg(fast_arithmetic = "64")]
 pub type Limb = u64;
 
-#[cfg(limb_width_64)]
+#[cfg(fast_arithmetic = "64")]
 pub const POW5_LIMB: &[Limb] = &POW5_64;
 
-#[cfg(limb_width_64)]
+#[cfg(fast_arithmetic = "64")]
 pub const POW10_LIMB: &[Limb] = &POW10_64;
 
-#[cfg(limb_width_64)]
+#[cfg(fast_arithmetic = "64")]
 type Wide = u128;
 
 /// Cast to limb type.
@@ -79,14 +79,14 @@ fn as_wide<T: Integer>(t: T) -> Wide {
 
 /// Split u64 into limbs, in little-endian order.
 #[inline]
-#[cfg(limb_width_32)]
+#[cfg(fast_arithmetic = "32")]
 fn split_u64(x: u64) -> [Limb; 2] {
     [as_limb(x), as_limb(x >> 32)]
 }
 
 /// Split u64 into limbs, in little-endian order.
 #[inline]
-#[cfg(limb_width_64)]
+#[cfg(fast_arithmetic = "64")]
 fn split_u64(x: u64) -> [Limb; 1] {
     [as_limb(x)]
 }
@@ -152,14 +152,14 @@ trait Hi64<T>: AsRef<[T]> {
 impl Hi64<u32> for [u32] {
     #[inline]
     fn hi64_1(&self) -> (u64, bool) {
-        debug_assert!(self.len() == 1);
+        debug_assert_eq!(self.len(), 1);
         let r0 = self[0] as u64;
         u64_to_hi64_1(r0)
     }
 
     #[inline]
     fn hi64_2(&self) -> (u64, bool) {
-        debug_assert!(self.len() == 2);
+        debug_assert_eq!(self.len(), 2);
         let r0 = (self[1] as u64) << 32;
         let r1 = self[0] as u64;
         u64_to_hi64_1(r0 | r1)
@@ -179,7 +179,7 @@ impl Hi64<u32> for [u32] {
 impl Hi64<u64> for [u64] {
     #[inline]
     fn hi64_1(&self) -> (u64, bool) {
-        debug_assert!(self.len() == 1);
+        debug_assert_eq!(self.len(), 1);
         let r0 = self[0];
         u64_to_hi64_1(r0)
     }
@@ -249,7 +249,7 @@ mod scalar {
     pub fn mul(x: Limb, y: Limb, carry: Limb) -> (Limb, Limb) {
         // Cannot overflow, as long as wide is 2x as wide. This is because
         // the following is always true:
-        // `Wide::max_value() - (Narrow::max_value() * Narrow::max_value()) >= Narrow::max_value()`
+        // `Wide::MAX - (Narrow::MAX * Narrow::MAX) >= Narrow::MAX`
         let z: Wide = as_wide(x) * as_wide(y) + as_wide(carry);
         let bits = mem::size_of::<Limb>() * 8;
         (as_limb(z), as_limb(z >> bits))
@@ -272,9 +272,7 @@ mod scalar {
 mod small {
     use super::*;
 
-    // MULTIPLICATIION
-
-    /// ADDITION
+    // ADDITION
 
     /// Implied AddAssign implementation for adding a small integer to bigint.
     ///
@@ -456,8 +454,7 @@ mod small {
         // Avoid overflowing, calculate via total number of bits
         // minus leading zero bits.
         let nlz = leading_zeros(x);
-        bits.checked_mul(x.len())
-            .map_or_else(usize::max_value, |v| v - nlz)
+        bits.checked_mul(x.len()).map_or(usize::MAX, |v| v - nlz)
     }
 
     // SHL
@@ -596,8 +593,8 @@ mod large {
         let mut carry = false;
         for (xi, yi) in x[xstart..].iter_mut().zip(y.iter()) {
             // Only one op of the two can overflow, since we added at max
-            // Limb::max_value() + Limb::max_value(). Add the previous carry,
-            // and store the current carry for the next.
+            // Limb::MAX + Limb::MAX. Add the previous carry, and store the
+            // current carry for the next.
             let mut tmp = scalar::iadd(xi, *yi);
             if carry {
                 tmp |= scalar::iadd(xi, 1);
@@ -637,8 +634,8 @@ mod large {
         let mut carry = false;
         for (xi, yi) in x.iter_mut().zip(y.iter()) {
             // Only one op of the two can overflow, since we added at max
-            // Limb::max_value() + Limb::max_value(). Add the previous carry,
-            // and store the current carry for the next.
+            // Limb::MAX + Limb::MAX. Add the previous carry, and store the
+            // current carry for the next.
             let mut tmp = scalar::isub(xi, *yi);
             if carry {
                 tmp |= scalar::isub(xi, 1);
@@ -814,8 +811,8 @@ pub(crate) trait Math: Clone + Sized + Default {
     }
 
     /// Calculate the bit-length of the big-integer.
-    /// Returns usize::max_value() if the value overflows,
-    /// IE, if `self.data().len() > usize::max_value() / 8`.
+    /// Returns usize::MAX if the value overflows,
+    /// IE, if `self.data().len() > usize::MAX / 8`.
     #[inline]
     fn bit_length(&self) -> usize {
         small::bit_length(self.data())

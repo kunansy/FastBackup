@@ -7,17 +7,20 @@ use std::ffi::OsStr;
 use std::io::{self, Read, Write};
 use std::pin::Pin;
 use std::ptr;
+use std::ptr::null_mut;
 use std::task::{Context, Poll};
 
 use crate::io::{AsyncRead, AsyncWrite, Interest, PollEvented, ReadBuf, Ready};
-use crate::os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, FromRawHandle, RawHandle};
+use crate::os::windows::io::{
+    AsHandle, AsRawHandle, BorrowedHandle, FromRawHandle, IntoRawHandle, OwnedHandle, RawHandle,
+};
 
 cfg_io_util! {
     use bytes::BufMut;
 }
 
 // Hide imports which are not used when generating documentation.
-#[cfg(not(docsrs))]
+#[cfg(windows)]
 mod doc {
     pub(super) use crate::os::windows::ffi::OsStrExt;
     pub(super) mod windows_sys {
@@ -30,7 +33,7 @@ mod doc {
 }
 
 // NB: none of these shows up in public API, so don't document them.
-#[cfg(docsrs)]
+#[cfg(not(windows))]
 mod doc {
     pub(super) mod mio_windows {
         pub type NamedPipe = crate::doc::NotDefinedHere;
@@ -75,7 +78,8 @@ use self::doc::*;
 /// let server = tokio::spawn(async move {
 ///     loop {
 ///         // Wait for a client to connect.
-///         let connected = server.connect().await?;
+///         server.connect().await?;
+///         let connected_client = server;
 ///
 ///         // Construct the next server to be connected before sending the one
 ///         // we already have of onto a task. This ensures that the server
@@ -110,6 +114,8 @@ impl NamedPipeServer {
     /// This function will consume ownership of the handle given, passing
     /// responsibility for closing the handle to the returned object.
     ///
+    /// # Safety
+    ///
     /// This function is also unsafe as the primitives currently returned have
     /// the contract that they are the sole owner of the file descriptor they
     /// are wrapping. Usage of this function could accidentally allow violating
@@ -124,7 +130,7 @@ impl NamedPipeServer {
     /// [Tokio Runtime]: crate::runtime::Runtime
     /// [enabled I/O]: crate::runtime::Builder::enable_io
     pub unsafe fn from_raw_handle(handle: RawHandle) -> io::Result<Self> {
-        let named_pipe = mio_windows::NamedPipe::from_raw_handle(handle);
+        let named_pipe = unsafe { mio_windows::NamedPipe::from_raw_handle(handle) };
 
         Ok(Self {
             io: PollEvented::new(named_pipe)?,
@@ -165,8 +171,8 @@ impl NamedPipeServer {
     ///
     /// # Cancel safety
     ///
-    /// This method is cancellation safe in the sense that if it is used as the
-    /// event in a [`select!`](crate::select) statement and some other branch
+    /// This method is cancel safe. If it is used as a branch in
+    /// [`select!`](crate::select) and another branch
     /// completes first, then no connection events have been lost.
     ///
     /// [`ConnectNamedPipe`]: https://docs.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-connectnamedpipe
@@ -983,6 +989,8 @@ impl NamedPipeClient {
     /// This function will consume ownership of the handle given, passing
     /// responsibility for closing the handle to the returned object.
     ///
+    /// # Safety
+    ///
     /// This function is also unsafe as the primitives currently returned have
     /// the contract that they are the sole owner of the file descriptor they
     /// are wrapping. Usage of this function could accidentally allow violating
@@ -997,7 +1005,7 @@ impl NamedPipeClient {
     /// [Tokio Runtime]: crate::runtime::Runtime
     /// [enabled I/O]: crate::runtime::Builder::enable_io
     pub unsafe fn from_raw_handle(handle: RawHandle) -> io::Result<Self> {
-        let named_pipe = mio_windows::NamedPipe::from_raw_handle(handle);
+        let named_pipe = unsafe { mio_windows::NamedPipe::from_raw_handle(handle) };
 
         Ok(Self {
             io: PollEvented::new(named_pipe)?,
@@ -2342,22 +2350,31 @@ impl ServerOptions {
             mode
         };
 
-        let h = windows_sys::CreateNamedPipeW(
-            addr.as_ptr(),
-            open_mode,
-            pipe_mode,
-            self.max_instances,
-            self.out_buffer_size,
-            self.in_buffer_size,
-            self.default_timeout,
-            attrs as *mut _,
-        );
+        let h = unsafe {
+            windows_sys::CreateNamedPipeW(
+                addr.as_ptr(),
+                open_mode,
+                pipe_mode,
+                self.max_instances,
+                self.out_buffer_size,
+                self.in_buffer_size,
+                self.default_timeout,
+                attrs as *mut _,
+            )
+        };
 
         if h == windows_sys::INVALID_HANDLE_VALUE {
             return Err(io::Error::last_os_error());
         }
 
-        NamedPipeServer::from_raw_handle(h as _)
+        unsafe { NamedPipeServer::from_raw_handle(h as _) }
+    }
+}
+
+impl Default for ServerOptions {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -2548,35 +2565,61 @@ impl ClientOptions {
         // we have access to windows_sys it ultimately doesn't hurt to use
         // `CreateFile` explicitly since it allows the use of our already
         // well-structured wide `addr` to pass into CreateFileW.
-        let h = windows_sys::CreateFileW(
-            addr.as_ptr(),
-            desired_access,
-            0,
-            attrs as *mut _,
-            windows_sys::OPEN_EXISTING,
-            self.get_flags(),
-            0,
-        );
+        let h = unsafe {
+            windows_sys::CreateFileW(
+                addr.as_ptr(),
+                desired_access,
+                0,
+                attrs as *mut _,
+                windows_sys::OPEN_EXISTING,
+                self.get_flags(),
+                null_mut(),
+            )
+        };
 
         if h == windows_sys::INVALID_HANDLE_VALUE {
             return Err(io::Error::last_os_error());
         }
 
+        // SAFETY: `h` is a valid handle returned by `CreateFileW` above, and
+        // ownership of it has not yet been transferred to anything else, so
+        // `handle` is the sole owner. If we return early below, `handle` is
+        // dropped and its destructor closes the underlying handle for us.
+        let handle = unsafe { OwnedHandle::from_raw_handle(h as _) };
+
         if matches!(self.pipe_mode, PipeMode::Message) {
             let mode = windows_sys::PIPE_READMODE_MESSAGE;
-            let result =
-                windows_sys::SetNamedPipeHandleState(h, &mode, ptr::null_mut(), ptr::null_mut());
+            // SAFETY: `handle` wraps a valid, open handle that we own for the
+            // duration of this call.
+            let result = unsafe {
+                windows_sys::SetNamedPipeHandleState(
+                    handle.as_raw_handle() as _,
+                    &mode,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                )
+            };
 
             if result == 0 {
+                // `handle` is dropped here, closing the underlying handle.
                 return Err(io::Error::last_os_error());
             }
         }
 
-        NamedPipeClient::from_raw_handle(h as _)
+        // SAFETY: `handle` is a valid handle that we exclusively own, and we
+        // are transferring that ownership to the returned `NamedPipeClient`.
+        unsafe { NamedPipeClient::from_raw_handle(handle.into_raw_handle()) }
     }
 
     fn get_flags(&self) -> u32 {
         self.security_qos_flags | windows_sys::FILE_FLAG_OVERLAPPED
+    }
+}
+
+impl Default for ClientOptions {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -2626,7 +2669,7 @@ pub enum PipeEnd {
 /// Information about a named pipe.
 ///
 /// Constructed through [`NamedPipeServer::info`] or [`NamedPipeClient::info`].
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct PipeInfo {
     /// Indicates the mode of a named pipe.
@@ -2657,13 +2700,15 @@ unsafe fn named_pipe_info(handle: RawHandle) -> io::Result<PipeInfo> {
     let mut in_buffer_size = 0;
     let mut max_instances = 0;
 
-    let result = windows_sys::GetNamedPipeInfo(
-        handle as _,
-        &mut flags,
-        &mut out_buffer_size,
-        &mut in_buffer_size,
-        &mut max_instances,
-    );
+    let result = unsafe {
+        windows_sys::GetNamedPipeInfo(
+            handle as _,
+            &mut flags,
+            &mut out_buffer_size,
+            &mut in_buffer_size,
+            &mut max_instances,
+        )
+    };
 
     if result == 0 {
         return Err(io::Error::last_os_error());

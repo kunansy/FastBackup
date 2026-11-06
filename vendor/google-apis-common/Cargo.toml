@@ -12,11 +12,18 @@
 [package]
 edition = "2021"
 name = "google-apis-common"
-version = "6.0.1"
+version = "8.0.0"
 authors = ["Sebastian Thiel <byronimo@gmail.com>"]
+build = false
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
 description = "Shared functionality among the google-api crates."
 homepage = "https://github.com/Byron/google-apis-rs/google-apis-common"
 documentation = "https://docs.rs/google-apis-common"
+readme = false
 keywords = [
     "google",
     "web",
@@ -25,16 +32,26 @@ keywords = [
 ]
 license = "MIT"
 repository = "https://github.com/Byron/google-apis-rs"
-resolver = "1"
+
+[features]
+aws-lc-rs = ["yup-oauth2?/aws-lc-rs"]
+ring = ["yup-oauth2?/ring"]
+yup-oauth2 = ["dep:yup-oauth2"]
+yup-oauth2-service-account = [
+    "yup-oauth2",
+    "yup-oauth2/service-account",
+]
 
 [lib]
+name = "google_apis_common"
+path = "src/lib.rs"
 doctest = false
 
 [dependencies.base64]
-version = "0.13.0"
+version = "0.22"
 
 [dependencies.chrono]
-version = "0.4.22"
+version = "0.4"
 features = [
     "clock",
     "serde",
@@ -42,41 +59,49 @@ features = [
 default-features = false
 
 [dependencies.http]
-version = "^0.2"
+version = "1"
+
+[dependencies.http-body-util]
+version = "0.1"
 
 [dependencies.hyper]
-version = "^ 0.14"
+version = "1"
 features = [
     "client",
     "http2",
 ]
 
-[dependencies.itertools]
-version = "^ 0.10"
+[dependencies.hyper-util]
+version = "0.1"
+features = [
+    "client-legacy",
+    "http2",
+]
 
 [dependencies.mime]
-version = "^ 0.3"
+version = "0.3"
+
+[dependencies.percent-encoding]
+version = "2"
 
 [dependencies.serde]
-version = "^ 1.0"
+version = "1"
 features = ["derive"]
 
 [dependencies.serde_json]
-version = "^ 1.0"
+version = "1"
 
 [dependencies.serde_with]
-version = "2.0.1"
+version = "3"
 
 [dependencies.tokio]
-version = "^1.0"
+version = "1"
 features = ["time"]
 
-[dependencies.tower-service]
-version = "^0.3.1"
-
 [dependencies.url]
-version = "= 1.7"
+version = "2"
 
 [dependencies.yup-oauth2]
-version = "^ 8.2"
+version = "12"
 optional = true
+default-features = false

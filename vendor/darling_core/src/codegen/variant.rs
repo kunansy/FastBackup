@@ -6,14 +6,14 @@ use syn::Ident;
 
 use crate::ast::Fields;
 use crate::codegen::error::{ErrorCheck, ErrorDeclaration};
-use crate::codegen::{Field, FieldsGen};
+use crate::codegen::{from_none_call, Field, FieldsGen};
 use crate::usage::{self, IdentRefSet, IdentSet, UsesTypeParams};
 
 /// A variant of the enum which is deriving `FromMeta`.
 #[derive(Debug, Clone)]
 pub struct Variant<'a> {
     /// The name which will appear in code passed to the `FromMeta` input.
-    pub name_in_attr: Cow<'a, String>,
+    pub name_in_attr: Cow<'a, str>,
 
     /// The name of the variant which will be returned for a given `name_in_attr`.
     pub variant_ident: &'a Ident,
@@ -26,11 +26,9 @@ pub struct Variant<'a> {
     /// Whether or not the variant should be skipped in the generated code.
     pub skip: bool,
 
-    /// Whether or not the variant should be used to create an instance for
-    /// `FromMeta::from_word`.
-    pub word: bool,
-
     pub allow_unknown_fields: bool,
+
+    pub transparent: bool,
 }
 
 impl<'a> Variant<'a> {
@@ -47,7 +45,7 @@ impl<'a> Variant<'a> {
     }
 }
 
-impl<'a> UsesTypeParams for Variant<'a> {
+impl UsesTypeParams for Variant<'_> {
     fn uses_type_params<'b>(
         &self,
         options: &usage::Options,
@@ -57,24 +55,14 @@ impl<'a> UsesTypeParams for Variant<'a> {
     }
 }
 
-impl<'a> ToTokens for Variant<'a> {
-    fn to_tokens(&self, tokens: &mut TokenStream) {
-        if self.data.is_unit() {
-            self.as_unit_match_arm().to_tokens(tokens);
-        } else {
-            self.as_data_match_arm().to_tokens(tokens)
-        }
-    }
-}
-
 /// Code generator for an enum variant in a unit match position.
 /// This is placed in generated `from_string` calls for the parent enum.
 /// Value-carrying variants wrapped in this type will emit code to produce an "unsupported format" error.
 pub struct UnitMatchArm<'a>(&'a Variant<'a>);
 
-impl<'a> ToTokens for UnitMatchArm<'a> {
+impl ToTokens for UnitMatchArm<'_> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        let val: &Variant<'a> = self.0;
+        let val: &Variant<'_> = self.0;
 
         if val.skip {
             return;
@@ -82,16 +70,39 @@ impl<'a> ToTokens for UnitMatchArm<'a> {
 
         let name_in_attr = &val.name_in_attr;
 
+        let unsupported_format_error = || {
+            quote!(_darling::export::Err(_darling::Error::unsupported_format(
+                "literal"
+            )))
+        };
+
         if val.data.is_unit() {
             let variant_ident = val.variant_ident;
             let ty_ident = val.ty_ident;
 
             tokens.append_all(quote!(
-                #name_in_attr => ::darling::export::Ok(#ty_ident::#variant_ident),
+                #name_in_attr => _darling::export::Ok(#ty_ident::#variant_ident),
             ));
+        } else if let Some((member, field)) = super::extract_transparent(&val.data, val.transparent)
+        {
+            let field_ty = field.ty;
+            let ty_ident = val.ty_ident;
+            let variant_ident = val.variant_ident;
+            let unsupported_format = unsupported_format_error();
+            let from_none = from_none_call(field_ty);
+
+            tokens.append_all(quote!{
+                #name_in_attr => {
+                    match #from_none {
+                        _darling::export::Some(__value) => _darling::export::Ok(#ty_ident::#variant_ident { #member: __value }),
+                        _darling::export::None => #unsupported_format,
+                    }
+                }
+            })
         } else {
+            let unsupported_format = unsupported_format_error();
             tokens.append_all(quote!(
-                #name_in_attr => ::darling::export::Err(::darling::Error::unsupported_format("literal")),
+                #name_in_attr => #unsupported_format,
             ));
         }
     }
@@ -102,9 +113,9 @@ impl<'a> ToTokens for UnitMatchArm<'a> {
 /// Unit variants wrapped in this type will emit code to produce an "unsupported format" error.
 pub struct DataMatchArm<'a>(&'a Variant<'a>);
 
-impl<'a> ToTokens for DataMatchArm<'a> {
+impl ToTokens for DataMatchArm<'_> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        let val: &Variant<'a> = self.0;
+        let val: &Variant<'_> = self.0;
 
         if val.skip {
             return;
@@ -115,8 +126,16 @@ impl<'a> ToTokens for DataMatchArm<'a> {
         let ty_ident = val.ty_ident;
 
         if val.data.is_unit() {
+            // Allow unit variants to match a list item if it's just a path with no associated
+            // value, e.g. `volume(shout)` is allowed.
             tokens.append_all(quote!(
-                #name_in_attr => ::darling::export::Err(::darling::Error::unsupported_format("list")),
+                #name_in_attr => {
+                    if let _darling::export::syn::Meta::Path(_) = *__nested {
+                        _darling::export::Ok(#ty_ident::#variant_ident)
+                    } else {
+                        _darling::export::Err(_darling::Error::unsupported_format("non-path"))
+                    }
+                },
             ));
 
             return;
@@ -124,7 +143,18 @@ impl<'a> ToTokens for DataMatchArm<'a> {
 
         let vdg = FieldsGen::new(&val.data, val.allow_unknown_fields);
 
-        if val.data.is_struct() {
+        if let Some((member, _)) = super::extract_transparent(&val.data, val.transparent) {
+            tokens.append_all(quote!(
+                #name_in_attr => {
+                    _darling::export::Ok(
+                        #ty_ident::#variant_ident {
+                            #member: _darling::FromMeta::from_meta(__nested)
+                                .map_err(|e| e.at(#name_in_attr))?
+                        }
+                    )
+                }
+            ));
+        } else if val.data.is_struct() {
             let declare_errors = ErrorDeclaration::default();
             let check_errors = ErrorCheck::with_location(name_in_attr);
             let require_fields = vdg.require_fields();
@@ -134,8 +164,8 @@ impl<'a> ToTokens for DataMatchArm<'a> {
 
             tokens.append_all(quote!(
                 #name_in_attr => {
-                    if let ::darling::export::syn::Meta::List(ref __data) = *__nested {
-                        let __items = ::darling::export::NestedMeta::parse_meta_list(__data.tokens.clone())?;
+                    if let _darling::export::syn::Meta::List(ref __data) = *__nested {
+                        let __items = _darling::export::NestedMeta::parse_meta_list(__data.tokens.clone())?;
                         let __items = &__items;
 
                         #declare_errors
@@ -148,22 +178,12 @@ impl<'a> ToTokens for DataMatchArm<'a> {
 
                         #check_errors
 
-                        ::darling::export::Ok(#ty_ident::#variant_ident {
+                        _darling::export::Ok(#ty_ident::#variant_ident {
                             #inits
                         })
                     } else {
-                        ::darling::export::Err(::darling::Error::unsupported_format("non-list"))
+                        _darling::export::Err(_darling::Error::unsupported_format("non-list"))
                     }
-                }
-            ));
-        } else if val.data.is_newtype() {
-            tokens.append_all(quote!(
-                #name_in_attr => {
-                    ::darling::export::Ok(
-                        #ty_ident::#variant_ident(
-                            ::darling::FromMeta::from_meta(__nested)
-                                .map_err(|e| e.at(#name_in_attr))?)
-                    )
                 }
             ));
         } else {

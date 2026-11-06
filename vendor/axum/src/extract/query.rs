@@ -1,13 +1,12 @@
 use super::{rejection::*, FromRequestParts};
-use async_trait::async_trait;
 use http::{request::Parts, Uri};
-use serde::de::DeserializeOwned;
+use serde_core::de::DeserializeOwned;
 
 /// Extractor that deserializes query strings into some type.
 ///
 /// `T` is expected to implement [`serde::Deserialize`].
 ///
-/// # Example
+/// # Examples
 ///
 /// ```rust,no_run
 /// use axum::{
@@ -32,9 +31,7 @@ use serde::de::DeserializeOwned;
 /// }
 ///
 /// let app = Router::new().route("/list_things", get(list_things));
-/// # async {
-/// # axum::Server::bind(&"".parse().unwrap()).serve(app.into_make_service()).await.unwrap();
-/// # };
+/// # let _: Router = app;
 /// ```
 ///
 /// If the query string cannot be parsed it will reject the request with a `400
@@ -43,12 +40,16 @@ use serde::de::DeserializeOwned;
 /// For handling values being empty vs missing see the [query-params-with-empty-strings][example]
 /// example.
 ///
-/// [example]: https://github.com/tokio-rs/axum/blob/main/examples/query-params-with-empty-strings/src/main.rs
+/// [example]: https://github.com/tokio-rs/axum/blob/v0.8.x/examples/query-params-with-empty-strings/src/main.rs
+///
+/// For handling multiple values for the same query parameter, in a `?foo=1&foo=2&foo=3`
+/// fashion, use [`axum_extra::extract::Query`] instead.
+///
+/// [`axum_extra::extract::Query`]: https://docs.rs/axum-extra/latest/axum_extra/extract/struct.Query.html
 #[cfg_attr(docsrs, doc(cfg(feature = "query")))]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Query<T>(pub T);
 
-#[async_trait]
 impl<T, S> FromRequestParts<S> for Query<T>
 where
     T: DeserializeOwned,
@@ -86,8 +87,10 @@ where
     /// ```
     pub fn try_from_uri(value: &Uri) -> Result<Self, QueryRejection> {
         let query = value.query().unwrap_or_default();
-        let params =
-            serde_urlencoded::from_str(query).map_err(FailedToDeserializeQueryString::from_err)?;
+        let deserializer =
+            serde_urlencoded::Deserializer::new(form_urlencoded::parse(query.as_bytes()));
+        let params = serde_path_to_error::deserialize(deserializer)
+            .map_err(FailedToDeserializeQueryString::from_err)?;
         Ok(Query(params))
     }
 }
@@ -99,7 +102,7 @@ mod tests {
     use crate::{routing::get, test_helpers::TestClient, Router};
 
     use super::*;
-    use axum_core::extract::FromRequest;
+    use axum_core::{body::Body, extract::FromRequest};
     use http::{Request, StatusCode};
     use serde::Deserialize;
     use std::fmt::Debug;
@@ -108,7 +111,10 @@ mod tests {
     where
         T: DeserializeOwned + PartialEq + Debug,
     {
-        let req = Request::builder().uri(uri.as_ref()).body(()).unwrap();
+        let req = Request::builder()
+            .uri(uri.as_ref())
+            .body(Body::empty())
+            .unwrap();
         assert_eq!(Query::<T>::from_request(req, &()).await.unwrap().0, value);
     }
 
@@ -161,8 +167,12 @@ mod tests {
         let app = Router::new().route("/", get(handler));
         let client = TestClient::new(app);
 
-        let res = client.get("/?n=hi").send().await;
+        let res = client.get("/?n=hi").await;
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            res.text().await,
+            "Failed to deserialize query string: n: invalid digit found in string"
+        );
     }
 
     #[test]

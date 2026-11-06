@@ -267,3 +267,179 @@ fn reader_to_writer() {
 
     assert_eq!(clear, &decompressed_buffer[..]);
 }
+
+#[test]
+fn test_finish_empty_encoder() {
+    use std::io::Write;
+    let mut enc = Encoder::new(Vec::new(), 0).unwrap();
+    enc.do_finish().unwrap();
+    enc.write_all(b"this should not work").unwrap_err();
+    enc.finish().unwrap();
+}
+
+#[test]
+fn test_empty_read_buffer() {
+    // `Read::read` must return `Ok(0)` for an empty buffer rather than
+    // reporting that it could not make progress.
+    // https://github.com/gyscos/zstd-rs/issues/318
+    use std::io::Read;
+
+    let compressed = encode_all(&b"some data to decompress"[..], 3).unwrap();
+
+    let mut decoder = Decoder::new(&compressed[..]).unwrap();
+    assert_eq!(decoder.read(&mut []).unwrap(), 0);
+    // Reading normally still works afterwards.
+    let mut decoded = Vec::new();
+    decoder.read_to_end(&mut decoded).unwrap();
+    assert_eq!(decoded, b"some data to decompress");
+
+    // Same on the way in: a read-based encoder.
+    let mut encoder =
+        crate::stream::read::Encoder::new(&b"some data"[..], 3).unwrap();
+    assert_eq!(encoder.read(&mut []).unwrap(), 0);
+    let mut encoded = Vec::new();
+    encoder.read_to_end(&mut encoded).unwrap();
+    assert_eq!(decode_all(&encoded[..]).unwrap(), b"some data");
+}
+
+#[test]
+fn test_compress_sized() {
+    let data = &include_bytes!("../../assets/example.txt")[..];
+
+    let frame = super::compress_sized(data, 3, data.len() as u64).unwrap();
+
+    // The point of it: the size is in the frame, so a reader can size its
+    // buffer without guessing.
+    assert_eq!(super::decompressed_size(&frame), Some(data.len() as u64));
+    assert_eq!(super::decode_all(&frame[..]).unwrap(), data);
+
+    // encode_all, for contrast, cannot record it.
+    let streamed = super::encode_all(data, 3).unwrap();
+    assert_eq!(super::decompressed_size(&streamed), None);
+}
+
+#[test]
+fn test_compress_with_wrong_size() {
+    let data = &include_bytes!("../../assets/example.txt")[..];
+
+    // Claiming the wrong length has to fail rather than write a frame whose
+    // header lies about its contents.
+    assert!(super::compress_sized(data, 3, data.len() as u64 + 1).is_err());
+    assert!(super::compress_sized(data, 3, data.len() as u64 - 1).is_err());
+}
+
+#[test]
+fn test_compress_file() {
+    let expected = &include_bytes!("../../assets/example.txt")[..];
+
+    let frame = super::compress_file("assets/example.txt", 3).unwrap();
+
+    assert_eq!(
+        super::decompressed_size(&frame),
+        Some(expected.len() as u64)
+    );
+    assert_eq!(super::decode_all(&frame[..]).unwrap(), expected);
+}
+
+#[test]
+fn test_compress_from_missing_file() {
+    assert!(super::compress_file("assets/does-not-exist", 3).is_err());
+}
+
+#[test]
+fn test_compress_sized_into() {
+    let data = &include_bytes!("../../assets/example.txt")[..];
+
+    let mut frame = Vec::new();
+    super::compress_sized_into(data, &mut frame, 3, data.len() as u64)
+        .unwrap();
+
+    // Same frame as the Vec-returning version, size and all.
+    assert_eq!(super::decompressed_size(&frame), Some(data.len() as u64));
+    assert_eq!(super::decode_all(&frame[..]).unwrap(), data);
+    assert_eq!(
+        frame,
+        super::compress_sized(data, 3, data.len() as u64).unwrap()
+    );
+}
+
+#[test]
+fn test_copy_compress_with_wrong_size() {
+    let data = &include_bytes!("../../assets/example.txt")[..];
+
+    let mut frame = Vec::new();
+    assert!(super::compress_sized_into(
+        data,
+        &mut frame,
+        3,
+        data.len() as u64 + 1
+    )
+    .is_err());
+}
+
+#[test]
+fn test_compress_file_into() {
+    let expected = &include_bytes!("../../assets/example.txt")[..];
+
+    let mut frame = Vec::new();
+    super::compress_file_into("assets/example.txt", &mut frame, 3).unwrap();
+
+    assert_eq!(
+        super::decompressed_size(&frame),
+        Some(expected.len() as u64)
+    );
+    assert_eq!(super::decode_all(&frame[..]).unwrap(), expected);
+
+    // Same frame as the Vec-returning version, which is built on this one.
+    assert_eq!(
+        frame,
+        super::compress_file("assets/example.txt", 3).unwrap()
+    );
+}
+
+#[test]
+fn test_copy_compress_from_missing_file() {
+    let mut frame = Vec::new();
+    assert!(
+        super::compress_file_into("assets/does-not-exist", &mut frame, 3)
+            .is_err()
+    );
+}
+
+#[test]
+fn test_encoder_with_context_starts_a_new_frame() {
+    use std::io::Write;
+
+    // An encoder is given up before `finish()`...
+    let mut cctx = zstd_safe::CCtx::create();
+    Encoder::with_context(Vec::new(), &mut cctx)
+        .write_all(b"first job")
+        .unwrap();
+
+    // ... and the next one on the same context does not inherit its input.
+    let mut encoder = Encoder::with_context(Vec::new(), &mut cctx);
+    encoder.write_all(b"second job").unwrap();
+    let second = encoder.finish().unwrap();
+    assert_eq!(decode_all(&second[..]).unwrap(), b"second job");
+}
+
+#[test]
+fn test_decoder_with_context_starts_a_new_frame() {
+    use std::io::Read;
+
+    let first = encode_all(&b"first job"[..], 1).unwrap();
+    let second = encode_all(&b"second job"[..], 1).unwrap();
+
+    // A decoder is given up before all of its output has been read...
+    let mut dctx = zstd_safe::DCtx::create();
+    Decoder::with_context(&first[..], &mut dctx)
+        .read_exact(&mut [0u8; 5])
+        .unwrap();
+
+    // ... and the next one on the same context does not inherit the rest.
+    let mut output = Vec::new();
+    Decoder::with_context(&second[..], &mut dctx)
+        .read_to_end(&mut output)
+        .unwrap();
+    assert_eq!(output, b"second job");
+}

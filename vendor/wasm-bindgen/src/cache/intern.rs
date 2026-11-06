@@ -1,17 +1,18 @@
 use cfg_if::cfg_if;
 
-
 cfg_if! {
     if #[cfg(feature = "enable-interning")] {
         use std::thread_local;
-        use std::string::String;
-        use std::borrow::ToOwned;
+        use std::vec::Vec;
         use std::cell::RefCell;
         use std::collections::HashMap;
         use crate::JsValue;
 
+        // Keyed by bytes so both `&str` and `&[u8]` can probe without
+        // allocating; every key is a valid UTF-8 string since insertion is
+        // only via `intern(&str)`.
         struct Cache {
-            entries: RefCell<HashMap<String, JsValue>>,
+            entries: RefCell<HashMap<Vec<u8>, JsValue>>,
         }
 
         thread_local! {
@@ -26,17 +27,28 @@ cfg_if! {
             CACHE.with(|cache| {
                 let cache = cache.entries.borrow();
 
-                cache.get(s).map(|x| x.idx)
+                cache.get(s.as_bytes()).map(|x| x.idx)
+            })
+        }
+
+        pub(crate) fn get_bytes(bytes: &[u8]) -> Option<JsValue> {
+            CACHE.with(|cache| {
+                let cache = cache.entries.borrow();
+
+                cache.get(bytes).cloned()
             })
         }
 
         fn intern_str(key: &str) {
             CACHE.with(|cache| {
-                let mut cache = cache.entries.borrow_mut();
+                let entries = &cache.entries;
 
-                // Can't use `entry` because `entry` requires a `String`
-                if !cache.contains_key(key) {
-                    cache.insert(key.to_owned(), JsValue::from(key));
+                // Can't use `entry` because `entry` requires an owned key
+                if !entries.borrow().contains_key(key.as_bytes()) {
+                    // Note: we must not hold the borrow while we create the `JsValue`,
+                    // because it will try to look up the value in the cache first.
+                    let value = JsValue::from(key);
+                    entries.borrow_mut().insert(key.as_bytes().to_vec(), value);
                 }
             })
         }
@@ -45,12 +57,11 @@ cfg_if! {
             CACHE.with(|cache| {
                 let mut cache = cache.entries.borrow_mut();
 
-                cache.remove(key);
+                cache.remove(key.as_bytes());
             })
         }
     }
 }
-
 
 /// Interns Rust strings so that it's much faster to send them to JS.
 ///
@@ -88,7 +99,6 @@ pub fn intern(s: &str) -> &str {
 
     s
 }
-
 
 /// Removes a Rust string from the intern cache.
 ///

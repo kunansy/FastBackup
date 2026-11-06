@@ -20,7 +20,6 @@ pub struct SliceVec<'s, T> {
 
 impl<'s, T> Default for SliceVec<'s, T> {
   #[inline(always)]
-  #[must_use]
   fn default() -> Self {
     Self { data: &mut [], len: 0 }
   }
@@ -29,7 +28,6 @@ impl<'s, T> Default for SliceVec<'s, T> {
 impl<'s, T> Deref for SliceVec<'s, T> {
   type Target = [T];
   #[inline(always)]
-  #[must_use]
   fn deref(&self) -> &Self::Target {
     &self.data[..self.len]
   }
@@ -37,7 +35,6 @@ impl<'s, T> Deref for SliceVec<'s, T> {
 
 impl<'s, T> DerefMut for SliceVec<'s, T> {
   #[inline(always)]
-  #[must_use]
   fn deref_mut(&mut self) -> &mut Self::Target {
     &mut self.data[..self.len]
   }
@@ -49,7 +46,6 @@ where
 {
   type Output = <I as SliceIndex<[T]>>::Output;
   #[inline(always)]
-  #[must_use]
   fn index(&self, index: I) -> &Self::Output {
     &self.deref()[index]
   }
@@ -60,7 +56,6 @@ where
   I: SliceIndex<[T]>,
 {
   #[inline(always)]
-  #[must_use]
   fn index_mut(&mut self, index: I) -> &mut Self::Output {
     &mut self.deref_mut()[index]
   }
@@ -148,7 +143,7 @@ impl<'s, T> SliceVec<'s, T> {
   /// assert_eq!(drained_values.as_slice(), &[7, 8][..]);
   ///
   /// sv.drain(..);
-  /// assert_eq!(sv.as_slice(), &[]);
+  /// assert_eq!(sv.as_slice(), &[] as &[i32]);
   /// ```
   #[inline]
   pub fn drain<'p, R: RangeBounds<usize>>(
@@ -298,6 +293,13 @@ impl<'s, T> SliceVec<'s, T> {
     self.len == 0
   }
 
+  /// Checks if the length is equal to capacity.
+  #[inline(always)]
+  #[must_use]
+  pub fn is_full(&self) -> bool {
+    self.len() == self.capacity()
+  }
+
   /// The length of the `SliceVec` (in elements).
   #[inline(always)]
   #[must_use]
@@ -326,7 +328,7 @@ impl<'s, T> SliceVec<'s, T> {
   {
     if self.len > 0 {
       self.len -= 1;
-      let out = take(&mut self.data[self.len]);
+      let out = core::mem::take(&mut self.data[self.len]);
       Some(out)
     } else {
       None
@@ -343,7 +345,7 @@ impl<'s, T> SliceVec<'s, T> {
   /// # use tinyvec::*;
   /// let mut arr = [0, 0];
   /// let mut sv = SliceVec::from_slice_len(&mut arr, 0);
-  /// assert_eq!(&sv[..], []);
+  /// assert_eq!(&sv[..], [] as [i32; 0]);
   /// sv.push(1);
   /// assert_eq!(&sv[..], [1]);
   /// sv.push(2);
@@ -383,7 +385,7 @@ impl<'s, T> SliceVec<'s, T> {
     T: Default,
   {
     let targets: &mut [T] = &mut self.deref_mut()[index..];
-    let item = take(&mut targets[0]);
+    let item = core::mem::take(&mut targets[0]);
     targets.rotate_left(1);
     self.len -= 1;
     item
@@ -500,7 +502,7 @@ impl<'s, T> SliceVec<'s, T> {
     for idx in 0..self.len {
       // Loop start invariant: idx = rest.done_end + rest.tail_start
       if !acceptable(&rest.items[idx]) {
-        let _ = take(&mut rest.items[idx]);
+        let _ = core::mem::take(&mut rest.items[idx]);
         self.len -= 1;
         rest.tail_start += 1;
       } else {
@@ -558,7 +560,7 @@ impl<'s, T> SliceVec<'s, T> {
   #[inline]
   pub fn split_off<'a>(&'a mut self, at: usize) -> SliceVec<'s, T> {
     let mut new = Self::default();
-    let backing: &'s mut [T] = replace(&mut self.data, &mut []);
+    let backing: &'s mut [T] = core::mem::take(&mut self.data);
     let (me, other) = backing.split_at_mut(at);
     new.len = self.len - at;
     new.data = other;
@@ -639,6 +641,29 @@ impl<'s, T> SliceVec<'s, T> {
   }
 }
 
+impl<'s, T> SliceVec<'s, T> {
+  /// Returns the reference to the inner slice of the `SliceVec`.
+  ///
+  /// This returns the full array, even if the `SliceVec` length is currently
+  /// less than that.
+  #[inline(always)]
+  #[must_use]
+  pub const fn as_inner(&self) -> &[T] {
+    &*self.data
+  }
+
+  /// Returns a mutable reference to the inner slice of the `SliceVec`.
+  ///
+  /// This returns the full array, even if the `SliceVec` length is currently
+  /// less than that.
+  #[inline(always)]
+  #[must_use]
+  #[cfg(feature = "latest_stable_rust")]
+  pub const fn as_mut_inner(&mut self) -> &mut [T] {
+    self.data
+  }
+}
+
 #[cfg(feature = "grab_spare_slice")]
 impl<'s, T> SliceVec<'s, T> {
   /// Obtain the shared slice of the array _after_ the active memory.
@@ -655,6 +680,7 @@ impl<'s, T> SliceVec<'s, T> {
   /// sv.push(13);
   /// assert_eq!(sv.grab_spare_slice().len(), 0);
   /// ```
+  #[must_use]
   #[inline(always)]
   pub fn grab_spare_slice(&self) -> &[T] {
     &self.data[self.len..]
@@ -686,6 +712,7 @@ impl<'s, T> From<&'s mut [T]> for SliceVec<'s, T> {
   /// let mut arr = [0_i32; 2];
   /// let mut sv = SliceVec::from(&mut arr[..]);
   /// ```
+  #[inline]
   fn from(data: &'s mut [T]) -> Self {
     let len = data.len();
     Self { data, len }
@@ -703,6 +730,7 @@ where
   /// let mut arr = [0, 0];
   /// let mut sv = SliceVec::from(&mut arr);
   /// ```
+  #[inline]
   fn from(a: &'s mut A) -> Self {
     let data = a.as_mut();
     let len = data.len();
@@ -724,7 +752,7 @@ impl<'p, 's, T: Default> Iterator for SliceVecDrain<'p, 's, T> {
   #[inline]
   fn next(&mut self) -> Option<Self::Item> {
     if self.target_index != self.target_end {
-      let out = take(&mut self.parent[self.target_index]);
+      let out = core::mem::take(&mut self.parent[self.target_index]);
       self.target_index += 1;
       Some(out)
     } else {
@@ -749,7 +777,6 @@ impl<'p, 's, T: Default> Drop for SliceVecDrain<'p, 's, T> {
 
 impl<'s, T> AsMut<[T]> for SliceVec<'s, T> {
   #[inline(always)]
-  #[must_use]
   fn as_mut(&mut self) -> &mut [T] {
     &mut *self
   }
@@ -757,7 +784,6 @@ impl<'s, T> AsMut<[T]> for SliceVec<'s, T> {
 
 impl<'s, T> AsRef<[T]> for SliceVec<'s, T> {
   #[inline(always)]
-  #[must_use]
   fn as_ref(&self) -> &[T] {
     &*self
   }
@@ -765,7 +791,6 @@ impl<'s, T> AsRef<[T]> for SliceVec<'s, T> {
 
 impl<'s, T> Borrow<[T]> for SliceVec<'s, T> {
   #[inline(always)]
-  #[must_use]
   fn borrow(&self) -> &[T] {
     &*self
   }
@@ -773,7 +798,6 @@ impl<'s, T> Borrow<[T]> for SliceVec<'s, T> {
 
 impl<'s, T> BorrowMut<[T]> for SliceVec<'s, T> {
   #[inline(always)]
-  #[must_use]
   fn borrow_mut(&mut self) -> &mut [T] {
     &mut *self
   }
@@ -792,7 +816,6 @@ impl<'s, T> IntoIterator for SliceVec<'s, T> {
   type Item = &'s mut T;
   type IntoIter = core::slice::IterMut<'s, T>;
   #[inline(always)]
-  #[must_use]
   fn into_iter(self) -> Self::IntoIter {
     self.data.iter_mut()
   }
@@ -803,7 +826,6 @@ where
   T: PartialEq,
 {
   #[inline]
-  #[must_use]
   fn eq(&self, other: &Self) -> bool {
     self.as_slice().eq(other.as_slice())
   }
@@ -815,7 +837,6 @@ where
   T: PartialOrd,
 {
   #[inline]
-  #[must_use]
   fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
     self.as_slice().partial_cmp(other.as_slice())
   }
@@ -825,7 +846,6 @@ where
   T: Ord,
 {
   #[inline]
-  #[must_use]
   fn cmp(&self, other: &Self) -> core::cmp::Ordering {
     self.as_slice().cmp(other.as_slice())
   }
@@ -836,7 +856,6 @@ where
   T: PartialEq,
 {
   #[inline]
-  #[must_use]
   fn eq(&self, other: &&[T]) -> bool {
     self.as_slice().eq(*other)
   }
@@ -901,20 +920,18 @@ where
 {
   #[allow(clippy::missing_inline_in_public_items)]
   fn fmt(&self, f: &mut Formatter) -> core::fmt::Result {
-    write!(f, "[")?;
-    if f.alternate() {
-      write!(f, "\n    ")?;
-    }
-    for (i, elem) in self.iter().enumerate() {
-      if i > 0 {
-        write!(f, ",{}", if f.alternate() { "\n    " } else { " " })?;
-      }
-      Debug::fmt(elem, f)?;
-    }
-    if f.alternate() {
-      write!(f, ",\n")?;
-    }
-    write!(f, "]")
+    <[T] as Debug>::fmt(self.as_slice(), f)
+  }
+}
+
+#[cfg(feature = "defmt")]
+#[cfg_attr(docs_rs, doc(cfg(feature = "defmt")))]
+impl<'s, T> defmt::Format for SliceVec<'s, T>
+where
+  T: defmt::Format,
+{
+  fn format(&self, fmt: defmt::Formatter<'_>) {
+    defmt::Format::format(self.as_slice(), fmt)
   }
 }
 
@@ -1076,5 +1093,33 @@ where
       write!(f, ",\n")?;
     }
     write!(f, "]")
+  }
+}
+
+#[cfg(test)]
+mod test {
+  use super::*;
+
+  #[cfg(feature = "alloc")]
+  #[test]
+  fn array_like_debug() {
+    #[derive(Debug, Default, Copy, Clone)]
+    #[allow(unused)]
+    struct S {
+      x: u8,
+      y: u8,
+    }
+
+    use core::fmt::Write;
+
+    let mut ar: [S; 2] = [S { x: 1, y: 2 }, S { x: 3, y: 4 }];
+    let mut buf_ar = alloc::string::String::new();
+    write!(&mut buf_ar, "{ar:#?}").unwrap();
+
+    let av: SliceVec<S> = SliceVec::from(&mut ar);
+    let mut buf_av = alloc::string::String::new();
+    write!(&mut buf_av, "{av:#?}").unwrap();
+
+    assert_eq!(buf_av, buf_ar)
   }
 }

@@ -9,8 +9,16 @@
 //!
 //! The format used to print log records can be customised using the [`Builder::format`]
 //! method.
-//! Custom formats can apply different color and weight to printed values using
-//! [`Style`] builders.
+//!
+//! Terminal styling is done through ANSI escape codes and will be adapted to the capabilities of
+//! the target stream.s
+//!
+//! For example, you could use one of:
+//! - [anstyle](https://docs.rs/anstyle) is a minimal, runtime string styling API and is re-exported as [`style`]
+//! - [owo-colors](https://docs.rs/owo-colors) is a feature rich runtime string styling API
+//! - [color-print](https://docs.rs/color-print) for feature-rich compile-time styling API
+//!
+//! See also [`Formatter::default_level_style`]
 //!
 //! ```
 //! use std::io::Write;
@@ -24,14 +32,34 @@
 //! });
 //! ```
 //!
-//! [`Formatter`]: struct.Formatter.html
-//! [`Style`]: struct.Style.html
-//! [`Builder::format`]: ../struct.Builder.html#method.format
-//! [`Write`]: https://doc.rust-lang.org/stable/std/io/trait.Write.html
+//! # Key Value arguments
+//!
+//! If the `kv` feature is enabled, then the default format will include key values from
+//! the log by default, but this can be disabled by calling [`Builder::format_key_values`]
+//! with [`hidden_kv_format`] as the format function.
+//!
+//! The way these keys and values are formatted can also be customized with a separate format
+//! function that is called by the default format with [`Builder::format_key_values`].
+//!
+//! ```
+//! # #[cfg(feature= "kv")]
+//! # {
+//! use log::info;
+//! env_logger::init();
+//! info!(x="45"; "Some message");
+//! info!(x="12"; "Another message {x}", x="12");
+//! # }
+//! ```
+//!
+//! See <https://docs.rs/log/latest/log/#structured-logging>.
+//!
+//! [`Builder::format`]: crate::Builder::format
+//! [`Write`]: std::io::Write
+//! [`Builder::format_key_values`]: crate::Builder::format_key_values
 
 use std::cell::RefCell;
 use std::fmt::Display;
-use std::io::prelude::*;
+use std::io::prelude::Write;
 use std::rc::Rc;
 use std::{fmt, io, mem};
 
@@ -41,23 +69,27 @@ use log::Record;
 
 #[cfg(feature = "humantime")]
 mod humantime;
-pub(crate) mod writer;
+#[cfg(feature = "kv")]
+mod kv;
 
 #[cfg(feature = "color")]
 pub use anstyle as style;
 
 #[cfg(feature = "humantime")]
 pub use self::humantime::Timestamp;
-pub use self::writer::Target;
-pub use self::writer::WriteStyle;
+#[cfg(feature = "kv")]
+pub use self::kv::*;
+pub use crate::writer::Target;
+pub use crate::writer::WriteStyle;
 
-use self::writer::{Buffer, Writer};
+use crate::writer::{Buffer, Writer};
 
 /// Formatting precision of timestamps.
 ///
 /// Seconds give precision of full seconds, milliseconds give thousands of a
 /// second (3 decimal digits), microseconds are millionth of a second (6 decimal
 /// digits) and nanoseconds are billionth of a second (9 decimal digits).
+#[allow(clippy::exhaustive_enums)] // compatibility
 #[derive(Copy, Clone, Debug)]
 pub enum TimestampPrecision {
     /// Full second precision (0 decimal digits)
@@ -80,7 +112,7 @@ impl Default for TimestampPrecision {
 /// A formatter to write logs into.
 ///
 /// `Formatter` implements the standard [`Write`] trait for writing log records.
-/// It also supports terminal colors, through the [`style`] method.
+/// It also supports terminal styling using ANSI escape codes.
 ///
 /// # Examples
 ///
@@ -95,9 +127,8 @@ impl Default for TimestampPrecision {
 /// builder.format(|buf, record| writeln!(buf, "{}: {}", record.level(), record.args()));
 /// ```
 ///
-/// [`Write`]: https://doc.rust-lang.org/stable/std/io/trait.Write.html
-/// [`writeln`]: https://doc.rust-lang.org/stable/std/macro.writeln.html
-/// [`style`]: #method.style
+/// [`Write`]: std::io::Write
+/// [`writeln`]: std::writeln
 pub struct Formatter {
     buf: Rc<RefCell<Buffer>>,
     write_style: WriteStyle,
@@ -120,7 +151,7 @@ impl Formatter {
     }
 
     pub(crate) fn clear(&mut self) {
-        self.buf.borrow_mut().clear()
+        self.buf.borrow_mut().clear();
     }
 }
 
@@ -129,6 +160,8 @@ impl Formatter {
     /// Get the default [`style::Style`] for the given level.
     ///
     /// The style can be used to print other values besides the level.
+    ///
+    /// See [`style`] for how to adapt it to the styling crate of your choice
     pub fn default_level_style(&self, level: Level) -> style::Style {
         if self.write_style == WriteStyle::Never {
             style::Style::new()
@@ -157,7 +190,7 @@ impl Write for Formatter {
 }
 
 impl fmt::Debug for Formatter {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let buf = self.buf.borrow();
         f.debug_struct("Formatter")
             .field("buf", &buf)
@@ -166,16 +199,25 @@ impl fmt::Debug for Formatter {
     }
 }
 
-pub(crate) type FormatFn = Box<dyn Fn(&mut Formatter, &Record) -> io::Result<()> + Sync + Send>;
+pub(crate) trait RecordFormat {
+    fn format(&self, formatter: &mut Formatter, record: &Record<'_>) -> io::Result<()>;
+}
 
+impl<F> RecordFormat for F
+where
+    F: Fn(&mut Formatter, &Record<'_>) -> io::Result<()>,
+{
+    fn format(&self, formatter: &mut Formatter, record: &Record<'_>) -> io::Result<()> {
+        (self)(formatter, record)
+    }
+}
+
+pub(crate) type FormatFn = Box<dyn RecordFormat + Sync + Send>;
+
+#[derive(Default)]
 pub(crate) struct Builder {
-    pub format_timestamp: Option<TimestampPrecision>,
-    pub format_module_path: bool,
-    pub format_target: bool,
-    pub format_level: bool,
-    pub format_indent: Option<usize>,
-    pub custom_format: Option<FormatFn>,
-    pub format_suffix: &'static str,
+    pub(crate) default_format: ConfigurableFormat,
+    pub(crate) custom_format: Option<FormatFn>,
     built: bool,
 }
 
@@ -185,7 +227,7 @@ impl Builder {
     /// If the `custom_format` is `Some`, then any `default_format` switches are ignored.
     /// If the `custom_format` is `None`, then a default format is returned.
     /// Any `default_format` switches set to `false` won't be written by the format.
-    pub fn build(&mut self) -> FormatFn {
+    pub(crate) fn build(&mut self) -> FormatFn {
         assert!(!self.built, "attempt to re-use consumed builder");
 
         let built = mem::replace(
@@ -199,35 +241,7 @@ impl Builder {
         if let Some(fmt) = built.custom_format {
             fmt
         } else {
-            Box::new(move |buf, record| {
-                let fmt = DefaultFormat {
-                    timestamp: built.format_timestamp,
-                    module_path: built.format_module_path,
-                    target: built.format_target,
-                    level: built.format_level,
-                    written_header_value: false,
-                    indent: built.format_indent,
-                    suffix: built.format_suffix,
-                    buf,
-                };
-
-                fmt.write(record)
-            })
-        }
-    }
-}
-
-impl Default for Builder {
-    fn default() -> Self {
-        Builder {
-            format_timestamp: Some(Default::default()),
-            format_module_path: false,
-            format_target: true,
-            format_level: true,
-            format_indent: Some(4),
-            custom_format: None,
-            format_suffix: "\n",
-            built: false,
+            Box::new(built.default_format)
         }
     }
 }
@@ -238,10 +252,6 @@ type SubtleStyle = StyledValue<&'static str>;
 type SubtleStyle = &'static str;
 
 /// A value that can be printed using the given styles.
-///
-/// It is the result of calling [`Style::value`].
-///
-/// [`Style::value`]: struct.Style.html#method.value
 #[cfg(feature = "color")]
 struct StyledValue<T> {
     style: style::Style,
@@ -249,43 +259,167 @@ struct StyledValue<T> {
 }
 
 #[cfg(feature = "color")]
-impl<T: std::fmt::Display> std::fmt::Display for StyledValue<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let style = self.style.render();
-        let reset = self.style.render_reset();
+impl<T: Display> Display for StyledValue<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let style = self.style;
 
         // We need to make sure `f`s settings don't get passed onto the styling but do get passed
         // to the value
         write!(f, "{style}")?;
         self.value.fmt(f)?;
-        write!(f, "{reset}")?;
+        write!(f, "{style:#}")?;
         Ok(())
+    }
+}
+
+#[cfg(not(feature = "color"))]
+type StyledValue<T> = T;
+
+/// A [custom format][crate::Builder::format] with settings for which fields to show
+pub struct ConfigurableFormat {
+    // This format needs to work with any combination of crate features.
+    pub(crate) timestamp: Option<TimestampPrecision>,
+    pub(crate) module_path: bool,
+    pub(crate) target: bool,
+    pub(crate) level: bool,
+    pub(crate) source_file: bool,
+    pub(crate) source_line_number: bool,
+    pub(crate) indent: Option<usize>,
+    pub(crate) suffix: &'static str,
+    #[cfg(feature = "kv")]
+    pub(crate) kv_format: Option<Box<KvFormatFn>>,
+}
+
+impl ConfigurableFormat {
+    /// Format the [`Record`] as configured for outputting
+    pub fn format(&self, formatter: &mut Formatter, record: &Record<'_>) -> io::Result<()> {
+        let fmt = ConfigurableFormatWriter {
+            format: self,
+            buf: formatter,
+            written_header_value: false,
+        };
+
+        fmt.write(record)
+    }
+}
+
+impl ConfigurableFormat {
+    /// Whether or not to write the level in the default format.
+    pub fn level(&mut self, write: bool) -> &mut Self {
+        self.level = write;
+        self
+    }
+
+    /// Whether or not to write the source file path in the default format.
+    pub fn file(&mut self, write: bool) -> &mut Self {
+        self.source_file = write;
+        self
+    }
+
+    /// Whether or not to write the source line number path in the default format.
+    ///
+    /// Only has effect if `format_file` is also enabled
+    pub fn line_number(&mut self, write: bool) -> &mut Self {
+        self.source_line_number = write;
+        self
+    }
+
+    /// Whether or not to write the module path in the default format.
+    pub fn module_path(&mut self, write: bool) -> &mut Self {
+        self.module_path = write;
+        self
+    }
+
+    /// Whether or not to write the target in the default format.
+    pub fn target(&mut self, write: bool) -> &mut Self {
+        self.target = write;
+        self
+    }
+
+    /// Configures the amount of spaces to use to indent multiline log records.
+    /// A value of `None` disables any kind of indentation.
+    pub fn indent(&mut self, indent: Option<usize>) -> &mut Self {
+        self.indent = indent;
+        self
+    }
+
+    /// Configures if timestamp should be included and in what precision.
+    pub fn timestamp(&mut self, timestamp: Option<TimestampPrecision>) -> &mut Self {
+        self.timestamp = timestamp;
+        self
+    }
+
+    /// Configures the end of line suffix.
+    pub fn suffix(&mut self, suffix: &'static str) -> &mut Self {
+        self.suffix = suffix;
+        self
+    }
+
+    /// Set the format for structured key/value pairs in the log record
+    ///
+    /// With the default format, this function is called for each record and should format
+    /// the structured key-value pairs as returned by [`log::Record::key_values`].
+    ///
+    /// The format function is expected to output the string directly to the `Formatter` so that
+    /// implementations can use the [`std::fmt`] macros, similar to the main format function.
+    ///
+    /// The default format uses a space to separate each key-value pair, with an "=" between
+    /// the key and value.
+    #[cfg(feature = "kv")]
+    pub fn key_values<F>(&mut self, format: F) -> &mut Self
+    where
+        F: Fn(&mut Formatter, &dyn log::kv::Source) -> io::Result<()> + Sync + Send + 'static,
+    {
+        self.kv_format = Some(Box::new(format));
+        self
+    }
+}
+
+impl Default for ConfigurableFormat {
+    fn default() -> Self {
+        Self {
+            timestamp: Some(Default::default()),
+            module_path: false,
+            target: true,
+            level: true,
+            source_file: false,
+            source_line_number: false,
+            indent: Some(4),
+            suffix: "\n",
+            #[cfg(feature = "kv")]
+            kv_format: None,
+        }
+    }
+}
+
+impl RecordFormat for ConfigurableFormat {
+    fn format(&self, formatter: &mut Formatter, record: &Record<'_>) -> io::Result<()> {
+        self.format(formatter, record)
     }
 }
 
 /// The default format.
 ///
 /// This format needs to work with any combination of crate features.
-struct DefaultFormat<'a> {
-    timestamp: Option<TimestampPrecision>,
-    module_path: bool,
-    target: bool,
-    level: bool,
-    written_header_value: bool,
-    indent: Option<usize>,
+struct ConfigurableFormatWriter<'a> {
+    format: &'a ConfigurableFormat,
     buf: &'a mut Formatter,
-    suffix: &'a str,
+    written_header_value: bool,
 }
 
-impl<'a> DefaultFormat<'a> {
-    fn write(mut self, record: &Record) -> io::Result<()> {
+impl ConfigurableFormatWriter<'_> {
+    fn write(mut self, record: &Record<'_>) -> io::Result<()> {
         self.write_timestamp()?;
         self.write_level(record)?;
         self.write_module_path(record)?;
+        self.write_source_location(record)?;
         self.write_target(record)?;
         self.finish_header()?;
 
-        self.write_args(record)
+        self.write_args(record)?;
+        #[cfg(feature = "kv")]
+        self.write_kv(record)?;
+        write!(self.buf, "{}", self.format.suffix)
     }
 
     fn subtle_style(&self, text: &'static str) -> SubtleStyle {
@@ -314,14 +448,14 @@ impl<'a> DefaultFormat<'a> {
             self.written_header_value = true;
 
             let open_brace = self.subtle_style("[");
-            write!(self.buf, "{}{}", open_brace, value)
+            write!(self.buf, "{open_brace}{value}")
         } else {
-            write!(self.buf, " {}", value)
+            write!(self.buf, " {value}")
         }
     }
 
-    fn write_level(&mut self, record: &Record) -> io::Result<()> {
-        if !self.level {
+    fn write_level(&mut self, record: &Record<'_>) -> io::Result<()> {
+        if !self.format.level {
             return Ok(());
         }
 
@@ -340,14 +474,14 @@ impl<'a> DefaultFormat<'a> {
             }
         };
 
-        self.write_header_value(format_args!("{:<5}", level))
+        self.write_header_value(format_args!("{level:<5}"))
     }
 
     fn write_timestamp(&mut self) -> io::Result<()> {
         #[cfg(feature = "humantime")]
         {
-            use self::TimestampPrecision::*;
-            let ts = match self.timestamp {
+            use self::TimestampPrecision::{Micros, Millis, Nanos, Seconds};
+            let ts = match self.format.timestamp {
                 None => return Ok(()),
                 Some(Seconds) => self.buf.timestamp_seconds(),
                 Some(Millis) => self.buf.timestamp_millis(),
@@ -361,13 +495,13 @@ impl<'a> DefaultFormat<'a> {
         {
             // Trick the compiler to think we have used self.timestamp
             // Workaround for "field is never used: `timestamp`" compiler nag.
-            let _ = self.timestamp;
+            let _ = self.format.timestamp;
             Ok(())
         }
     }
 
-    fn write_module_path(&mut self, record: &Record) -> io::Result<()> {
-        if !self.module_path {
+    fn write_module_path(&mut self, record: &Record<'_>) -> io::Result<()> {
+        if !self.format.module_path {
             return Ok(());
         }
 
@@ -378,8 +512,28 @@ impl<'a> DefaultFormat<'a> {
         }
     }
 
-    fn write_target(&mut self, record: &Record) -> io::Result<()> {
-        if !self.target {
+    fn write_source_location(&mut self, record: &Record<'_>) -> io::Result<()> {
+        if !self.format.source_file {
+            return Ok(());
+        }
+
+        if let Some(file_path) = record.file() {
+            let line = self
+                .format
+                .source_line_number
+                .then(|| record.line())
+                .flatten();
+            match line {
+                Some(line) => self.write_header_value(format_args!("{file_path}:{line}")),
+                None => self.write_header_value(file_path),
+            }
+        } else {
+            Ok(())
+        }
+    }
+
+    fn write_target(&mut self, record: &Record<'_>) -> io::Result<()> {
+        if !self.format.target {
             return Ok(());
         }
 
@@ -392,26 +546,26 @@ impl<'a> DefaultFormat<'a> {
     fn finish_header(&mut self) -> io::Result<()> {
         if self.written_header_value {
             let close_brace = self.subtle_style("]");
-            write!(self.buf, "{} ", close_brace)
+            write!(self.buf, "{close_brace} ")
         } else {
             Ok(())
         }
     }
 
-    fn write_args(&mut self, record: &Record) -> io::Result<()> {
-        match self.indent {
+    fn write_args(&mut self, record: &Record<'_>) -> io::Result<()> {
+        match self.format.indent {
             // Fast path for no indentation
-            None => write!(self.buf, "{}{}", record.args(), self.suffix),
+            None => write!(self.buf, "{}", record.args()),
 
             Some(indent_count) => {
                 // Create a wrapper around the buffer only if we have to actually indent the message
 
-                struct IndentWrapper<'a, 'b: 'a> {
-                    fmt: &'a mut DefaultFormat<'b>,
+                struct IndentWrapper<'a, 'b> {
+                    fmt: &'a mut ConfigurableFormatWriter<'b>,
                     indent_count: usize,
                 }
 
-                impl<'a, 'b> Write for IndentWrapper<'a, 'b> {
+                impl Write for IndentWrapper<'_, '_> {
                     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
                         let mut first = true;
                         for chunk in buf.split(|&x| x == b'\n') {
@@ -419,7 +573,7 @@ impl<'a> DefaultFormat<'a> {
                                 write!(
                                     self.fmt.buf,
                                     "{}{:width$}",
-                                    self.fmt.suffix,
+                                    self.fmt.format.suffix,
                                     "",
                                     width = self.indent_count
                                 )?;
@@ -445,11 +599,19 @@ impl<'a> DefaultFormat<'a> {
                     write!(wrapper, "{}", record.args())?;
                 }
 
-                write!(self.buf, "{}", self.suffix)?;
-
                 Ok(())
             }
         }
+    }
+
+    #[cfg(feature = "kv")]
+    fn write_kv(&mut self, record: &Record<'_>) -> io::Result<()> {
+        let format = self
+            .format
+            .kv_format
+            .as_deref()
+            .unwrap_or(&default_kv_format);
+        format(self.buf, record.key_values())
     }
 }
 
@@ -459,7 +621,7 @@ mod tests {
 
     use log::{Level, Record};
 
-    fn write_record(record: Record, fmt: DefaultFormat) -> String {
+    fn write_record(record: Record<'_>, fmt: ConfigurableFormatWriter<'_>) -> String {
         let buf = fmt.buf.buf.clone();
 
         fmt.write(&record).expect("failed to write record");
@@ -468,7 +630,7 @@ mod tests {
         String::from_utf8(buf.as_bytes().to_vec()).expect("failed to read record")
     }
 
-    fn write_target(target: &str, fmt: DefaultFormat) -> String {
+    fn write_target(target: &str, fmt: ConfigurableFormatWriter<'_>) -> String {
         write_record(
             Record::builder()
                 .args(format_args!("log\nmessage"))
@@ -482,26 +644,36 @@ mod tests {
         )
     }
 
-    fn write(fmt: DefaultFormat) -> String {
+    fn write(fmt: ConfigurableFormatWriter<'_>) -> String {
         write_target("", fmt)
+    }
+
+    fn formatter() -> Formatter {
+        let writer = crate::writer::Builder::new()
+            .write_style(WriteStyle::Never)
+            .build();
+
+        Formatter::new(&writer)
     }
 
     #[test]
     fn format_with_header() {
-        let writer = writer::Builder::new()
-            .write_style(WriteStyle::Never)
-            .build();
+        let mut f = formatter();
 
-        let mut f = Formatter::new(&writer);
-
-        let written = write(DefaultFormat {
-            timestamp: None,
-            module_path: true,
-            target: false,
-            level: true,
+        let written = write(ConfigurableFormatWriter {
+            format: &ConfigurableFormat {
+                timestamp: None,
+                module_path: true,
+                target: false,
+                level: true,
+                source_file: false,
+                source_line_number: false,
+                #[cfg(feature = "kv")]
+                kv_format: Some(Box::new(hidden_kv_format)),
+                indent: None,
+                suffix: "\n",
+            },
             written_header_value: false,
-            indent: None,
-            suffix: "\n",
             buf: &mut f,
         });
 
@@ -510,20 +682,22 @@ mod tests {
 
     #[test]
     fn format_no_header() {
-        let writer = writer::Builder::new()
-            .write_style(WriteStyle::Never)
-            .build();
+        let mut f = formatter();
 
-        let mut f = Formatter::new(&writer);
-
-        let written = write(DefaultFormat {
-            timestamp: None,
-            module_path: false,
-            target: false,
-            level: false,
+        let written = write(ConfigurableFormatWriter {
+            format: &ConfigurableFormat {
+                timestamp: None,
+                module_path: false,
+                target: false,
+                level: false,
+                source_file: false,
+                source_line_number: false,
+                #[cfg(feature = "kv")]
+                kv_format: Some(Box::new(hidden_kv_format)),
+                indent: None,
+                suffix: "\n",
+            },
             written_header_value: false,
-            indent: None,
-            suffix: "\n",
             buf: &mut f,
         });
 
@@ -532,20 +706,22 @@ mod tests {
 
     #[test]
     fn format_indent_spaces() {
-        let writer = writer::Builder::new()
-            .write_style(WriteStyle::Never)
-            .build();
+        let mut f = formatter();
 
-        let mut f = Formatter::new(&writer);
-
-        let written = write(DefaultFormat {
-            timestamp: None,
-            module_path: true,
-            target: false,
-            level: true,
+        let written = write(ConfigurableFormatWriter {
+            format: &ConfigurableFormat {
+                timestamp: None,
+                module_path: true,
+                target: false,
+                level: true,
+                source_file: false,
+                source_line_number: false,
+                #[cfg(feature = "kv")]
+                kv_format: Some(Box::new(hidden_kv_format)),
+                indent: Some(4),
+                suffix: "\n",
+            },
             written_header_value: false,
-            indent: Some(4),
-            suffix: "\n",
             buf: &mut f,
         });
 
@@ -554,20 +730,22 @@ mod tests {
 
     #[test]
     fn format_indent_zero_spaces() {
-        let writer = writer::Builder::new()
-            .write_style(WriteStyle::Never)
-            .build();
+        let mut f = formatter();
 
-        let mut f = Formatter::new(&writer);
-
-        let written = write(DefaultFormat {
-            timestamp: None,
-            module_path: true,
-            target: false,
-            level: true,
+        let written = write(ConfigurableFormatWriter {
+            format: &ConfigurableFormat {
+                timestamp: None,
+                module_path: true,
+                target: false,
+                level: true,
+                source_file: false,
+                source_line_number: false,
+                #[cfg(feature = "kv")]
+                kv_format: Some(Box::new(hidden_kv_format)),
+                indent: Some(0),
+                suffix: "\n",
+            },
             written_header_value: false,
-            indent: Some(0),
-            suffix: "\n",
             buf: &mut f,
         });
 
@@ -576,20 +754,22 @@ mod tests {
 
     #[test]
     fn format_indent_spaces_no_header() {
-        let writer = writer::Builder::new()
-            .write_style(WriteStyle::Never)
-            .build();
+        let mut f = formatter();
 
-        let mut f = Formatter::new(&writer);
-
-        let written = write(DefaultFormat {
-            timestamp: None,
-            module_path: false,
-            target: false,
-            level: false,
+        let written = write(ConfigurableFormatWriter {
+            format: &ConfigurableFormat {
+                timestamp: None,
+                module_path: false,
+                target: false,
+                level: false,
+                source_file: false,
+                source_line_number: false,
+                #[cfg(feature = "kv")]
+                kv_format: Some(Box::new(hidden_kv_format)),
+                indent: Some(4),
+                suffix: "\n",
+            },
             written_header_value: false,
-            indent: Some(4),
-            suffix: "\n",
             buf: &mut f,
         });
 
@@ -598,20 +778,22 @@ mod tests {
 
     #[test]
     fn format_suffix() {
-        let writer = writer::Builder::new()
-            .write_style(WriteStyle::Never)
-            .build();
+        let mut f = formatter();
 
-        let mut f = Formatter::new(&writer);
-
-        let written = write(DefaultFormat {
-            timestamp: None,
-            module_path: false,
-            target: false,
-            level: false,
+        let written = write(ConfigurableFormatWriter {
+            format: &ConfigurableFormat {
+                timestamp: None,
+                module_path: false,
+                target: false,
+                level: false,
+                source_file: false,
+                source_line_number: false,
+                #[cfg(feature = "kv")]
+                kv_format: Some(Box::new(hidden_kv_format)),
+                indent: None,
+                suffix: "\n\n",
+            },
             written_header_value: false,
-            indent: None,
-            suffix: "\n\n",
             buf: &mut f,
         });
 
@@ -620,20 +802,22 @@ mod tests {
 
     #[test]
     fn format_suffix_with_indent() {
-        let writer = writer::Builder::new()
-            .write_style(WriteStyle::Never)
-            .build();
+        let mut f = formatter();
 
-        let mut f = Formatter::new(&writer);
-
-        let written = write(DefaultFormat {
-            timestamp: None,
-            module_path: false,
-            target: false,
-            level: false,
+        let written = write(ConfigurableFormatWriter {
+            format: &ConfigurableFormat {
+                timestamp: None,
+                module_path: false,
+                target: false,
+                level: false,
+                source_file: false,
+                source_line_number: false,
+                #[cfg(feature = "kv")]
+                kv_format: Some(Box::new(hidden_kv_format)),
+                indent: Some(4),
+                suffix: "\n\n",
+            },
             written_header_value: false,
-            indent: Some(4),
-            suffix: "\n\n",
             buf: &mut f,
         });
 
@@ -642,22 +826,24 @@ mod tests {
 
     #[test]
     fn format_target() {
-        let writer = writer::Builder::new()
-            .write_style(WriteStyle::Never)
-            .build();
-
-        let mut f = Formatter::new(&writer);
+        let mut f = formatter();
 
         let written = write_target(
             "target",
-            DefaultFormat {
-                timestamp: None,
-                module_path: true,
-                target: true,
-                level: true,
+            ConfigurableFormatWriter {
+                format: &ConfigurableFormat {
+                    timestamp: None,
+                    module_path: true,
+                    target: true,
+                    level: true,
+                    source_file: false,
+                    source_line_number: false,
+                    #[cfg(feature = "kv")]
+                    kv_format: Some(Box::new(hidden_kv_format)),
+                    indent: None,
+                    suffix: "\n",
+                },
                 written_header_value: false,
-                indent: None,
-                suffix: "\n",
                 buf: &mut f,
             },
         );
@@ -667,20 +853,22 @@ mod tests {
 
     #[test]
     fn format_empty_target() {
-        let writer = writer::Builder::new()
-            .write_style(WriteStyle::Never)
-            .build();
+        let mut f = formatter();
 
-        let mut f = Formatter::new(&writer);
-
-        let written = write(DefaultFormat {
-            timestamp: None,
-            module_path: true,
-            target: true,
-            level: true,
+        let written = write(ConfigurableFormatWriter {
+            format: &ConfigurableFormat {
+                timestamp: None,
+                module_path: true,
+                target: true,
+                level: true,
+                source_file: false,
+                source_line_number: false,
+                #[cfg(feature = "kv")]
+                kv_format: Some(Box::new(hidden_kv_format)),
+                indent: None,
+                suffix: "\n",
+            },
             written_header_value: false,
-            indent: None,
-            suffix: "\n",
             buf: &mut f,
         });
 
@@ -689,26 +877,126 @@ mod tests {
 
     #[test]
     fn format_no_target() {
-        let writer = writer::Builder::new()
-            .write_style(WriteStyle::Never)
-            .build();
-
-        let mut f = Formatter::new(&writer);
+        let mut f = formatter();
 
         let written = write_target(
             "target",
-            DefaultFormat {
-                timestamp: None,
-                module_path: true,
-                target: false,
-                level: true,
+            ConfigurableFormatWriter {
+                format: &ConfigurableFormat {
+                    timestamp: None,
+                    module_path: true,
+                    target: false,
+                    level: true,
+                    source_file: false,
+                    source_line_number: false,
+                    #[cfg(feature = "kv")]
+                    kv_format: Some(Box::new(hidden_kv_format)),
+                    indent: None,
+                    suffix: "\n",
+                },
                 written_header_value: false,
-                indent: None,
-                suffix: "\n",
                 buf: &mut f,
             },
         );
 
         assert_eq!("[INFO  test::path] log\nmessage\n", written);
+    }
+
+    #[test]
+    fn format_with_source_file_and_line_number() {
+        let mut f = formatter();
+
+        let written = write(ConfigurableFormatWriter {
+            format: &ConfigurableFormat {
+                timestamp: None,
+                module_path: false,
+                target: false,
+                level: true,
+                source_file: true,
+                source_line_number: true,
+                #[cfg(feature = "kv")]
+                kv_format: Some(Box::new(hidden_kv_format)),
+                indent: None,
+                suffix: "\n",
+            },
+            written_header_value: false,
+            buf: &mut f,
+        });
+
+        assert_eq!("[INFO  test.rs:144] log\nmessage\n", written);
+    }
+
+    #[cfg(feature = "kv")]
+    #[test]
+    fn format_kv_default() {
+        let kvs = &[("a", 1u32), ("b", 2u32)][..];
+        let mut f = formatter();
+        let record = Record::builder()
+            .args(format_args!("log message"))
+            .level(Level::Info)
+            .module_path(Some("test::path"))
+            .key_values(&kvs)
+            .build();
+
+        let written = write_record(
+            record,
+            ConfigurableFormatWriter {
+                format: &ConfigurableFormat {
+                    timestamp: None,
+                    module_path: false,
+                    target: false,
+                    level: true,
+                    source_file: false,
+                    source_line_number: false,
+                    kv_format: Some(Box::new(default_kv_format)),
+                    indent: None,
+                    suffix: "\n",
+                },
+                written_header_value: false,
+                buf: &mut f,
+            },
+        );
+
+        assert_eq!("[INFO ] log message a=1 b=2\n", written);
+    }
+
+    #[cfg(feature = "kv")]
+    #[test]
+    fn format_kv_default_full() {
+        let kvs = &[("a", 1u32), ("b", 2u32)][..];
+        let mut f = formatter();
+        let record = Record::builder()
+            .args(format_args!("log\nmessage"))
+            .level(Level::Info)
+            .module_path(Some("test::path"))
+            .target("target")
+            .file(Some("test.rs"))
+            .line(Some(42))
+            .key_values(&kvs)
+            .build();
+
+        let written = write_record(
+            record,
+            ConfigurableFormatWriter {
+                format: &ConfigurableFormat {
+                    timestamp: None,
+                    module_path: true,
+                    target: true,
+                    level: true,
+                    source_file: true,
+                    source_line_number: true,
+                    kv_format: Some(Box::new(default_kv_format)),
+                    indent: None,
+                    suffix: "\n",
+                },
+                written_header_value: false,
+                buf: &mut f,
+            },
+        );
+
+        assert_eq!(
+            "[INFO  test::path test.rs:42 target] log\nmessage a=1 b=2\n",
+            written
+        );
     }
 }

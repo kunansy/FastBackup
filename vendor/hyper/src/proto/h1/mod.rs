@@ -1,11 +1,6 @@
-#[cfg(all(feature = "server", feature = "runtime"))]
-use std::{pin::Pin, time::Duration};
-
 use bytes::BytesMut;
 use http::{HeaderMap, Method};
 use httparse::ParserConfig;
-#[cfg(all(feature = "server", feature = "runtime"))]
-use tokio::time::Sleep;
 
 use crate::body::DecodedLength;
 use crate::proto::{BodyLength, MessageHead};
@@ -35,6 +30,7 @@ cfg_server! {
 pub(crate) trait Http1Transaction {
     type Incoming;
     type Outgoing: Default;
+    #[cfg(feature = "tracing")]
     const LOG: &'static str;
     fn parse(bytes: &mut BytesMut, ctx: ParseContext<'_>) -> ParseResult<Self::Incoming>;
     fn encode(enc: Encode<'_, Self::Outgoing>, dst: &mut Vec<u8>) -> crate::Result<Encoder>;
@@ -60,7 +56,7 @@ pub(crate) trait Http1Transaction {
     fn update_date() {}
 }
 
-/// Result newtype for Http1Transaction::parse.
+/// Result newtype for `Http1Transaction::parse`.
 pub(crate) type ParseResult<T> = Result<Option<ParsedMessage<T>>, crate::error::Parse>;
 
 #[derive(Debug)]
@@ -72,34 +68,30 @@ pub(crate) struct ParsedMessage<T> {
     wants_upgrade: bool,
 }
 
-pub(crate) struct ParseContext<'a> {
-    cached_headers: &'a mut Option<HeaderMap>,
-    req_method: &'a mut Option<Method>,
+pub(crate) struct ParseContext<'ctx> {
+    cached_headers: &'ctx mut Option<HeaderMap>,
+    req_method: &'ctx mut Option<Method>,
     h1_parser_config: ParserConfig,
-    #[cfg(all(feature = "server", feature = "runtime"))]
-    h1_header_read_timeout: Option<Duration>,
-    #[cfg(all(feature = "server", feature = "runtime"))]
-    h1_header_read_timeout_fut: &'a mut Option<Pin<Box<Sleep>>>,
-    #[cfg(all(feature = "server", feature = "runtime"))]
-    h1_header_read_timeout_running: &'a mut bool,
+    h1_max_headers: Option<usize>,
+    h1_max_header_size: Option<usize>,
     preserve_header_case: bool,
     #[cfg(feature = "ffi")]
     preserve_header_order: bool,
     h09_responses: bool,
-    #[cfg(feature = "ffi")]
-    on_informational: &'a mut Option<crate::ffi::OnInformational>,
-    #[cfg(feature = "ffi")]
-    raw_headers: bool,
+    #[cfg(feature = "client")]
+    on_informational: &'ctx mut Option<crate::ext::OnInformational>,
 }
 
-/// Passed to Http1Transaction::encode
-pub(crate) struct Encode<'a, T> {
-    head: &'a mut MessageHead<T>,
+/// Passed to `Http1Transaction::encode`.
+pub(crate) struct Encode<'encode, T> {
+    head: &'encode mut MessageHead<T>,
     body: Option<BodyLength>,
     #[cfg(feature = "server")]
     keep_alive: bool,
-    req_method: &'a mut Option<Method>,
+    req_method: &'encode mut Option<Method>,
     title_case_headers: bool,
+    #[cfg(feature = "server")]
+    date_header: bool,
 }
 
 /// Extra flags that a request "wants", like expect-continue or upgrades.

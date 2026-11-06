@@ -1,12 +1,12 @@
 use crate::{backend, io};
+use core::fmt;
 
-pub use crate::timespec::Timespec;
+pub use crate::timespec::{Nsecs, Secs, Timespec};
 
 #[cfg(not(any(
     apple,
     target_os = "dragonfly",
     target_os = "espidf",
-    target_os = "freebsd", // FreeBSD 12 has clock_nanosleep, but libc targets FreeBSD 11.
     target_os = "openbsd",
     target_os = "redox",
     target_os = "vita",
@@ -23,16 +23,18 @@ pub use crate::clockid::ClockId;
 /// # References
 ///  - [POSIX]
 ///  - [Linux]
+///  - [FreeBSD]
 ///
-/// [POSIX]: https://pubs.opengroup.org/onlinepubs/9699919799/functions/clock_nanosleep.html
+/// [POSIX]: https://pubs.opengroup.org/onlinepubs/9799919799/functions/clock_nanosleep.html
 /// [Linux]: https://man7.org/linux/man-pages/man2/clock_nanosleep.2.html
+/// [FreeBSD]: https://man.freebsd.org/cgi/man.cgi?query=nanosleep&sektion=2
 #[cfg(not(any(
     apple,
     target_os = "dragonfly",
     target_os = "emscripten",
     target_os = "espidf",
-    target_os = "freebsd", // FreeBSD 12 has clock_nanosleep, but libc targets FreeBSD 11.
     target_os = "haiku",
+    target_os = "horizon",
     target_os = "openbsd",
     target_os = "redox",
     target_os = "vita",
@@ -52,16 +54,18 @@ pub fn clock_nanosleep_relative(id: ClockId, request: &Timespec) -> NanosleepRel
 /// # References
 ///  - [POSIX]
 ///  - [Linux]
+///  - [FreeBSD]
 ///
-/// [POSIX]: https://pubs.opengroup.org/onlinepubs/9699919799/functions/clock_nanosleep.html
+/// [POSIX]: https://pubs.opengroup.org/onlinepubs/9799919799/functions/clock_nanosleep.html
 /// [Linux]: https://man7.org/linux/man-pages/man2/clock_nanosleep.2.html
+/// [FreeBSD]: https://man.freebsd.org/cgi/man.cgi?query=nanosleep&sektion=2
 #[cfg(not(any(
     apple,
     target_os = "dragonfly",
     target_os = "emscripten",
     target_os = "espidf",
-    target_os = "freebsd", // FreeBSD 12 has clock_nanosleep, but libc targets FreeBSD 11.
     target_os = "haiku",
+    target_os = "horizon",
     target_os = "openbsd",
     target_os = "redox",
     target_os = "vita",
@@ -79,16 +83,18 @@ pub fn clock_nanosleep_absolute(id: ClockId, request: &Timespec) -> io::Result<(
 /// # References
 ///  - [POSIX]
 ///  - [Linux]
+///  - [FreeBSD]
 ///
-/// [POSIX]: https://pubs.opengroup.org/onlinepubs/9699919799/functions/nanosleep.html
+/// [POSIX]: https://pubs.opengroup.org/onlinepubs/9799919799/functions/nanosleep.html
 /// [Linux]: https://man7.org/linux/man-pages/man2/nanosleep.2.html
+/// [FreeBSD]: https://man.freebsd.org/cgi/man.cgi?query=nanosleep&sektion=2
 #[inline]
 pub fn nanosleep(request: &Timespec) -> NanosleepRelativeResult {
     backend::thread::syscalls::nanosleep(request)
 }
 
 /// A return type for `nanosleep` and `clock_nanosleep_relative`.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 #[must_use]
 pub enum NanosleepRelativeResult {
     /// The sleep completed normally.
@@ -97,4 +103,18 @@ pub enum NanosleepRelativeResult {
     Interrupted(Timespec),
     /// An invalid time value was provided.
     Err(io::Errno),
+}
+
+impl fmt::Debug for NanosleepRelativeResult {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Ok => f.write_str("Ok"),
+            Self::Interrupted(remaining) => write!(
+                f,
+                "Interrupted(Timespec {{ tv_sec: {:?}, tv_nsec: {:?} }})",
+                remaining.tv_sec, remaining.tv_nsec
+            ),
+            Self::Err(err) => write!(f, "Err({:?})", err),
+        }
+    }
 }

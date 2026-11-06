@@ -3,14 +3,22 @@
 //! By default the map is backed by a [`BTreeMap`]. Enable the `preserve_order`
 //! feature of serde_json to use [`IndexMap`] instead.
 //!
-//! [`BTreeMap`]: https://doc.rust-lang.org/std/collections/struct.BTreeMap.html
-//! [`IndexMap`]: https://docs.rs/indexmap/*/indexmap/map/struct.IndexMap.html
+//! In builds without the `std` feature, `preserve_order` hashes keys with
+//! [`foldhash::fast::RandomState`]. Foldhash provides minimal HashDoS
+//! resistance, but does not protect against interactive attackers. Builds with
+//! `std` use the standard library's [`std::hash::RandomState`].
+//!
+//! [`BTreeMap`]: std::collections::BTreeMap
+//! [`IndexMap`]: indexmap::IndexMap
 
+use crate::error::Error;
 use crate::value::Value;
 use alloc::string::String;
+#[cfg(feature = "preserve_order")]
+use alloc::vec::Vec;
 use core::borrow::Borrow;
 use core::fmt::{self, Debug};
-use core::hash::Hash;
+use core::hash::{Hash, Hasher};
 use core::iter::FusedIterator;
 #[cfg(feature = "preserve_order")]
 use core::mem;
@@ -20,7 +28,7 @@ use serde::de;
 #[cfg(not(feature = "preserve_order"))]
 use alloc::collections::{btree_map, BTreeMap};
 #[cfg(feature = "preserve_order")]
-use indexmap::{self, IndexMap};
+use indexmap::IndexMap;
 
 /// Represents a JSON key/value type.
 pub struct Map<K, V> {
@@ -30,14 +38,19 @@ pub struct Map<K, V> {
 #[cfg(not(feature = "preserve_order"))]
 type MapImpl<K, V> = BTreeMap<K, V>;
 #[cfg(feature = "preserve_order")]
-type MapImpl<K, V> = IndexMap<K, V>;
+type MapImpl<K, V> = IndexMap<K, V, BuildHasherImpl>;
+
+#[cfg(all(feature = "preserve_order", feature = "std"))]
+type BuildHasherImpl = std::collections::hash_map::RandomState;
+#[cfg(all(feature = "preserve_order", not(feature = "std")))]
+type BuildHasherImpl = foldhash::fast::RandomState;
 
 impl Map<String, Value> {
     /// Makes a new empty Map.
     #[inline]
     pub fn new() -> Self {
         Map {
-            map: MapImpl::new(),
+            map: MapImpl::default(),
         }
     }
 
@@ -52,7 +65,7 @@ impl Map<String, Value> {
                 BTreeMap::new()
             },
             #[cfg(feature = "preserve_order")]
-            map: IndexMap::with_capacity(capacity),
+            map: IndexMap::with_capacity_and_hasher(capacity, BuildHasherImpl::default()),
         }
     }
 
@@ -125,6 +138,19 @@ impl Map<String, Value> {
         self.map.insert(k, v)
     }
 
+    /// Insert a key-value pair in the map at the given index.
+    ///
+    /// If the map did not have this key present, `None` is returned.
+    ///
+    /// If the map did have this key present, the key is moved to the new
+    /// position, the value is updated, and the old value is returned.
+    #[cfg(feature = "preserve_order")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "preserve_order")))]
+    #[inline]
+    pub fn shift_insert(&mut self, index: usize, k: String, v: Value) -> Option<Value> {
+        self.map.shift_insert(index, k, v)
+    }
+
     /// Removes a key from the map, returning the value at the key if the key
     /// was previously in the map.
     ///
@@ -176,6 +202,8 @@ impl Map<String, Value> {
     /// Like [`Vec::swap_remove`], the entry is removed by swapping it with the
     /// last element of the map and popping it off. This perturbs the position
     /// of what used to be the last element!
+    ///
+    /// [`Vec::swap_remove`]: std::vec::Vec::swap_remove
     #[cfg(feature = "preserve_order")]
     #[cfg_attr(docsrs, doc(cfg(feature = "preserve_order")))]
     #[inline]
@@ -192,6 +220,8 @@ impl Map<String, Value> {
     /// Like [`Vec::swap_remove`], the entry is removed by swapping it with the
     /// last element of the map and popping it off. This perturbs the position
     /// of what used to be the last element!
+    ///
+    /// [`Vec::swap_remove`]: std::vec::Vec::swap_remove
     #[cfg(feature = "preserve_order")]
     #[cfg_attr(docsrs, doc(cfg(feature = "preserve_order")))]
     #[inline]
@@ -208,6 +238,8 @@ impl Map<String, Value> {
     /// Like [`Vec::remove`], the entry is removed by shifting all of the
     /// elements that follow it, preserving their relative order. This perturbs
     /// the index of all of those elements!
+    ///
+    /// [`Vec::remove`]: std::vec::Vec::remove
     #[cfg(feature = "preserve_order")]
     #[cfg_attr(docsrs, doc(cfg(feature = "preserve_order")))]
     #[inline]
@@ -224,6 +256,8 @@ impl Map<String, Value> {
     /// Like [`Vec::remove`], the entry is removed by shifting all of the
     /// elements that follow it, preserving their relative order. This perturbs
     /// the index of all of those elements!
+    ///
+    /// [`Vec::remove`]: std::vec::Vec::remove
     #[cfg(feature = "preserve_order")]
     #[cfg_attr(docsrs, doc(cfg(feature = "preserve_order")))]
     #[inline]
@@ -314,6 +348,14 @@ impl Map<String, Value> {
         }
     }
 
+    /// Gets an iterator over the values of the map.
+    #[inline]
+    pub fn into_values(self) -> IntoValues {
+        IntoValues {
+            iter: self.map.into_values(),
+        }
+    }
+
     /// Retains only the elements specified by the predicate.
     ///
     /// In other words, remove all pairs `(k, v)` such that `f(&k, &mut v)`
@@ -325,15 +367,36 @@ impl Map<String, Value> {
     {
         self.map.retain(f);
     }
+
+    /// Sorts this map's entries in-place using `str`'s usual ordering.
+    ///
+    /// If serde_json's "preserve_order" feature is not enabled, this method
+    /// does no work because all JSON maps are always kept in a sorted state.
+    ///
+    /// If serde_json's "preserve_order" feature is enabled, this method
+    /// destroys the original source order or insertion order of this map in
+    /// favor of an alphanumerical order that matches how a BTreeMap with the
+    /// same contents would be ordered. This takes **O(n log n + c)** time where
+    /// _n_ is the length of the map and _c_ is the capacity.
+    ///
+    /// Other maps nested within the values of this map are not sorted. If you
+    /// need the entire data structure to be sorted at all levels, you must also
+    /// call
+    /// <code>map.[values_mut]\().for_each([Value::sort_all_objects])</code>.
+    ///
+    /// [values_mut]: Map::values_mut
+    #[inline]
+    pub fn sort_keys(&mut self) {
+        #[cfg(feature = "preserve_order")]
+        self.map.sort_unstable_keys();
+    }
 }
 
 #[allow(clippy::derivable_impls)] // clippy bug: https://github.com/rust-lang/rust-clippy/issues/7655
 impl Default for Map<String, Value> {
     #[inline]
     fn default() -> Self {
-        Map {
-            map: MapImpl::new(),
-        }
+        Map::new()
     }
 }
 
@@ -360,6 +423,22 @@ impl PartialEq for Map<String, Value> {
 
 impl Eq for Map<String, Value> {}
 
+impl Hash for Map<String, Value> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        #[cfg(not(feature = "preserve_order"))]
+        {
+            self.map.hash(state);
+        }
+
+        #[cfg(feature = "preserve_order")]
+        {
+            let mut kv = Vec::from_iter(&self.map);
+            kv.sort_unstable_by(|a, b| a.0.cmp(b.0));
+            kv.hash(state);
+        }
+    }
+}
+
 /// Access an element of this map. Panics if the given key is not present in the
 /// map.
 ///
@@ -376,7 +455,7 @@ impl Eq for Map<String, Value> {}
 /// }
 /// # ;
 /// ```
-impl<'a, Q> ops::Index<&'a Q> for Map<String, Value>
+impl<Q> ops::Index<&Q> for Map<String, Value>
 where
     String: Borrow<Q>,
     Q: ?Sized + Ord + Eq + Hash,
@@ -399,7 +478,7 @@ where
 /// #
 /// map["key"] = json!("value");
 /// ```
-impl<'a, Q> ops::IndexMut<&'a Q> for Map<String, Value>
+impl<Q> ops::IndexMut<&Q> for Map<String, Value>
 where
     String: Borrow<Q>,
     Q: ?Sized + Ord + Eq + Hash,
@@ -527,13 +606,28 @@ macro_rules! delegate_iterator {
     }
 }
 
+impl<'de> de::IntoDeserializer<'de, Error> for Map<String, Value> {
+    type Deserializer = Self;
+
+    fn into_deserializer(self) -> Self::Deserializer {
+        self
+    }
+}
+
+impl<'de> de::IntoDeserializer<'de, Error> for &'de Map<String, Value> {
+    type Deserializer = Self;
+
+    fn into_deserializer(self) -> Self::Deserializer {
+        self
+    }
+}
+
 //////////////////////////////////////////////////////////////////////////////
 
 /// A view into a single entry in a map, which may either be vacant or occupied.
 /// This enum is constructed from the [`entry`] method on [`Map`].
 ///
-/// [`entry`]: struct.Map.html#method.entry
-/// [`Map`]: struct.Map.html
+/// [`entry`]: Map::entry
 pub enum Entry<'a> {
     /// A vacant Entry.
     Vacant(VacantEntry<'a>),
@@ -542,15 +636,11 @@ pub enum Entry<'a> {
 }
 
 /// A vacant Entry. It is part of the [`Entry`] enum.
-///
-/// [`Entry`]: enum.Entry.html
 pub struct VacantEntry<'a> {
     vacant: VacantEntryImpl<'a>,
 }
 
 /// An occupied Entry. It is part of the [`Entry`] enum.
-///
-/// [`Entry`]: enum.Entry.html
 pub struct OccupiedEntry<'a> {
     occupied: OccupiedEntryImpl<'a>,
 }
@@ -837,6 +927,12 @@ impl<'a> OccupiedEntry<'a> {
 
     /// Takes the value of the entry out of the map, and returns it.
     ///
+    /// If serde_json's "preserve_order" is enabled, `.remove()` is
+    /// equivalent to [`.swap_remove()`][Self::swap_remove], replacing this
+    /// entry's position with the last element. If you need to preserve the
+    /// relative order of the keys in the map, use
+    /// [`.shift_remove()`][Self::shift_remove] instead.
+    ///
     /// # Examples
     ///
     /// ```
@@ -857,9 +953,100 @@ impl<'a> OccupiedEntry<'a> {
     #[inline]
     pub fn remove(self) -> Value {
         #[cfg(feature = "preserve_order")]
-        return self.occupied.swap_remove();
+        return self.swap_remove();
         #[cfg(not(feature = "preserve_order"))]
         return self.occupied.remove();
+    }
+
+    /// Takes the value of the entry out of the map, and returns it.
+    ///
+    /// Like [`Vec::swap_remove`], the entry is removed by swapping it with the
+    /// last element of the map and popping it off. This perturbs the position
+    /// of what used to be the last element!
+    ///
+    /// [`Vec::swap_remove`]: std::vec::Vec::swap_remove
+    #[cfg(feature = "preserve_order")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "preserve_order")))]
+    #[inline]
+    pub fn swap_remove(self) -> Value {
+        self.occupied.swap_remove()
+    }
+
+    /// Takes the value of the entry out of the map, and returns it.
+    ///
+    /// Like [`Vec::remove`], the entry is removed by shifting all of the
+    /// elements that follow it, preserving their relative order. This perturbs
+    /// the index of all of those elements!
+    ///
+    /// [`Vec::remove`]: std::vec::Vec::remove
+    #[cfg(feature = "preserve_order")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "preserve_order")))]
+    #[inline]
+    pub fn shift_remove(self) -> Value {
+        self.occupied.shift_remove()
+    }
+
+    /// Removes the entry from the map, returning the stored key and value.
+    ///
+    /// If serde_json's "preserve_order" is enabled, `.remove_entry()` is
+    /// equivalent to [`.swap_remove_entry()`][Self::swap_remove_entry],
+    /// replacing this entry's position with the last element. If you need to
+    /// preserve the relative order of the keys in the map, use
+    /// [`.shift_remove_entry()`][Self::shift_remove_entry] instead.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use serde_json::json;
+    /// #
+    /// use serde_json::map::Entry;
+    ///
+    /// let mut map = serde_json::Map::new();
+    /// map.insert("serde".to_owned(), json!(12));
+    ///
+    /// match map.entry("serde") {
+    ///     Entry::Occupied(occupied) => {
+    ///         let (key, value) = occupied.remove_entry();
+    ///         assert_eq!(key, "serde");
+    ///         assert_eq!(value, 12);
+    ///     }
+    ///     Entry::Vacant(_) => unimplemented!(),
+    /// }
+    /// ```
+    #[inline]
+    pub fn remove_entry(self) -> (String, Value) {
+        #[cfg(feature = "preserve_order")]
+        return self.swap_remove_entry();
+        #[cfg(not(feature = "preserve_order"))]
+        return self.occupied.remove_entry();
+    }
+
+    /// Removes the entry from the map, returning the stored key and value.
+    ///
+    /// Like [`Vec::swap_remove`], the entry is removed by swapping it with the
+    /// last element of the map and popping it off. This perturbs the position
+    /// of what used to be the last element!
+    ///
+    /// [`Vec::swap_remove`]: std::vec::Vec::swap_remove
+    #[cfg(feature = "preserve_order")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "preserve_order")))]
+    #[inline]
+    pub fn swap_remove_entry(self) -> (String, Value) {
+        self.occupied.swap_remove_entry()
+    }
+
+    /// Removes the entry from the map, returning the stored key and value.
+    ///
+    /// Like [`Vec::remove`], the entry is removed by shifting all of the
+    /// elements that follow it, preserving their relative order. This perturbs
+    /// the index of all of those elements!
+    ///
+    /// [`Vec::remove`]: std::vec::Vec::remove
+    #[cfg(feature = "preserve_order")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "preserve_order")))]
+    #[inline]
+    pub fn shift_remove_entry(self) -> (String, Value) {
+        self.occupied.shift_remove_entry()
     }
 }
 
@@ -877,6 +1064,7 @@ impl<'a> IntoIterator for &'a Map<String, Value> {
 }
 
 /// An iterator over a serde_json::Map's entries.
+#[derive(Clone, Debug)]
 pub struct Iter<'a> {
     iter: IterImpl<'a>,
 }
@@ -902,6 +1090,7 @@ impl<'a> IntoIterator for &'a mut Map<String, Value> {
 }
 
 /// A mutable iterator over a serde_json::Map's entries.
+#[derive(Debug)]
 pub struct IterMut<'a> {
     iter: IterMutImpl<'a>,
 }
@@ -927,6 +1116,7 @@ impl IntoIterator for Map<String, Value> {
 }
 
 /// An owning iterator over a serde_json::Map's entries.
+#[derive(Debug)]
 pub struct IntoIter {
     iter: IntoIterImpl,
 }
@@ -941,6 +1131,7 @@ delegate_iterator!((IntoIter) => (String, Value));
 //////////////////////////////////////////////////////////////////////////////
 
 /// An iterator over a serde_json::Map's keys.
+#[derive(Clone, Debug)]
 pub struct Keys<'a> {
     iter: KeysImpl<'a>,
 }
@@ -955,6 +1146,7 @@ delegate_iterator!((Keys<'a>) => &'a String);
 //////////////////////////////////////////////////////////////////////////////
 
 /// An iterator over a serde_json::Map's values.
+#[derive(Clone, Debug)]
 pub struct Values<'a> {
     iter: ValuesImpl<'a>,
 }
@@ -969,6 +1161,7 @@ delegate_iterator!((Values<'a>) => &'a Value);
 //////////////////////////////////////////////////////////////////////////////
 
 /// A mutable iterator over a serde_json::Map's values.
+#[derive(Debug)]
 pub struct ValuesMut<'a> {
     iter: ValuesMutImpl<'a>,
 }
@@ -979,3 +1172,18 @@ type ValuesMutImpl<'a> = btree_map::ValuesMut<'a, String, Value>;
 type ValuesMutImpl<'a> = indexmap::map::ValuesMut<'a, String, Value>;
 
 delegate_iterator!((ValuesMut<'a>) => &'a mut Value);
+
+//////////////////////////////////////////////////////////////////////////////
+
+/// An owning iterator over a serde_json::Map's values.
+#[derive(Debug)]
+pub struct IntoValues {
+    iter: IntoValuesImpl,
+}
+
+#[cfg(not(feature = "preserve_order"))]
+type IntoValuesImpl = btree_map::IntoValues<String, Value>;
+#[cfg(feature = "preserve_order")]
+type IntoValuesImpl = indexmap::map::IntoValues<String, Value>;
+
+delegate_iterator!((IntoValues) => Value);

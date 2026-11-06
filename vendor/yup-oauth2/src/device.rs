@@ -1,18 +1,15 @@
 use crate::authenticator_delegate::{
     DefaultDeviceFlowDelegate, DeviceAuthResponse, DeviceFlowDelegate,
 };
+use crate::client::SendRequest;
 use crate::error::{AuthError, Error};
 use crate::types::{ApplicationSecret, TokenInfo};
 
 use std::borrow::Cow;
-use std::error::Error as StdError;
 use std::time::Duration;
 
-use http::Uri;
-use hyper::client::connect::Connection;
-use hyper::header;
-use tokio::io::{AsyncRead, AsyncWrite};
-use tower_service::Service;
+use http::header;
+use http_body_util::BodyExt;
 use url::form_urlencoded;
 
 pub const GOOGLE_DEVICE_CODE_URL: &str = "https://accounts.google.com/o/oauth2/device/code";
@@ -43,17 +40,13 @@ impl DeviceFlow {
         }
     }
 
-    pub(crate) async fn token<S, T>(
+    pub(crate) async fn token<T>(
         &self,
-        hyper_client: &hyper::Client<S>,
+        hyper_client: &impl SendRequest,
         scopes: &[T],
     ) -> Result<TokenInfo, Error>
     where
         T: AsRef<str>,
-        S: Service<Uri> + Clone + Send + Sync + 'static,
-        S::Response: Connection + AsyncRead + AsyncWrite + Send + Unpin + 'static,
-        S::Future: Send + Unpin + 'static,
-        S::Error: Into<Box<dyn StdError + Send + Sync>>,
     {
         let device_auth_resp = Self::request_code(
             &self.app_secret,
@@ -75,19 +68,13 @@ impl DeviceFlow {
         .await
     }
 
-    async fn wait_for_device_token<S>(
+    async fn wait_for_device_token(
         &self,
-        hyper_client: &hyper::Client<S>,
+        hyper_client: &impl SendRequest,
         app_secret: &ApplicationSecret,
         device_auth_resp: &DeviceAuthResponse,
         grant_type: &str,
-    ) -> Result<TokenInfo, Error>
-    where
-        S: Service<Uri> + Clone + Send + Sync + 'static,
-        S::Response: Connection + AsyncRead + AsyncWrite + Send + Unpin + 'static,
-        S::Future: Send + Unpin + 'static,
-        S::Error: Into<Box<dyn StdError + Send + Sync>>,
-    {
+    ) -> Result<TokenInfo, Error> {
         let mut interval = device_auth_resp.interval;
         log::debug!("Polling every {:?} for device token", interval);
         loop {
@@ -127,26 +114,21 @@ impl DeviceFlow {
     /// # Arguments
     /// * `client_id` & `client_secret` - as obtained when [registering your application](https://developers.google.com/youtube/registering_an_application)
     /// * `scopes` - an iterator yielding String-like objects which are URLs defining what your
-    ///              application is able to do. It is considered good behaviour to authenticate
-    ///              only once, with all scopes you will ever require.
-    ///              However, you can also manage multiple tokens for different scopes, if your
-    ///              application is providing distinct read-only and write modes.
+    ///   application is able to do. It is considered good behaviour to authenticate only once, with
+    ///   all scopes you will ever require. However, you can also manage multiple tokens for different
+    ///   scopes, if your application is providing distinct read-only and write modes.
     /// # Panics
     /// * If called after a successful result was returned at least once.
     /// # Examples
     /// See test-cases in source code for a more complete example.
-    async fn request_code<S, T>(
+    async fn request_code<T>(
         application_secret: &ApplicationSecret,
-        client: &hyper::Client<S>,
+        client: &impl SendRequest,
         device_code_url: &str,
         scopes: &[T],
     ) -> Result<DeviceAuthResponse, Error>
     where
         T: AsRef<str>,
-        S: Service<Uri> + Clone + Send + Sync + 'static,
-        S::Response: Connection + AsyncRead + AsyncWrite + Send + Unpin + 'static,
-        S::Future: Send + Unpin + 'static,
-        S::Error: Into<Box<dyn StdError + Send + Sync>>,
     {
         let req = form_urlencoded::Serializer::new(String::new())
             .extend_pairs(&[
@@ -157,13 +139,13 @@ impl DeviceFlow {
 
         // note: works around bug in rustlang
         // https://github.com/rust-lang/rust/issues/22252
-        let req = hyper::Request::post(device_code_url)
+        let req = http::Request::post(device_code_url)
             .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-            .body(hyper::Body::from(req))
+            .body(req)
             .unwrap();
         log::debug!("requesting code from server: {:?}", req);
         let (head, body) = client.request(req).await?.into_parts();
-        let body = hyper::body::to_bytes(body).await?;
+        let body = body.collect().await?.to_bytes();
         log::debug!("received response; head: {:?}, body: {:?}", head, body);
         DeviceAuthResponse::from_json(&body)
     }
@@ -186,18 +168,13 @@ impl DeviceFlow {
     ///
     /// # Examples
     /// See test-cases in source code for a more complete example.
-    async fn poll_token<'a, S>(
+    async fn poll_token(
         application_secret: &ApplicationSecret,
-        client: &hyper::Client<S>,
+        client: &impl SendRequest,
         device_code: &str,
         grant_type: &str,
     ) -> Result<TokenInfo, Error>
-    where
-        S: Service<Uri> + Clone + Send + Sync + 'static,
-        S::Response: Connection + AsyncRead + AsyncWrite + Send + Unpin + 'static,
-        S::Future: Send + Unpin + 'static,
-        S::Error: Into<Box<dyn StdError + Send + Sync>>,
-    {
+where {
         // We should be ready for a new request
         let req = form_urlencoded::Serializer::new(String::new())
             .extend_pairs(&[
@@ -208,13 +185,13 @@ impl DeviceFlow {
             ])
             .finish();
 
-        let request = hyper::Request::post(&application_secret.token_uri)
+        let request = http::Request::post(&application_secret.token_uri)
             .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-            .body(hyper::Body::from(req))
+            .body(req)
             .unwrap(); // TODO: Error checking
         log::debug!("polling for token: {:?}", request);
         let (head, body) = client.request(request).await?.into_parts();
-        let body = hyper::body::to_bytes(body).await?;
+        let body = body.collect().await?.to_bytes();
         log::debug!("received response; head: {:?} body: {:?}", head, body);
         TokenInfo::from_json(&body)
     }

@@ -200,7 +200,7 @@ impl<T: Send> PollSender<T> {
         result
     }
 
-    /// Checks whether this sender is been closed.
+    /// Checks whether this sender is closed.
     ///
     /// The underlying channel that this sender was wrapping may still be open.
     pub fn is_closed(&self) -> bool {
@@ -303,7 +303,7 @@ impl<T> Clone for PollSender<T> {
     }
 }
 
-impl<T: Send + 'static> Sink<T> for PollSender<T> {
+impl<T: Send> Sink<T> for PollSender<T> {
     type Error = PollSendError<T>;
 
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {

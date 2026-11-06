@@ -9,26 +9,55 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Runners may lack AVX-512; drop the production target-cpu from .cargo/config.toml.
+      RUSTFLAGS: ""
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     - name: Set up Rust
       run: |
-        rustup toolchain install 1.75 --profile minimal
-        rustup default 1.75
+        rustup toolchain install 1.99.1 --profile minimal --component clippy,rustfmt
+        rustup default 1.99.1
 
     - name: Install packages
       run: |
-        sudo apt-get install protobuf-compiler -y
+        sudo apt-get install -y protobuf-compiler libprotobuf-dev postgresql-common
+        sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+        sudo apt-get install -y postgresql-client-18
 
     - name: Toolchain info
       run: |
         cargo --version --verbose
         rustc --version
 
-    - name: Cargo check
+    - name: Format
+      run: cargo fmt --all --check
+
+    - name: Clippy
+      run: cargo clippy --workspace --all-targets --offline -- -D warnings
+
+    - name: Test
+      env:
+        PG_TEST_HOST: localhost
+        PG_TEST_PORT: "5432"
+        PG_TEST_USER: postgres
+        PG_TEST_PASSWORD: postgres
       run: |
-        cargo check --jobs $(nproc) --release 
+        export PATH=/usr/lib/postgresql/18/bin:$PATH
+        # drive_smoke tests need real Google Drive credentials.
+        cargo test --workspace --offline -- --include-ignored --skip drive_smoke
 
     - name: Build
-      run: |
-        cargo build --bins --release --offline --jobs $(nproc)
+      run: cargo build --workspace --release --offline --jobs $(nproc)

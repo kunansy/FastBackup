@@ -2,6 +2,12 @@
 cfg_signal_internal_and_unix! {
     mod signal;
 }
+cfg_io_uring! {
+    mod uring;
+    use uring::UringContext;
+    pub(crate) use uring::RegisterResult;
+    use crate::sync::OnceCell;
+}
 
 use crate::io::interest::Interest;
 use crate::io::ready::Ready;
@@ -10,10 +16,10 @@ use crate::runtime::driver;
 use crate::runtime::io::registration_set;
 use crate::runtime::io::{IoDriverMetrics, RegistrationSet, ScheduledIo};
 
+use crate::loom::sync::Arc;
 use mio::event::Source;
 use std::fmt;
 use std::io;
-use std::sync::Arc;
 use std::time::Duration;
 
 /// I/O driver, backed by Mio.
@@ -23,6 +29,10 @@ pub(crate) struct Driver {
 
     /// Reuse the `mio::Events` value across calls to poll.
     events: mio::Events,
+
+    /// Buffer for polls that do not wait, if
+    /// `Builder::max_io_events_per_busy_tick` is set.
+    events_busy: Option<mio::Events>,
 
     /// The system event queue.
     poll: mio::Poll,
@@ -45,11 +55,29 @@ pub(crate) struct Handle {
     waker: mio::Waker,
 
     pub(crate) metrics: IoDriverMetrics,
+
+    #[cfg(all(
+        tokio_unstable,
+        feature = "io-uring",
+        feature = "rt",
+        feature = "fs",
+        target_os = "linux",
+    ))]
+    pub(crate) uring_context: Mutex<UringContext>,
+
+    #[cfg(all(
+        tokio_unstable,
+        feature = "io-uring",
+        feature = "rt",
+        feature = "fs",
+        target_os = "linux",
+    ))]
+    pub(crate) uring_probe: OnceCell<Option<io_uring::Probe>>,
 }
 
 #[derive(Debug)]
 pub(crate) struct ReadyEvent {
-    pub(super) tick: u8,
+    pub(super) tick: u16,
     pub(crate) ready: Ready,
     pub(super) is_shutdown: bool,
 }
@@ -74,7 +102,7 @@ pub(super) enum Direction {
 
 pub(super) enum Tick {
     Set,
-    Clear(u8),
+    Clear(u16),
 }
 
 const TOKEN_WAKEUP: mio::Token = mio::Token(0);
@@ -91,7 +119,7 @@ fn _assert_kinds() {
 impl Driver {
     /// Creates a new event loop, returning any error that happened during the
     /// creation.
-    pub(crate) fn new(nevents: usize) -> io::Result<(Driver, Handle)> {
+    pub(crate) fn new(nevents: usize, nevents_busy: Option<usize>) -> io::Result<(Driver, Handle)> {
         let poll = mio::Poll::new()?;
         #[cfg(not(target_os = "wasi"))]
         let waker = mio::Waker::new(poll.registry(), TOKEN_WAKEUP)?;
@@ -100,6 +128,7 @@ impl Driver {
         let driver = Driver {
             signal_ready: false,
             events: mio::Events::with_capacity(nevents),
+            events_busy: nevents_busy.map(mio::Events::with_capacity),
             poll,
         };
 
@@ -112,6 +141,22 @@ impl Driver {
             #[cfg(not(target_os = "wasi"))]
             waker,
             metrics: IoDriverMetrics::default(),
+            #[cfg(all(
+                tokio_unstable,
+                feature = "io-uring",
+                feature = "rt",
+                feature = "fs",
+                target_os = "linux",
+            ))]
+            uring_context: Mutex::new(UringContext::new()),
+            #[cfg(all(
+                tokio_unstable,
+                feature = "io-uring",
+                feature = "rt",
+                feature = "fs",
+                target_os = "linux",
+            ))]
+            uring_probe: OnceCell::new(),
         };
 
         Ok((driver, handle))
@@ -142,7 +187,12 @@ impl Driver {
 
         handle.release_pending_registrations();
 
-        let events = &mut self.events;
+        // A poll that does not wait takes the busy batch. Events it leaves
+        // behind stay queued in the kernel, so the next poll returns them.
+        let events = match (&mut self.events_busy, max_wait) {
+            (Some(busy), Some(wait)) if wait.is_zero() => busy,
+            _ => &mut self.events,
+        };
 
         // Block waiting for an event to happen, peeling out how many events
         // happened.
@@ -154,7 +204,7 @@ impl Driver {
                 // In case of wasm32_wasi this error happens, when trying to poll without subscriptions
                 // just return from the park, as there would be nothing, which wakes us up.
             }
-            Err(e) => panic!("unexpected error when polling the I/O driver: {:?}", e),
+            Err(e) => panic!("unexpected error when polling the I/O driver: {e:?}"),
         }
 
         // Process all the events that came in, dispatching appropriately
@@ -168,19 +218,39 @@ impl Driver {
                 self.signal_ready = true;
             } else {
                 let ready = Ready::from_mio(event);
-                // Use std::ptr::from_exposed_addr when stable
-                let ptr: *const ScheduledIo = token.0 as *const _;
 
                 // Safety: we ensure that the pointers used as tokens are not freed
                 // until they are both deregistered from mio **and** we know the I/O
                 // driver is not concurrently polling. The I/O driver holds ownership of
                 // an `Arc<ScheduledIo>` so we can safely cast this to a ref.
-                let io: &ScheduledIo = unsafe { &*ptr };
-
-                io.set_readiness(Tick::Set, |curr| curr | ready);
-                io.wake(ready);
+                unsafe { dispatch_event(token, ready) };
 
                 ready_count += 1;
+            }
+        }
+
+        #[cfg(all(
+            tokio_unstable,
+            feature = "io-uring",
+            feature = "rt",
+            feature = "fs",
+            target_os = "linux",
+        ))]
+        {
+            let mut guard = handle.get_uring().lock();
+            let ctx = &mut *guard;
+            ctx.dispatch_completions();
+
+            // There might be some cases where the CQ overflows, so we need to flush
+            // the remaining buffered CQEs.
+            while ctx
+                .uring
+                .as_mut()
+                .is_some_and(|uring| uring.submission().cq_overflow())
+            {
+                ctx.submit()
+                    .expect("failed to flush io_uring completion queue overflow");
+                ctx.dispatch_completions();
             }
         }
 
@@ -220,8 +290,17 @@ impl Handle {
         let scheduled_io = self.registrations.allocate(&mut self.synced.lock())?;
         let token = scheduled_io.token();
 
-        // TODO: if this returns an err, the `ScheduledIo` leaks...
-        self.registry.register(source, token, interest.to_mio())?;
+        // we should remove the `scheduled_io` from the `registrations` set if registering
+        // the `source` with the OS fails. Otherwise it will leak the `scheduled_io`.
+        if let Err(e) = self.registry.register(source, token, interest.to_mio()) {
+            // safety: `scheduled_io` is part of the `registrations` set.
+            unsafe {
+                self.registrations
+                    .remove(&mut self.synced.lock(), &scheduled_io)
+            };
+
+            return Err(e);
+        }
 
         // TODO: move this logic to `RegistrationSet` and use a `CountedLinkedList`
         self.metrics.incr_fd_count();
@@ -235,7 +314,14 @@ impl Handle {
         registration: &Arc<ScheduledIo>,
         source: &mut impl Source,
     ) -> io::Result<()> {
-        // Deregister the source with the OS poller **first**
+        // Deregister the source with the OS poller **first**.
+        //
+        // If `deregister` fails (for example, because the caller closed the raw
+        // file descriptor before dropping `AsyncFd`), we must NOT release the
+        // `ScheduledIo` registration. On Linux, if the file descriptor was
+        // duplicated before the original fd number was closed, the open file
+        // description remains registered in epoll with the `ScheduledIo` token
+        // pointer even though `EPOLL_CTL_DEL` fails with `EBADF`.
         self.registry.deregister(source)?;
 
         if self
@@ -257,6 +343,23 @@ impl Handle {
     }
 }
 
+/// Dispatches an event received from the poller to the corresponding `ScheduledIo`.
+///
+/// # Safety
+///
+/// `token` must have been obtained from `ScheduledIo::token()`, and that
+/// `ScheduledIo` must remain alive throughout this call. The I/O driver ensures
+/// that pending registrations are not freed until after event dispatch completes.
+pub(super) unsafe fn dispatch_event(token: mio::Token, ready: Ready) {
+    let ptr = super::EXPOSE_IO.from_exposed_addr(token.0);
+
+    // SAFETY: the caller guarantees that the token refers to a live `ScheduledIo`.
+    let io: &ScheduledIo = unsafe { &*ptr };
+
+    io.set_readiness(Tick::Set, |curr| curr | ready);
+    io.wake(ready);
+}
+
 impl fmt::Debug for Handle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Handle")
@@ -269,5 +372,36 @@ impl Direction {
             Direction::Read => Ready::READABLE | Ready::READ_CLOSED,
             Direction::Write => Ready::WRITABLE | Ready::WRITE_CLOSED,
         }
+    }
+}
+
+#[cfg(all(test, unix, feature = "net", not(loom), not(miri)))]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn busy_turn_takes_busy_batch() {
+        let (mut driver, handle) = Driver::new(16, Some(2)).unwrap();
+        let mut sources = Vec::new();
+        for _ in 0..5 {
+            let (mut rx, mut tx) = mio::net::UnixStream::pair().unwrap();
+            tx.write_all(b"x").unwrap();
+            let reg = handle.add_source(&mut rx, Interest::READABLE).unwrap();
+            sources.push((rx, tx, reg));
+        }
+
+        // A poll that does not wait takes the busy batch.
+        driver.turn(&handle, Some(Duration::ZERO));
+        assert_eq!(driver.events_busy.as_ref().unwrap().iter().count(), 2);
+
+        // The rest stays queued for the next poll, which takes the main batch.
+        driver.turn(&handle, Some(Duration::from_millis(100)));
+        assert_eq!(driver.events.iter().count(), 3);
+
+        for (mut rx, _tx, reg) in sources {
+            handle.deregister_source(&reg, &mut rx).unwrap();
+        }
+        handle.release_pending_registrations();
     }
 }

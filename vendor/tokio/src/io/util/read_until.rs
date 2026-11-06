@@ -7,7 +7,7 @@ use std::io;
 use std::marker::PhantomPinned;
 use std::mem;
 use std::pin::Pin;
-use std::task::{Context, Poll};
+use std::task::{ready, Context, Poll};
 
 pin_project! {
     /// Future for the [`read_until`](crate::io::AsyncBufReadExt::read_until) method.
@@ -53,7 +53,11 @@ pub(super) fn read_until_internal<R: AsyncBufRead + ?Sized>(
 ) -> Poll<io::Result<usize>> {
     loop {
         let (done, used) = {
-            let available = ready!(reader.as_mut().poll_fill_buf(cx))?;
+            let available = match ready!(reader.as_mut().poll_fill_buf(cx)) {
+                Ok(available) => available,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(e) => return Poll::Ready(Err(e)),
+            };
             if let Some(i) = memchr::memchr(delimiter, available) {
                 buf.extend_from_slice(&available[..=i]);
                 (true, i + 1)

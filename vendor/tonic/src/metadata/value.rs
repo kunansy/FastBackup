@@ -1,4 +1,26 @@
-#![allow(clippy::upper_case_acronyms)]
+/*
+ *
+ * Copyright 2025 gRPC authors.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to
+ * deal in the Software without restriction, including without limitation the
+ * rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+ * sell copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+ * IN THE SOFTWARE.
+ *
+ */
 
 use super::encoding::{
     Ascii, Binary, InvalidMetadataValue, InvalidMetadataValueBytes, ValueEncoding,
@@ -87,9 +109,11 @@ impl<VE: ValueEncoding> MetadataValue<VE> {
     /// within the buffer.
     #[inline]
     pub unsafe fn from_shared_unchecked(src: Bytes) -> Self {
-        MetadataValue {
-            inner: HeaderValue::from_maybe_shared_unchecked(src),
-            phantom: PhantomData,
+        unsafe {
+            MetadataValue {
+                inner: HeaderValue::from_maybe_shared_unchecked(src),
+                phantom: PhantomData,
+            }
         }
     }
 
@@ -250,7 +274,7 @@ impl<VE: ValueEncoding> MetadataValue<VE> {
 /// let val = AsciiMetadataValue::try_from(b"\n");
 /// assert!(val.is_err());
 /// ```
-impl<'a, VE: ValueEncoding> TryFrom<&'a [u8]> for MetadataValue<VE> {
+impl<VE: ValueEncoding> TryFrom<&[u8]> for MetadataValue<VE> {
     type Error = InvalidMetadataValueBytes;
 
     #[inline]
@@ -286,7 +310,7 @@ impl<'a, VE: ValueEncoding> TryFrom<&'a [u8]> for MetadataValue<VE> {
 /// let val = AsciiMetadataValue::try_from(b"\n");
 /// assert!(val.is_err());
 /// ```
-impl<'a, VE: ValueEncoding, const N: usize> TryFrom<&'a [u8; N]> for MetadataValue<VE> {
+impl<VE: ValueEncoding, const N: usize> TryFrom<&[u8; N]> for MetadataValue<VE> {
     type Error = InvalidMetadataValueBytes;
 
     #[inline]
@@ -381,8 +405,6 @@ impl TryFrom<String> for MetadataValue<Ascii> {
     }
 }
 
-// is_empty is defined in the generic impl block above
-#[allow(clippy::len_without_is_empty)]
 impl MetadataValue<Ascii> {
     /// Converts a MetadataKey into a `MetadataValue<Ascii>`.
     ///
@@ -510,7 +532,7 @@ macro_rules! from_integers {
             let val = AsciiMetadataValue::from(n);
             assert_eq!(val, &n.to_string());
 
-            let n = ::std::$t::MAX;
+            let n = $t::MAX;
             let val = AsciiMetadataValue::from(n);
             assert_eq!(val, &n.to_string());
         }
@@ -646,7 +668,7 @@ impl<VE: ValueEncoding> Eq for MetadataValue<VE> {}
 impl<VE: ValueEncoding> PartialOrd for MetadataValue<VE> {
     #[inline]
     fn partial_cmp(&self, other: &MetadataValue<VE>) -> Option<cmp::Ordering> {
-        self.inner.partial_cmp(&other.inner)
+        Some(self.cmp(other))
     }
 }
 
@@ -741,14 +763,14 @@ impl<VE: ValueEncoding> PartialOrd<MetadataValue<VE>> for String {
     }
 }
 
-impl<'a, VE: ValueEncoding> PartialEq<MetadataValue<VE>> for &'a MetadataValue<VE> {
+impl<VE: ValueEncoding> PartialEq<MetadataValue<VE>> for &MetadataValue<VE> {
     #[inline]
     fn eq(&self, other: &MetadataValue<VE>) -> bool {
         **self == *other
     }
 }
 
-impl<'a, VE: ValueEncoding> PartialOrd<MetadataValue<VE>> for &'a MetadataValue<VE> {
+impl<VE: ValueEncoding> PartialOrd<MetadataValue<VE>> for &MetadataValue<VE> {
     #[inline]
     fn partial_cmp(&self, other: &MetadataValue<VE>) -> Option<cmp::Ordering> {
         (**self).partial_cmp(other)
@@ -775,14 +797,14 @@ where
     }
 }
 
-impl<'a, VE: ValueEncoding> PartialEq<MetadataValue<VE>> for &'a str {
+impl<VE: ValueEncoding> PartialEq<MetadataValue<VE>> for &str {
     #[inline]
     fn eq(&self, other: &MetadataValue<VE>) -> bool {
         *other == *self
     }
 }
 
-impl<'a, VE: ValueEncoding> PartialOrd<MetadataValue<VE>> for &'a str {
+impl<VE: ValueEncoding> PartialOrd<MetadataValue<VE>> for &str {
     #[inline]
     fn partial_cmp(&self, other: &MetadataValue<VE>) -> Option<cmp::Ordering> {
         self.as_bytes().partial_cmp(other.inner.as_bytes())
@@ -799,13 +821,13 @@ fn test_debug() {
 
     for &(value, expected) in cases {
         let val = AsciiMetadataValue::try_from(value.as_bytes()).unwrap();
-        let actual = format!("{:?}", val);
+        let actual = format!("{val:?}");
         assert_eq!(expected, actual);
     }
 
     let mut sensitive = AsciiMetadataValue::from_static("password");
     sensitive.set_sensitive(true);
-    assert_eq!("Sensitive", format!("{:?}", sensitive));
+    assert_eq!("Sensitive", format!("{sensitive:?}"));
 }
 
 #[test]
@@ -834,85 +856,85 @@ fn test_from_shared_base64_encodes() {
 
 #[test]
 fn test_value_eq_value() {
-    type BMV = BinaryMetadataValue;
-    type AMV = AsciiMetadataValue;
+    type Bmv = BinaryMetadataValue;
+    type Amv = AsciiMetadataValue;
 
-    assert_eq!(AMV::from_static("abc"), AMV::from_static("abc"));
-    assert_ne!(AMV::from_static("abc"), AMV::from_static("ABC"));
+    assert_eq!(Amv::from_static("abc"), Amv::from_static("abc"));
+    assert_ne!(Amv::from_static("abc"), Amv::from_static("ABC"));
 
-    assert_eq!(BMV::from_bytes(b"abc"), BMV::from_bytes(b"abc"));
-    assert_ne!(BMV::from_bytes(b"abc"), BMV::from_bytes(b"ABC"));
+    assert_eq!(Bmv::from_bytes(b"abc"), Bmv::from_bytes(b"abc"));
+    assert_ne!(Bmv::from_bytes(b"abc"), Bmv::from_bytes(b"ABC"));
 
     // Padding is ignored.
     assert_eq!(
-        BMV::from_static("SGVsbG8hIQ=="),
-        BMV::from_static("SGVsbG8hIQ")
+        Bmv::from_static("SGVsbG8hIQ=="),
+        Bmv::from_static("SGVsbG8hIQ")
     );
     // Invalid values are all just invalid from this point of view.
     unsafe {
         assert_eq!(
-            BMV::from_shared_unchecked(Bytes::from_static(b"..{}")),
-            BMV::from_shared_unchecked(Bytes::from_static(b"{}.."))
+            Bmv::from_shared_unchecked(Bytes::from_static(b"..{}")),
+            Bmv::from_shared_unchecked(Bytes::from_static(b"{}.."))
         );
     }
 }
 
 #[test]
 fn test_value_eq_str() {
-    type BMV = BinaryMetadataValue;
-    type AMV = AsciiMetadataValue;
+    type Bmv = BinaryMetadataValue;
+    type Amv = AsciiMetadataValue;
 
-    assert_eq!(AMV::from_static("abc"), "abc");
-    assert_ne!(AMV::from_static("abc"), "ABC");
-    assert_eq!("abc", AMV::from_static("abc"));
-    assert_ne!("ABC", AMV::from_static("abc"));
+    assert_eq!(Amv::from_static("abc"), "abc");
+    assert_ne!(Amv::from_static("abc"), "ABC");
+    assert_eq!("abc", Amv::from_static("abc"));
+    assert_ne!("ABC", Amv::from_static("abc"));
 
-    assert_eq!(BMV::from_bytes(b"abc"), "abc");
-    assert_ne!(BMV::from_bytes(b"abc"), "ABC");
-    assert_eq!("abc", BMV::from_bytes(b"abc"));
-    assert_ne!("ABC", BMV::from_bytes(b"abc"));
+    assert_eq!(Bmv::from_bytes(b"abc"), "abc");
+    assert_ne!(Bmv::from_bytes(b"abc"), "ABC");
+    assert_eq!("abc", Bmv::from_bytes(b"abc"));
+    assert_ne!("ABC", Bmv::from_bytes(b"abc"));
 
     // Padding is ignored.
-    assert_eq!(BMV::from_static("SGVsbG8hIQ=="), "Hello!!");
-    assert_eq!("Hello!!", BMV::from_static("SGVsbG8hIQ=="));
+    assert_eq!(Bmv::from_static("SGVsbG8hIQ=="), "Hello!!");
+    assert_eq!("Hello!!", Bmv::from_static("SGVsbG8hIQ=="));
 }
 
 #[test]
 fn test_value_eq_bytes() {
-    type BMV = BinaryMetadataValue;
-    type AMV = AsciiMetadataValue;
+    type Bmv = BinaryMetadataValue;
+    type Amv = AsciiMetadataValue;
 
-    assert_eq!(AMV::from_static("abc"), "abc".as_bytes());
-    assert_ne!(AMV::from_static("abc"), "ABC".as_bytes());
-    assert_eq!(*"abc".as_bytes(), AMV::from_static("abc"));
-    assert_ne!(*"ABC".as_bytes(), AMV::from_static("abc"));
+    assert_eq!(Amv::from_static("abc"), "abc".as_bytes());
+    assert_ne!(Amv::from_static("abc"), "ABC".as_bytes());
+    assert_eq!(*"abc".as_bytes(), Amv::from_static("abc"));
+    assert_ne!(*"ABC".as_bytes(), Amv::from_static("abc"));
 
-    assert_eq!(*"abc".as_bytes(), BMV::from_bytes(b"abc"));
-    assert_ne!(*"ABC".as_bytes(), BMV::from_bytes(b"abc"));
+    assert_eq!(*"abc".as_bytes(), Bmv::from_bytes(b"abc"));
+    assert_ne!(*"ABC".as_bytes(), Bmv::from_bytes(b"abc"));
 
     // Padding is ignored.
-    assert_eq!(BMV::from_static("SGVsbG8hIQ=="), "Hello!!".as_bytes());
-    assert_eq!(*"Hello!!".as_bytes(), BMV::from_static("SGVsbG8hIQ=="));
+    assert_eq!(Bmv::from_static("SGVsbG8hIQ=="), "Hello!!".as_bytes());
+    assert_eq!(*"Hello!!".as_bytes(), Bmv::from_static("SGVsbG8hIQ=="));
 }
 
 #[test]
 fn test_ascii_value_hash() {
     use std::collections::hash_map::DefaultHasher;
-    type AMV = AsciiMetadataValue;
+    type Amv = AsciiMetadataValue;
 
-    fn hash(value: AMV) -> u64 {
+    fn hash(value: Amv) -> u64 {
         let mut hasher = DefaultHasher::new();
         value.hash(&mut hasher);
         hasher.finish()
     }
 
-    let value1 = AMV::from_static("abc");
-    let value2 = AMV::from_static("abc");
+    let value1 = Amv::from_static("abc");
+    let value2 = Amv::from_static("abc");
     assert_eq!(value1, value2);
     assert_eq!(hash(value1), hash(value2));
 
-    let value1 = AMV::from_static("abc");
-    let value2 = AMV::from_static("xyz");
+    let value1 = Amv::from_static("abc");
+    let value2 = Amv::from_static("xyz");
 
     assert_ne!(value1, value2);
     assert_ne!(hash(value1), hash(value2));
@@ -921,21 +943,21 @@ fn test_ascii_value_hash() {
 #[test]
 fn test_valid_binary_value_hash() {
     use std::collections::hash_map::DefaultHasher;
-    type BMV = BinaryMetadataValue;
+    type Bmv = BinaryMetadataValue;
 
-    fn hash(value: BMV) -> u64 {
+    fn hash(value: Bmv) -> u64 {
         let mut hasher = DefaultHasher::new();
         value.hash(&mut hasher);
         hasher.finish()
     }
 
-    let value1 = BMV::from_bytes(b"abc");
-    let value2 = BMV::from_bytes(b"abc");
+    let value1 = Bmv::from_bytes(b"abc");
+    let value2 = Bmv::from_bytes(b"abc");
     assert_eq!(value1, value2);
     assert_eq!(hash(value1), hash(value2));
 
-    let value1 = BMV::from_bytes(b"abc");
-    let value2 = BMV::from_bytes(b"xyz");
+    let value1 = Bmv::from_bytes(b"abc");
+    let value2 = Bmv::from_bytes(b"xyz");
     assert_ne!(value1, value2);
     assert_ne!(hash(value1), hash(value2));
 }
@@ -943,24 +965,24 @@ fn test_valid_binary_value_hash() {
 #[test]
 fn test_invalid_binary_value_hash() {
     use std::collections::hash_map::DefaultHasher;
-    type BMV = BinaryMetadataValue;
+    type Bmv = BinaryMetadataValue;
 
-    fn hash(value: BMV) -> u64 {
+    fn hash(value: Bmv) -> u64 {
         let mut hasher = DefaultHasher::new();
         value.hash(&mut hasher);
         hasher.finish()
     }
 
     unsafe {
-        let value1 = BMV::from_shared_unchecked(Bytes::from_static(b"..{}"));
-        let value2 = BMV::from_shared_unchecked(Bytes::from_static(b"{}.."));
+        let value1 = Bmv::from_shared_unchecked(Bytes::from_static(b"..{}"));
+        let value2 = Bmv::from_shared_unchecked(Bytes::from_static(b"{}.."));
         assert_eq!(value1, value2);
         assert_eq!(hash(value1), hash(value2));
     }
 
     unsafe {
-        let valid = BMV::from_bytes(b"abc");
-        let invalid = BMV::from_shared_unchecked(Bytes::from_static(b"{}.."));
+        let valid = Bmv::from_bytes(b"abc");
+        let invalid = Bmv::from_shared_unchecked(Bytes::from_static(b"{}.."));
         assert_ne!(valid, invalid);
         assert_ne!(hash(valid), hash(invalid));
     }

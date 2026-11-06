@@ -1,14 +1,15 @@
-use crate::enums::{AlertDescription, HandshakeType};
-use crate::msgs::base::{PayloadU16, PayloadU24, PayloadU8};
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::prelude::v1::*;
+use std::{format, fs, println, vec};
 
 use super::base::Payload;
 use super::codec::Reader;
 use super::enums::AlertLevel;
-use super::message::{Message, OpaqueMessage, PlainMessage};
-
-use std::fs;
-use std::io::Read;
-use std::path::{Path, PathBuf};
+use super::message::{InboundOpaqueMessage, Message, OutboundOpaqueMessage, PlainMessage};
+use crate::enums::{AlertDescription, ContentType, HandshakeType, ProtocolVersion};
+use crate::error::{Error, PeerMisbehaved};
+use crate::msgs::base::{MaybeEmpty, NonEmpty, PayloadU8, PayloadU16, PayloadU24};
 
 #[test]
 fn test_read_fuzz_corpus() {
@@ -29,14 +30,13 @@ fn test_read_fuzz_corpus() {
         f.read_to_end(&mut bytes).unwrap();
 
         let mut rd = Reader::init(&bytes);
-        let msg = OpaqueMessage::read(&mut rd)
+        let msg = OutboundOpaqueMessage::read(&mut rd)
             .unwrap()
             .into_plain_message();
-        println!("{:?}", msg);
+        println!("{msg:?}");
 
-        let msg = match Message::try_from(msg) {
-            Ok(msg) => msg,
-            Err(_) => continue,
+        let Ok(msg) = Message::try_from(msg) else {
+            continue;
         };
 
         let enc = PlainMessage::from(msg)
@@ -48,7 +48,7 @@ fn test_read_fuzz_corpus() {
 }
 
 #[test]
-fn can_read_safari_client_hello() {
+fn can_read_safari_client_hello_with_ip_address_in_sni_extension() {
     let _ = env_logger::Builder::new()
         .filter(None, log::LevelFilter::Trace)
         .try_init();
@@ -70,9 +70,9 @@ fn can_read_safari_client_hello() {
         \x79\x2f\x33\x08\x68\x74\x74\x70\x2f\x31\x2e\x31\x00\x0b\x00\x02\
         \x01\x00\x00\x0a\x00\x0a\x00\x08\x00\x1d\x00\x17\x00\x18\x00\x19";
     let mut rd = Reader::init(bytes);
-    let m = OpaqueMessage::read(&mut rd).unwrap();
-    println!("m = {:?}", m);
-    assert!(Message::try_from(m.into_plain_message()).is_err());
+    let m = OutboundOpaqueMessage::read(&mut rd).unwrap();
+    println!("m = {m:?}");
+    Message::try_from(m.into_plain_message()).unwrap();
 }
 
 #[test]
@@ -91,17 +91,53 @@ fn construct_all_types() {
         &b"\x18\x03\x04\x00\x04\x11\x22\x33\x44"[..],
     ];
     for &bytes in samples.iter() {
-        let m = OpaqueMessage::read(&mut Reader::init(bytes)).unwrap();
-        println!("m = {:?}", m);
+        let m = OutboundOpaqueMessage::read(&mut Reader::init(bytes)).unwrap();
+        println!("m = {m:?}");
         let m = Message::try_from(m.into_plain_message());
-        println!("m' = {:?}", m);
+        println!("m' = {m:?}");
     }
 }
 
 #[test]
 fn debug_payload() {
-    assert_eq!("01020304", format!("{:?}", Payload(vec![1, 2, 3, 4])));
-    assert_eq!("01020304", format!("{:?}", PayloadU8(vec![1, 2, 3, 4])));
-    assert_eq!("01020304", format!("{:?}", PayloadU16(vec![1, 2, 3, 4])));
-    assert_eq!("01020304", format!("{:?}", PayloadU24(vec![1, 2, 3, 4])));
+    assert_eq!("01020304", format!("{:?}", Payload::new(vec![1, 2, 3, 4])));
+    assert_eq!(
+        "01020304",
+        format!("{:?}", PayloadU8::<NonEmpty>::new(vec![1, 2, 3, 4]))
+    );
+    assert_eq!(
+        "01020304",
+        format!("{:?}", PayloadU16::<MaybeEmpty>::new(vec![1, 2, 3, 4]))
+    );
+    assert_eq!(
+        "01020304",
+        format!(
+            "{:?}",
+            PayloadU24::<'static, NonEmpty>::from(Payload::new(vec![1, 2, 3, 4]))
+        )
+    );
+}
+
+#[test]
+fn into_wire_format() {
+    // Message::into_wire_bytes() include both message-level and handshake-level headers
+    assert_eq!(
+        Message::build_key_update_request().into_wire_bytes(),
+        &[0x16, 0x3, 0x4, 0x0, 0x5, 0x18, 0x0, 0x0, 0x1, 0x1]
+    );
+}
+
+#[test]
+fn tls13_unpadded_message_rejects_protected_change_cipher_spec() {
+    let mut payload = [0x01u8, ContentType::ChangeCipherSpec.into(), 0x00];
+    let msg = InboundOpaqueMessage::new(
+        ContentType::ApplicationData,
+        ProtocolVersion::TLSv1_2,
+        &mut payload,
+    );
+    assert_eq!(
+        msg.into_tls13_unpadded_message()
+            .unwrap_err(),
+        Error::PeerMisbehaved(PeerMisbehaved::IllegalMiddleboxChangeCipherSpec)
+    );
 }

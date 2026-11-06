@@ -3,10 +3,10 @@ use crate::io::AsyncWrite;
 use bytes::Buf;
 use pin_project_lite::pin_project;
 use std::future::Future;
-use std::io;
+use std::io::{self, IoSlice};
 use std::marker::PhantomPinned;
 use std::pin::Pin;
-use std::task::{Context, Poll};
+use std::task::{ready, Context, Poll};
 
 pin_project! {
     /// A future to write some of the buffer to an `AsyncWrite`.
@@ -42,9 +42,25 @@ where
     type Output = io::Result<()>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        const MAX_VECTOR_ELEMENTS: usize = 64;
+
         let me = self.project();
         while me.buf.has_remaining() {
-            let n = ready!(Pin::new(&mut *me.writer).poll_write(cx, me.buf.chunk())?);
+            let n = loop {
+                let result = if me.writer.is_write_vectored() {
+                    let mut slices = [IoSlice::new(&[]); MAX_VECTOR_ELEMENTS];
+                    let cnt = me.buf.chunks_vectored(&mut slices);
+                    ready!(Pin::new(&mut *me.writer).poll_write_vectored(cx, &slices[..cnt]))
+                } else {
+                    ready!(Pin::new(&mut *me.writer).poll_write(cx, me.buf.chunk()))
+                };
+
+                match result {
+                    Ok(n) => break n,
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(e) => return Poll::Ready(Err(e)),
+                }
+            };
             me.buf.advance(n);
             if n == 0 {
                 return Poll::Ready(Err(io::ErrorKind::WriteZero.into()));

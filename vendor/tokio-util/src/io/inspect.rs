@@ -1,8 +1,7 @@
-use futures_core::ready;
 use pin_project_lite::pin_project;
 use std::io::{IoSlice, Result};
 use std::pin::Pin;
-use std::task::{Context, Poll};
+use std::task::{ready, Context, Poll};
 
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
@@ -18,7 +17,7 @@ pin_project! {
 }
 
 impl<R, F> InspectReader<R, F> {
-    /// Create a new InspectReader, wrapping `reader` and calling `f` for the
+    /// Create a new `InspectReader`, wrapping `reader` and calling `f` for the
     /// new data supplied by each read call.
     ///
     /// The closure will only be called with an empty slice if the inner reader
@@ -30,6 +29,25 @@ impl<R, F> InspectReader<R, F> {
         F: FnMut(&[u8]),
     {
         InspectReader { reader, f }
+    }
+
+    /// Acquires a reference to the underlying reader.
+    pub fn get_ref(&self) -> &R {
+        &self.reader
+    }
+
+    /// Acquires a mutable reference to the underlying reader.
+    ///
+    /// I/O performed directly on the underlying reader is not inspected.
+    pub fn get_mut(&mut self) -> &mut R {
+        &mut self.reader
+    }
+
+    /// Acquires a pinned mutable reference to the underlying reader.
+    ///
+    /// I/O performed directly on the underlying reader is not inspected.
+    pub fn get_pin_mut(self: Pin<&mut Self>) -> Pin<&mut R> {
+        self.project().reader
     }
 
     /// Consumes the `InspectReader`, returning the wrapped reader
@@ -100,7 +118,7 @@ pin_project! {
 }
 
 impl<W, F> InspectWriter<W, F> {
-    /// Create a new InspectWriter, wrapping `write` and calling `f` for the
+    /// Create a new `InspectWriter`, wrapping `write` and calling `f` for the
     /// data successfully written by each write call.
     ///
     /// The closure `f` will never be called with an empty slice. A vectored
@@ -112,6 +130,25 @@ impl<W, F> InspectWriter<W, F> {
         F: FnMut(&[u8]),
     {
         InspectWriter { writer, f }
+    }
+
+    /// Acquires a reference to the underlying writer.
+    pub fn get_ref(&self) -> &W {
+        &self.writer
+    }
+
+    /// Acquires a mutable reference to the underlying writer.
+    ///
+    /// I/O performed directly on the underlying writer is not inspected.
+    pub fn get_mut(&mut self) -> &mut W {
+        &mut self.writer
+    }
+
+    /// Acquires a pinned mutable reference to the underlying writer.
+    ///
+    /// I/O performed directly on the underlying writer is not inspected.
+    pub fn get_pin_mut(self: Pin<&mut Self>) -> Pin<&mut W> {
+        self.project().writer
     }
 
     /// Consumes the `InspectWriter`, returning the wrapped writer

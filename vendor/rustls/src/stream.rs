@@ -1,10 +1,12 @@
-use crate::conn::{ConnectionCommon, SideData};
-
 use core::ops::{Deref, DerefMut};
-use std::io::{IoSlice, Read, Result, Write};
+use std::io::{BufRead, ErrorKind, IoSlice, Read, Result, Write};
+
+use crate::conn::{ConnectionCommon, SideData};
 
 /// This type implements `io::Read` and `io::Write`, encapsulating
 /// a Connection `C` and an underlying transport `T`, such as a socket.
+///
+/// Relies on [`ConnectionCommon::complete_io()`] to perform the necessary I/O.
 ///
 /// This allows you to use a rustls Connection like a normal stream.
 #[derive(Debug)]
@@ -41,6 +43,39 @@ where
 
         Ok(())
     }
+
+    fn prepare_read(&mut self) -> Result<()> {
+        // Return buffered plaintext without doing any IO: `complete_io()` does not read
+        // while plaintext is buffered, so blocked writes would otherwise hide it.
+        if !self.conn.received_plaintext.is_empty() {
+            return Ok(());
+        }
+
+        self.complete_prior_io()?;
+
+        // We call complete_io() in a loop since a single call may read only
+        // a partial packet from the underlying transport, or may only write
+        // pending TLS data (like an alert queued while processing received
+        // records). A full packet is needed to get more plaintext, which we
+        // must do if EOF has not been hit.
+        while self.conn.wants_read() {
+            let (read, written) = self.conn.complete_io(self.sock)?;
+            if read == 0 && written == 0 {
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
+    // Implements `BufRead::fill_buf` but with more flexible lifetimes, so StreamOwned can reuse it
+    fn fill_buf(mut self) -> Result<&'a [u8]>
+    where
+        S: 'a,
+    {
+        self.prepare_read()?;
+        self.conn.reader().into_first_chunk()
+    }
 }
 
 impl<'a, C, T, S> Read for Stream<'a, C, T>
@@ -50,36 +85,34 @@ where
     S: SideData,
 {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-        self.complete_prior_io()?;
-
-        // We call complete_io() in a loop since a single call may read only
-        // a partial packet from the underlying transport. A full packet is
-        // needed to get more plaintext, which we must do if EOF has not been
-        // hit.
-        while self.conn.wants_read() {
-            if self.conn.complete_io(self.sock)?.0 == 0 {
-                break;
-            }
-        }
-
+        self.prepare_read()?;
         self.conn.reader().read(buf)
     }
 
     #[cfg(read_buf)]
-    fn read_buf(&mut self, cursor: core::io::BorrowedCursor<'_>) -> Result<()> {
-        self.complete_prior_io()?;
-
-        // We call complete_io() in a loop since a single call may read only
-        // a partial packet from the underlying transport. A full packet is
-        // needed to get more plaintext, which we must do if EOF has not been
-        // hit.
-        while self.conn.wants_read() {
-            if self.conn.complete_io(self.sock)?.0 == 0 {
-                break;
-            }
-        }
-
+    fn read_buf(&mut self, cursor: core::io::BorrowedCursor<'_, u8>) -> Result<()> {
+        self.prepare_read()?;
         self.conn.reader().read_buf(cursor)
+    }
+}
+
+impl<'a, C, T, S> BufRead for Stream<'a, C, T>
+where
+    C: 'a + DerefMut + Deref<Target = ConnectionCommon<S>>,
+    T: 'a + Read + Write,
+    S: 'a + SideData,
+{
+    fn fill_buf(&mut self) -> Result<&[u8]> {
+        // reborrow to get an owned `Stream`
+        Stream {
+            conn: self.conn,
+            sock: self.sock,
+        }
+        .fill_buf()
+    }
+
+    fn consume(&mut self, amt: usize) {
+        self.conn.reader().consume(amt)
     }
 }
 
@@ -121,17 +154,31 @@ where
     fn flush(&mut self) -> Result<()> {
         self.complete_prior_io()?;
 
-        self.conn.writer().flush()?;
-        if self.conn.wants_write() {
-            self.conn.complete_io(self.sock)?;
+        // `complete_prior_io()` may return after making only partial progress, so
+        // keep writing until all TLS output has been handed to the transport.
+        while self.conn.wants_write() {
+            match self.conn.write_tls(self.sock) {
+                Ok(0) => return Err(ErrorKind::WriteZero.into()),
+                Ok(_) => {}
+                Err(err) if err.kind() == ErrorKind::Interrupted => {}
+                Err(err) => return Err(err),
+            }
         }
-        Ok(())
+
+        // Always flush the transport, even if we had no TLS output: an earlier
+        // flush (for example, from within `write()`) may have failed.
+        self.sock.flush()?;
+
+        // Report any fatal error the connection encountered after an earlier `write()`
+        // had already accepted its plaintext (for example, while processing received data).
+        self.conn.writer().flush()
     }
 }
 
 /// This type implements `io::Read` and `io::Write`, encapsulating
-/// and owning a Connection `C` and an underlying blocking transport
-/// `T`, such as a socket.
+/// and owning a Connection `C` and an underlying transport `T`, such as a socket.
+///
+/// Relies on [`ConnectionCommon::complete_io()`] to perform the necessary I/O.
 ///
 /// This allows you to use a rustls Connection like a normal stream.
 #[derive(Debug)]
@@ -199,8 +246,23 @@ where
     }
 
     #[cfg(read_buf)]
-    fn read_buf(&mut self, cursor: core::io::BorrowedCursor<'_>) -> Result<()> {
+    fn read_buf(&mut self, cursor: core::io::BorrowedCursor<'_, u8>) -> Result<()> {
         self.as_stream().read_buf(cursor)
+    }
+}
+
+impl<C, T, S> BufRead for StreamOwned<C, T>
+where
+    C: DerefMut + Deref<Target = ConnectionCommon<S>>,
+    T: Read + Write,
+    S: 'static + SideData,
+{
+    fn fill_buf(&mut self) -> Result<&[u8]> {
+        self.as_stream().fill_buf()
+    }
+
+    fn consume(&mut self, amt: usize) {
+        self.as_stream().consume(amt)
     }
 }
 
@@ -221,10 +283,11 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::net::TcpStream;
+
     use super::{Stream, StreamOwned};
     use crate::client::ClientConnection;
     use crate::server::ServerConnection;
-    use std::net::TcpStream;
 
     #[test]
     fn stream_can_be_created_for_connection_and_tcpstream() {

@@ -11,7 +11,7 @@
 //! be able to pass a reference to one of those fields across threads.
 //!
 //! [`Type`]: crate::Type
-//! [`Sync`]: std::marker::Sync
+//! [`Sync`]: core::marker::Sync
 //!
 //! If the field type does *not* implement `Sync` as required, we want the
 //! compiler to report an error pointing out exactly which type it was.
@@ -53,7 +53,7 @@
 //! `Sync`. The errors they would see look like the following.
 //!
 //! ```text
-//! error[E0277]: the trait bound `*const i32: std::marker::Sync` is not satisfied
+//! error[E0277]: the trait bound `*const i32: core::marker::Sync` is not satisfied
 //!   --> src/main.rs:10:21
 //!    |
 //! 10 |     bad_field: *const i32,
@@ -108,7 +108,7 @@ impl<T: ?Sized + ToTokens> Spanned for T {
 }
 
 mod private {
-    use super::*;
+    use crate::spanned::ToTokens;
 
     pub trait Sealed {}
     impl<T: ?Sized + ToTokens> Sealed for T {}

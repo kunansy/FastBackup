@@ -4,11 +4,11 @@
 //
 pub use crate::types::TokenInfo;
 
-use futures::lock::Mutex;
-use itertools::Itertools;
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
+use thiserror::Error;
+use tokio::sync::Mutex;
 
 use async_trait::async_trait;
 
@@ -62,16 +62,12 @@ pub(crate) struct ScopeSet<'a, T> {
 
 // Implement Clone manually. Auto derive fails to work correctly because we want
 // Clone to be implemented regardless of whether T is Clone or not.
-impl<'a, T> Clone for ScopeSet<'a, T> {
+impl<T> Clone for ScopeSet<'_, T> {
     fn clone(&self) -> Self {
-        ScopeSet {
-            hash: self.hash,
-            filter: self.filter,
-            scopes: self.scopes,
-        }
+        *self
     }
 }
-impl<'a, T> Copy for ScopeSet<'a, T> {}
+impl<T> Copy for ScopeSet<'_, T> {}
 
 impl<'a, T> ScopeSet<'a, T>
 where
@@ -111,13 +107,24 @@ where
     }
 }
 
+#[derive(Debug, Error)]
+/// Errors that occur while caching tokens in storage
+pub enum TokenStorageError {
+    /// Error while performing an I/O action
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+    /// Other errors
+    #[error("{0}")]
+    Other(std::borrow::Cow<'static, str>),
+}
+
 /// Implement your own token storage solution by implementing this trait. You need a way to
 /// store and retrieve tokens, each keyed by a set of scopes.
 #[async_trait]
 pub trait TokenStorage: Send + Sync {
     /// Store a token for the given set of scopes so that it can be retrieved later by get()
     /// TokenInfo can be serialized with serde.
-    async fn set(&self, scopes: &[&str], token: TokenInfo) -> anyhow::Result<()>;
+    async fn set(&self, scopes: &[&str], token: TokenInfo) -> Result<(), TokenStorageError>;
 
     /// Retrieve a token stored by set for the given set of scopes
     async fn get(&self, scopes: &[&str]) -> Option<TokenInfo>;
@@ -134,7 +141,7 @@ impl Storage {
         &self,
         scopes: ScopeSet<'_, T>,
         token: TokenInfo,
-    ) -> anyhow::Result<()>
+    ) -> Result<(), TokenStorageError>
     where
         T: AsRef<str>,
     {
@@ -142,20 +149,15 @@ impl Storage {
             Storage::Memory { tokens } => Ok(tokens.lock().await.set(scopes, token)?),
             Storage::Disk(disk_storage) => Ok(disk_storage.set(scopes, token).await?),
             Storage::Custom(custom_storage) => {
-                let str_scopes: Vec<_> = scopes
+                let mut str_scopes = scopes
                     .scopes
                     .iter()
                     .map(|scope| scope.as_ref())
-                    .sorted()
-                    .unique()
-                    .collect();
+                    .collect::<Vec<_>>();
+                str_scopes.sort_unstable();
+                str_scopes.dedup();
 
-                custom_storage
-                    .set(
-                        &str_scopes[..], // TODO: sorted, unique
-                        token,
-                    )
-                    .await
+                custom_storage.set(&str_scopes[..], token).await
             }
         }
     }
@@ -168,13 +170,13 @@ impl Storage {
             Storage::Memory { tokens } => tokens.lock().await.get(scopes),
             Storage::Disk(disk_storage) => disk_storage.get(scopes).await,
             Storage::Custom(custom_storage) => {
-                let str_scopes: Vec<_> = scopes
+                let mut str_scopes = scopes
                     .scopes
                     .iter()
                     .map(|scope| scope.as_ref())
-                    .sorted()
-                    .unique()
-                    .collect();
+                    .collect::<Vec<_>>();
+                str_scopes.sort_unstable();
+                str_scopes.dedup();
 
                 custom_storage.get(&str_scopes[..]).await
             }
@@ -356,7 +358,8 @@ pub(crate) struct DiskStorage {
 }
 
 impl DiskStorage {
-    pub(crate) async fn new(filename: PathBuf) -> Result<Self, io::Error> {
+    pub(crate) async fn new(filename: impl Into<PathBuf>) -> Result<Self, io::Error> {
+        let filename = filename.into();
         let tokens = match JSONTokens::load_from_file(&filename).await {
             Ok(tokens) => tokens,
             Err(e) if e.kind() == io::ErrorKind::NotFound => JSONTokens::new(),
@@ -424,6 +427,8 @@ async fn open_writeable_file(
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     #[test]
@@ -455,11 +460,15 @@ mod tests {
             id_token: None,
         };
         let scope_set = ScopeSet::from(&["myscope"]);
-        let tempdir = tempfile::tempdir().unwrap();
+
+        let tempdir = tempfile::Builder::new()
+            .tempdir()
+            .expect("Tempdir to be created");
+
+        let filename = tempdir.path().join("tokenstorage.json");
+
         {
-            let storage = DiskStorage::new(tempdir.path().join("tokenstorage.json"))
-                .await
-                .unwrap();
+            let storage = DiskStorage::new(&filename).await.unwrap();
             assert!(storage.get(scope_set).await.is_none());
             storage
                 .set(scope_set, new_token("my_access_token"))
@@ -470,11 +479,21 @@ mod tests {
                 Some(new_token("my_access_token"))
             );
         }
+        async fn find_file(path: &Path) {
+            loop {
+                if tokio::fs::metadata(path).await.is_ok() {
+                    break;
+                }
+            }
+        }
+
+        tokio::time::timeout(Duration::from_secs(1), find_file(&filename))
+            .await
+            .unwrap_or_else(|_| panic!("File not created at {}", filename.to_string_lossy()));
+
         {
             // Create a new DiskStorage instance and verify the tokens were read from disk correctly.
-            let storage = DiskStorage::new(tempdir.path().join("tokenstorage.json"))
-                .await
-                .unwrap();
+            let storage = DiskStorage::new(&filename).await.unwrap();
             assert_eq!(
                 storage.get(scope_set).await,
                 Some(new_token("my_access_token"))

@@ -2,35 +2,46 @@ use core_foundation_sys::base::CFTypeID;
 use core_foundation_sys::data::CFDataRef;
 use core_foundation_sys::dictionary::CFDictionaryRef;
 use core_foundation_sys::error::CFErrorRef;
-#[cfg(any(feature = "OSX_10_12", target_os = "ios"))]
 use core_foundation_sys::string::CFStringRef;
 
 use crate::base::SecKeyRef;
 
-#[cfg(any(feature = "OSX_10_12", target_os = "ios"))]
 pub type SecKeyAlgorithm = CFStringRef;
+
+pub type SecKeyOperationType = u32;
+pub const kSecKeyOperationTypeSign: SecKeyOperationType = 0;
+pub const kSecKeyOperationTypeVerify: SecKeyOperationType = 1;
+pub const kSecKeyOperationTypeEncrypt: SecKeyOperationType = 2;
+pub const kSecKeyOperationTypeDecrypt: SecKeyOperationType = 3;
+pub const kSecKeyOperationTypeKeyExchange: SecKeyOperationType = 4;
 
 extern "C" {
     pub fn SecKeyGetTypeID() -> CFTypeID;
 
-    #[cfg(any(feature = "OSX_10_12", target_os = "ios"))]
     pub fn SecKeyCreateRandomKey(parameters: CFDictionaryRef, error: *mut CFErrorRef) -> SecKeyRef;
 
+    pub fn SecKeyCreateWithData(
+        keyData: CFDataRef,
+        attributes: CFDictionaryRef,
+        error: *mut CFErrorRef,
+    ) -> SecKeyRef;
+
     #[cfg(target_os = "macos")]
+    #[deprecated(note = "Deprecated by Apple. There's no replacement for symmetric keys")]
     pub fn SecKeyCreateFromData(
         parameters: CFDictionaryRef,
         keyData: CFDataRef,
         error: *mut CFErrorRef,
     ) -> SecKeyRef;
 
-    #[cfg(any(feature = "OSX_10_12", target_os = "ios"))]
+
     pub fn SecKeyCopyExternalRepresentation(key: SecKeyRef, error: *mut CFErrorRef) -> CFDataRef;
-    #[cfg(any(feature = "OSX_10_12", target_os = "ios"))]
+
     pub fn SecKeyCopyAttributes(key: SecKeyRef) -> CFDictionaryRef;
-    #[cfg(any(feature = "OSX_10_12", target_os = "ios"))]
+
     pub fn SecKeyCopyPublicKey(key: SecKeyRef) -> SecKeyRef;
 
-    #[cfg(any(feature = "OSX_10_12", target_os = "ios"))]
+
     pub fn SecKeyCreateSignature(
         key: SecKeyRef,
         algorithm: SecKeyAlgorithm,
@@ -38,7 +49,7 @@ extern "C" {
         error: *mut CFErrorRef,
     ) -> CFDataRef;
 
-    #[cfg(any(feature = "OSX_10_12", target_os = "ios"))]
+
     pub fn SecKeyVerifySignature(
         key: SecKeyRef,
         algorithm: SecKeyAlgorithm,
@@ -46,32 +57,62 @@ extern "C" {
         signature: CFDataRef,
         error: *mut CFErrorRef,
     ) -> core_foundation_sys::base::Boolean;
+
+
+    pub fn SecKeyCreateEncryptedData(
+        key: SecKeyRef,
+        algorithm: SecKeyAlgorithm,
+        plaintext: CFDataRef,
+        error: *mut CFErrorRef,
+    ) -> CFDataRef;
+
+
+    pub fn SecKeyCreateDecryptedData(
+        key: SecKeyRef,
+        algorithm: SecKeyAlgorithm,
+        ciphertext: CFDataRef,
+        error: *mut CFErrorRef,
+    ) -> CFDataRef;
+
+
+    pub fn SecKeyIsAlgorithmSupported(
+        key: SecKeyRef,
+        operation: SecKeyOperationType,
+        algorithm: SecKeyAlgorithm,
+    ) -> core_foundation_sys::base::Boolean;
+
+
+    pub fn SecKeyCopyKeyExchangeResult(
+        privateKey: SecKeyRef,
+        algorithm: SecKeyAlgorithm,
+        publicKey: SecKeyRef,
+        parameters: CFDictionaryRef,
+        error: *mut CFErrorRef,
+    ) -> CFDataRef;
 }
 
-#[cfg(any(feature = "OSX_10_12", target_os = "ios"))]
 macro_rules! names {
-    ($($i:ident => $x:ident),*) => {
+    ($( $(# $meta:literal )* $i:ident => $x:ident),*) => {
         extern "C" {
-            $(pub static $x: SecKeyAlgorithm;)*
+            $($(#[cfg(feature = $meta)])* pub static $x: SecKeyAlgorithm;)*
         }
 
         #[non_exhaustive]
         #[derive(Copy, Clone)]
         pub enum Algorithm {
-            $( $i, )*
+            $( $(#[cfg(feature = $meta)])* $i, )*
         }
 
         impl From<Algorithm> for SecKeyAlgorithm {
             fn from(m: Algorithm) -> Self {
                 unsafe { match m {
-                    $( Algorithm::$i => $x, )*
+                    $( $(#[cfg(feature = $meta)])* Algorithm::$i => $x, )*
                 } }
             }
         }
     }
 }
 
-#[cfg(any(feature = "OSX_10_12", target_os = "ios"))]
 names! {
     ECIESEncryptionStandardX963SHA1AESGCM => kSecKeyAlgorithmECIESEncryptionStandardX963SHA1AESGCM,
     ECIESEncryptionStandardX963SHA224AESGCM => kSecKeyAlgorithmECIESEncryptionStandardX963SHA224AESGCM,

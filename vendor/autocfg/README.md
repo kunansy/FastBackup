@@ -4,7 +4,7 @@ autocfg
 [![autocfg crate](https://img.shields.io/crates/v/autocfg.svg)](https://crates.io/crates/autocfg)
 [![autocfg documentation](https://docs.rs/autocfg/badge.svg)](https://docs.rs/autocfg)
 ![minimum rustc 1.0](https://img.shields.io/badge/rustc-1.0+-red.svg)
-![build status](https://github.com/cuviper/autocfg/workflows/master/badge.svg)
+![build status](https://github.com/cuviper/autocfg/workflows/CI/badge.svg)
 
 A Rust library for build scripts to automatically configure code based on
 compiler support.  Code snippets are dynamically tested to see if the `rustc`
@@ -42,6 +42,32 @@ should only be used when the compiler supports it.
 
 
 ## Release Notes
+
+- 1.5.1 (2026-05-22)
+
+  - Refactor the `test_wrappers` test without any shell script.
+
+- 1.5.0 (2025-06-17)
+
+  - Add `edition` and `set_edition` to control the Rust edition used in probes.
+  - Remove probe result files so they don't pollute the output directory.
+
+- 1.4.0 (2024-09-26)
+
+  - Add `emit_possibility` for Rust 1.80's [checked cfgs], and call that
+    automatically for methods that conditionally `emit`, by @Techcable.
+
+[checked cfgs]: https://blog.rust-lang.org/2024/05/06/check-cfg.html
+
+- 1.3.0 (2024-05-03)
+
+  - Add `probe_raw` for direct control of the code that will be test-compiled.
+  - Use wrappers when querying the `rustc` version information too.
+
+- 1.2.0 (2024-03-25)
+
+  - Add `no_std` and `set_no_std` to control the use of `#![no_std]` in probes.
+  - Use `RUSTC_WRAPPER` and `RUSTC_WORKSPACE_WRAPPER` when they are set.
 
 - 1.1.0 (2022-02-07)
   - Use `CARGO_ENCODED_RUSTFLAGS` when it is set.
@@ -88,8 +114,8 @@ treated as a major breaking change for semver purposes.
 This project is licensed under either of
 
  * Apache License, Version 2.0, ([LICENSE-APACHE](LICENSE-APACHE) or
-   http://www.apache.org/licenses/LICENSE-2.0)
+   https://www.apache.org/licenses/LICENSE-2.0)
  * MIT license ([LICENSE-MIT](LICENSE-MIT) or
-   http://opensource.org/licenses/MIT)
+   https://opensource.org/licenses/MIT)
 
 at your option.

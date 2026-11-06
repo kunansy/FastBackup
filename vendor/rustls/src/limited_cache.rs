@@ -1,8 +1,8 @@
 use alloc::collections::VecDeque;
 use core::borrow::Borrow;
 use core::hash::Hash;
-use std::collections::hash_map::Entry;
-use std::collections::HashMap;
+
+use crate::hash_map::{Entry, HashMap};
 
 /// A HashMap-alike, which never gets larger than a specified
 /// capacity, and evicts the oldest insertion to maintain this.
@@ -17,6 +17,10 @@ pub(crate) struct LimitedCache<K: Clone + Hash + Eq, V> {
 
     // first item is the oldest key
     oldest: VecDeque<K>,
+
+    /// Maximum number of entries to retain. Compared after insert so
+    /// a capacity of 1 still keeps the item that was just added.
+    max: usize,
 }
 
 impl<K, V> LimitedCache<K, V>
@@ -24,14 +28,6 @@ where
     K: Eq + Hash + Clone + core::fmt::Debug,
     V: Default,
 {
-    /// Create a new LimitedCache with the given rough capacity.
-    pub(crate) fn new(capacity_order_of_magnitude: usize) -> Self {
-        Self {
-            map: HashMap::with_capacity(capacity_order_of_magnitude),
-            oldest: VecDeque::with_capacity(capacity_order_of_magnitude),
-        }
-    }
-
     pub(crate) fn get_or_insert_default_and_edit(&mut self, k: K, edit: impl FnOnce(&mut V)) {
         let inserted_new_item = match self.map.entry(k) {
             Entry::Occupied(value) => {
@@ -46,11 +42,32 @@ where
             }
         };
 
-        // ensure next insertion does not require a realloc
-        if inserted_new_item && self.oldest.capacity() == self.oldest.len() {
+        if inserted_new_item && self.oldest.len() > self.max {
             if let Some(oldest_key) = self.oldest.pop_front() {
                 self.map.remove(&oldest_key);
             }
+        }
+    }
+
+    pub(crate) fn get_mut<Q: Hash + Eq + ?Sized>(&mut self, k: &Q) -> Option<&mut V>
+    where
+        K: Borrow<Q>,
+    {
+        self.map.get_mut(k)
+    }
+}
+
+impl<K, V> LimitedCache<K, V>
+where
+    K: Eq + Hash + Clone + core::fmt::Debug,
+    V: Default,
+{
+    /// Create a new LimitedCache with the given rough capacity.
+    pub(crate) fn new(capacity_order_of_magnitude: usize) -> Self {
+        Self {
+            map: HashMap::with_capacity(capacity_order_of_magnitude),
+            oldest: VecDeque::with_capacity(capacity_order_of_magnitude),
+            max: capacity_order_of_magnitude,
         }
     }
 
@@ -70,53 +87,43 @@ where
             }
         };
 
-        // ensure next insertion does not require a realloc
-        if inserted_new_item && self.oldest.capacity() == self.oldest.len() {
+        if inserted_new_item && self.oldest.len() > self.max {
             if let Some(oldest_key) = self.oldest.pop_front() {
                 self.map.remove(&oldest_key);
             }
         }
     }
 
-    pub(crate) fn get<Q: ?Sized>(&self, k: &Q) -> Option<&V>
+    pub(crate) fn get<Q: Hash + Eq + ?Sized>(&self, k: &Q) -> Option<&V>
     where
         K: Borrow<Q>,
-        Q: Hash + Eq,
     {
         self.map.get(k)
     }
 
-    pub(crate) fn get_mut<Q: ?Sized>(&mut self, k: &Q) -> Option<&mut V>
+    pub(crate) fn remove<Q: Hash + Eq + ?Sized>(&mut self, k: &Q) -> Option<V>
     where
         K: Borrow<Q>,
-        Q: Hash + Eq,
     {
-        self.map.get_mut(k)
-    }
+        let value = self.map.remove(k)?;
 
-    pub(crate) fn remove<Q: ?Sized>(&mut self, k: &Q) -> Option<V>
-    where
-        K: Borrow<Q>,
-        Q: Hash + Eq,
-    {
-        if let Some(value) = self.map.remove(k) {
-            // O(N) search, followed by O(N) removal
-            if let Some(index) = self
-                .oldest
-                .iter()
-                .position(|item| item.borrow() == k)
-            {
-                self.oldest.remove(index);
-            }
-            Some(value)
-        } else {
-            None
+        // O(N) search, followed by O(N) removal
+        if let Some(index) = self
+            .oldest
+            .iter()
+            .position(|item| item.borrow() == k)
+        {
+            self.oldest.remove(index);
         }
+
+        Some(value)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::prelude::v1::*;
+
     type Test = super::LimitedCache<String, usize>;
 
     #[test]
@@ -134,9 +141,23 @@ mod tests {
         t.insert("def".into(), 2);
         t.insert("ghi".into(), 3);
 
-        assert_eq!(t.get("abc"), None);
+        assert_eq!(t.get("abc"), Some(&1));
         assert_eq!(t.get("def"), Some(&2));
         assert_eq!(t.get("ghi"), Some(&3));
+
+        t.insert("jkl".into(), 4);
+        assert_eq!(t.get("abc"), None);
+        assert_eq!(t.get("jkl"), Some(&4));
+    }
+
+    #[test]
+    fn test_capacity_one_retains_the_item() {
+        let mut t = Test::new(1);
+        t.insert("abc".into(), 1);
+        assert_eq!(t.get("abc"), Some(&1));
+        t.insert("def".into(), 2);
+        assert_eq!(t.get("abc"), None);
+        assert_eq!(t.get("def"), Some(&2));
     }
 
     #[test]
@@ -151,7 +172,7 @@ mod tests {
         t.insert("jkl".into(), 4);
 
         assert_eq!(t.get("abc"), None);
-        assert_eq!(t.get("def"), None);
+        assert_eq!(t.get("def"), Some(&2));
         assert_eq!(t.get("ghi"), Some(&3));
         assert_eq!(t.get("jkl"), Some(&4));
     }
@@ -168,10 +189,14 @@ mod tests {
         t.insert("ghi".into(), 3);
         t.insert("jkl".into(), 4);
 
-        assert_eq!(t.get("abc"), None);
+        assert_eq!(t.get("abc"), Some(&1));
         assert_eq!(t.get("def"), None);
         assert_eq!(t.get("ghi"), Some(&3));
         assert_eq!(t.get("jkl"), Some(&4));
+
+        t.insert("mno".into(), 5);
+        assert_eq!(t.get("abc"), None);
+        assert_eq!(t.get("mno"), Some(&5));
     }
 
     #[test]
@@ -189,7 +214,7 @@ mod tests {
 
         assert_eq!(t.get("abc"), None);
         assert_eq!(t.get("def"), None);
-        assert_eq!(t.get("ghi"), None);
+        assert_eq!(t.get("ghi"), Some(&3));
         assert_eq!(t.get("jkl"), Some(&4));
         assert_eq!(t.get("mno"), Some(&5));
     }
@@ -211,26 +236,25 @@ mod tests {
 
         t.get_or_insert_default_and_edit("abc".into(), |v| *v += 1);
         t.get_or_insert_default_and_edit("def".into(), |v| *v += 2);
+        t.get_or_insert_default_and_edit("ghi".into(), |v| *v += 3);
+        assert_eq!(t.get("abc"), Some(&1));
 
         // evicts "abc"
-        t.get_or_insert_default_and_edit("ghi".into(), |v| *v += 3);
+        t.get_or_insert_default_and_edit("jkl".into(), |v| *v += 4);
         assert_eq!(t.get("abc"), None);
 
         // evicts "def"
-        t.get_or_insert_default_and_edit("jkl".into(), |v| *v += 4);
+        t.get_or_insert_default_and_edit("abc".into(), |v| *v += 5);
         assert_eq!(t.get("def"), None);
 
         // evicts "ghi"
-        t.get_or_insert_default_and_edit("abc".into(), |v| *v += 5);
-        assert_eq!(t.get("ghi"), None);
-
-        // evicts "jkl"
         t.get_or_insert_default_and_edit("def".into(), |v| *v += 6);
+        assert_eq!(t.get("ghi"), None);
 
         assert_eq!(t.get("abc"), Some(&5));
         assert_eq!(t.get("def"), Some(&6));
         assert_eq!(t.get("ghi"), None);
-        assert_eq!(t.get("jkl"), None);
+        assert_eq!(t.get("jkl"), Some(&4));
     }
 
     #[test]

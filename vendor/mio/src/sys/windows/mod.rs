@@ -13,13 +13,13 @@ mod overlapped;
 use overlapped::Overlapped;
 
 mod selector;
-pub use selector::{Selector, SelectorInner, SockState};
+pub use selector::Selector;
 
 // Macros must be defined before the modules that use them
 cfg_net! {
     /// Helper macro to execute a system call that returns an `io::Result`.
     //
-    // Macro must be defined before any modules that uses them.
+    // Macro must be defined before any modules that use them.
     macro_rules! syscall {
         ($fn: ident ( $($arg: expr),* $(,)* ), $err_test: path, $err_value: expr) => {{
             let res = unsafe { $fn($($arg, )*) };
@@ -35,6 +35,8 @@ cfg_net! {
 
     pub(crate) mod tcp;
     pub(crate) mod udp;
+
+    pub use selector::{SelectorInner, SockState};
 }
 
 cfg_os_ext! {

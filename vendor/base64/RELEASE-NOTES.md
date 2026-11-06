@@ -1,3 +1,28 @@
+# 0.23.1
+
+- Make the tests build again on non-SIMD architectures
+
+# 0.23.0
+
+- Added more consts for preconfigured configs and engines
+- Make DecodeError::InvalidLastSymbol more clear by including the decoded value
+- Added SIMD-accelerated engines behind the default-on `simd-unsafe` feature: `Simd` picks the best
+  instruction set at runtime (AVX2 on `x86_64`, NEON on `aarch64`) and falls back to the scalar
+  `GeneralPurpose` engine, while `Avx2` and `Neon` target one instruction set with no runtime
+  detection and work in `no_std`. The engines support the standard and URL-safe alphabets.
+- Update MSRV to 1.71.0
+- Add support for custom padding symbols
+
+# 0.22.1
+
+- Correct the symbols used for the predefined `alphabet::BIN_HEX`.
+
+# 0.22.0
+
+- `DecodeSliceError::OutputSliceTooSmall` is now conservative rather than precise. That is, the error will only occur if the decoded output _cannot_ fit, meaning that `Engine::decode_slice` can now be used with exactly-sized output slices. As part of this, `Engine::internal_decode` now returns `DecodeSliceError` instead of `DecodeError`, but that is not expected to affect any external callers.
+- `DecodeError::InvalidLength` now refers specifically to the _number of valid symbols_ being invalid (i.e. `len % 4 == 1`), rather than just the number of input bytes. This avoids confusing scenarios when based on interpretation you could make a case for either `InvalidLength` or `InvalidByte` being appropriate.
+- Decoding is somewhat faster (5-10%)
+
 # 0.21.7
 
 - Support getting an alphabet's contents as a str via `Alphabet::as_str()`

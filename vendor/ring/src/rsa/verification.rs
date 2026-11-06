@@ -4,9 +4,9 @@
 // purpose with or without fee is hereby granted, provided that the above
 // copyright notice and this permission notice appear in all copies.
 //
-// THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHORS DISCLAIM ALL WARRANTIES
+// THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
 // WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
-// MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY
+// MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
 // SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
 // WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION
 // OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
@@ -17,7 +17,12 @@
 use super::{
     parse_public_key, public_key, PublicExponent, RsaParameters, PUBLIC_KEY_PUBLIC_MODULUS_MAX_LEN,
 };
-use crate::{bits, cpu, digest, error, sealed, signature};
+use crate::{
+    bits::{self, FromByteLen as _},
+    cpu, digest,
+    error::{self, InputTooLongError},
+    sealed, signature,
+};
 
 impl signature::VerificationAlgorithm for RsaParameters {
     fn verify(
@@ -35,6 +40,7 @@ impl signature::VerificationAlgorithm for RsaParameters {
             ),
             msg,
             signature,
+            cpu::features(),
         )
     }
 }
@@ -49,7 +55,7 @@ macro_rules! rsa_params {
         /// Only available in `alloc` mode.
         pub static $VERIFY_ALGORITHM: RsaParameters = RsaParameters {
             padding_alg: $PADDING_ALGORITHM,
-            min_bits: bits::BitLength::from_usize_bits($min_bits),
+            min_bits: bits::BitLength::from_bits($min_bits),
         };
     };
 }
@@ -184,6 +190,7 @@ where
             ),
             untrusted::Input::from(message),
             untrusted::Input::from(signature),
+            cpu::features(),
         )
     }
 }
@@ -193,9 +200,11 @@ pub(crate) fn verify_rsa_(
     (n, e): (untrusted::Input, untrusted::Input),
     msg: untrusted::Input,
     signature: untrusted::Input,
+    cpu_features: cpu::Features,
 ) -> Result<(), error::Unspecified> {
     let max_bits: bits::BitLength =
-        bits::BitLength::from_usize_bytes(PUBLIC_KEY_PUBLIC_MODULUS_MAX_LEN)?;
+        bits::BitLength::from_byte_len(PUBLIC_KEY_PUBLIC_MODULUS_MAX_LEN)
+            .map_err(error::erase::<InputTooLongError>)?;
 
     // XXX: FIPS 186-4 seems to indicate that the minimum
     // exponent value is 2**16 + 1, but it isn't clear if this is just for
@@ -207,12 +216,12 @@ pub(crate) fn verify_rsa_(
         params.min_bits,
         max_bits,
         PublicExponent::_3,
-        cpu::features(),
+        cpu_features,
     )?;
 
     // RFC 8017 Section 5.2.2: RSAVP1.
     let mut decoded = [0u8; PUBLIC_KEY_PUBLIC_MODULUS_MAX_LEN];
-    let decoded = key.exponentiate(signature, &mut decoded)?;
+    let decoded = key.exponentiate(signature, &mut decoded, cpu_features)?;
 
     // Verify the padded message is correct.
     let m_hash = digest::digest(params.padding_alg.digest_alg(), msg.as_slice_less_safe());

@@ -4,7 +4,6 @@
 // https://github.com/rust-lang/rust/pull/82525
 #![allow(unknown_lints, renamed_and_removed_lints)]
 #![forbid(unaligned_references, safe_packed_borrows)]
-#![allow(clippy::thread_local_initializer_can_be_made_const)] // clippy bug: this lint doesn't consider MSRV
 
 use std::cell::Cell;
 
@@ -23,7 +22,7 @@ fn weird_repr_packed() {
     // drop using a thread local, to avoid changing
     // the layout of our #[repr(packed)] type.
     thread_local! {
-        static FIELD_ADDR: Cell<usize> = Cell::new(0);
+        static FIELD_ADDR: Cell<usize> = const { Cell::new(0) };
     }
 
     #[repr(packed)]

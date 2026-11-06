@@ -4,6 +4,7 @@ use core::cmp;
 use core::fmt;
 use core::pin::Pin;
 use core::task::{Context, Poll};
+use futures_core::FusedStream;
 use pin_project_lite::pin_project;
 
 pin_project! {
@@ -64,13 +65,22 @@ where
 
         let (lower, upper) = self.stream.size_hint();
 
-        let lower = cmp::min(lower, self.remaining as usize);
+        let lower = cmp::min(lower, self.remaining);
 
         let upper = match upper {
-            Some(x) if x < self.remaining as usize => Some(x),
-            _ => Some(self.remaining as usize),
+            Some(x) if x < self.remaining => Some(x),
+            _ => Some(self.remaining),
         };
 
         (lower, upper)
+    }
+}
+
+impl<St> FusedStream for Take<St>
+where
+    St: Stream,
+{
+    fn is_terminated(&self) -> bool {
+        self.remaining == 0
     }
 }

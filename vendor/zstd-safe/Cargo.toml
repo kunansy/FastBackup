@@ -13,10 +13,15 @@
 edition = "2018"
 rust-version = "1.64"
 name = "zstd-safe"
-version = "7.0.0"
+version = "8.2.0"
 authors = ["Alexandre Bury <alexandre.bury@gmail.com>"]
 build = "build.rs"
 exclude = ["update_consts.sh"]
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
 description = "Safe low-level bindings for the zstd compression library."
 readme = "Readme.md"
 keywords = [
@@ -28,7 +33,7 @@ categories = [
     "api-bindings",
     "compression",
 ]
-license = "MIT/Apache-2.0"
+license = "BSD-3-Clause"
 repository = "https://github.com/gyscos/zstd-rs"
 
 [package.metadata.docs.rs]
@@ -40,13 +45,10 @@ features = [
     "doc-cfg",
 ]
 
-[dependencies.zstd-sys]
-version = "2.0.7"
-default-features = false
-
 [features]
 arrays = []
 bindgen = ["zstd-sys/bindgen"]
+cmake = ["zstd-sys/cmake"]
 debug = ["zstd-sys/debug"]
 default = [
     "legacy",
@@ -59,8 +61,38 @@ fat-lto = ["zstd-sys/fat-lto"]
 legacy = ["zstd-sys/legacy"]
 no_asm = ["zstd-sys/no_asm"]
 pkg-config = ["zstd-sys/pkg-config"]
+seekable = ["zstd-sys/seekable"]
 std = ["zstd-sys/std"]
 thin = ["zstd-sys/thin"]
 thin-lto = ["zstd-sys/thin-lto"]
+vendored = ["zstd-sys/vendored"]
+with-rust-allocator = ["experimental"]
 zdict_builder = ["zstd-sys/zdict_builder"]
 zstdmt = ["zstd-sys/zstdmt"]
+
+[lib]
+name = "zstd_safe"
+path = "src/lib.rs"
+
+[[test]]
+name = "with_rust_allocator"
+path = "tests/with_rust_allocator.rs"
+
+[[test]]
+name = "with_rust_allocator_clones"
+path = "tests/with_rust_allocator_clones.rs"
+
+[[test]]
+name = "with_rust_allocator_dictionaries"
+path = "tests/with_rust_allocator_dictionaries.rs"
+
+[[test]]
+name = "with_rust_allocator_one_shot"
+path = "tests/with_rust_allocator_one_shot.rs"
+
+[dependencies.zstd-sys]
+version = "2.1.2"
+default-features = false
+
+[lints.rust]
+non_upper_case_globals = "allow"

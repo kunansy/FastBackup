@@ -1,10 +1,4 @@
-#![allow(
-    // clippy is broken and shows wrong warnings
-    // clippy on stable does not know yet about the lint name
-    unknown_lints,
-    // https://github.com/rust-lang/rust-clippy/issues/8867
-    clippy::derive_partial_eq_without_eq,
-)]
+//! Test Cases
 
 extern crate alloc;
 
@@ -218,7 +212,7 @@ fn duplicate_value_first_wins_hashset() {
         where
             H: std::hash::Hasher,
         {
-            self.0.hash(state)
+            self.0.hash(state);
         }
     }
 
@@ -279,7 +273,7 @@ fn duplicate_value_last_wins_hashset() {
         where
             H: std::hash::Hasher,
         {
-            self.0.hash(state)
+            self.0.hash(state);
         }
     }
 
@@ -383,4 +377,236 @@ fn duplicate_value_last_wins_btreeset() {
     assert!(entries[0].1);
     assert_eq!(2, entries[1].0);
     assert!(!entries[1].1);
+}
+
+#[derive(Debug, PartialEq, Eq, Deserialize, Serialize)]
+struct UnwrapOrSkipRef<'a> {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "::serde_with::rust::unwrap_or_skip"
+    )]
+    option_field: Option<&'a str>,
+
+    field: &'a str,
+}
+
+#[test]
+fn unwrap_or_skip_ref_some() {
+    let s0 = String::from("g1_&");
+    let s1 = String::from("3&t");
+    let value = UnwrapOrSkipRef {
+        option_field: Some(s0.as_ref()),
+        field: s1.as_ref(),
+    };
+    let expected = expect![[r#"
+        {
+          "option_field": "g1_&",
+          "field": "3&t"
+        }"#]];
+
+    // I can't make the following check abstract over [`UnwrapOrSkipRef`]
+    // because of incompatible lifetimes.
+    let serialized = serde_json::to_string_pretty(&value).unwrap();
+    expected.assert_eq(&serialized);
+    assert_eq!(
+        value,
+        serde_json::from_str::<UnwrapOrSkipRef<'_>>(&serialized).unwrap(),
+        "Deserialization differs from expected value."
+    );
+}
+
+#[test]
+fn unwrap_or_skip_ref_none() {
+    let s1 = String::from("3&t");
+    let value = UnwrapOrSkipRef {
+        option_field: None,
+        field: s1.as_ref(),
+    };
+    let expected = expect![[r#"
+        {
+          "field": "3&t"
+        }"#]];
+
+    let serialized = serde_json::to_string_pretty(&value).unwrap();
+    expected.assert_eq(&serialized);
+    assert_eq!(
+        value,
+        serde_json::from_str::<UnwrapOrSkipRef<'_>>(&serialized).unwrap(),
+        "Deserialization differs from expected value."
+    );
+}
+
+#[derive(Debug, PartialEq, Eq, Deserialize, Serialize)]
+struct UnwrapOrSkip {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "::serde_with::rust::unwrap_or_skip"
+    )]
+    option_field: Option<String>,
+
+    field: String,
+}
+
+#[test]
+fn unwrap_or_skip_some() {
+    let value = UnwrapOrSkip {
+        option_field: Some(String::from("g1_&")),
+        field: String::from("3&t"),
+    };
+    let expected = expect![[r#"
+        {
+          "option_field": "g1_&",
+          "field": "3&t"
+        }"#]];
+
+    let serialized = serde_json::to_string_pretty(&value).unwrap();
+    expected.assert_eq(&serialized);
+    assert_eq!(
+        value,
+        serde_json::from_str::<UnwrapOrSkip>(&serialized).unwrap(),
+        "Deserialization differs from expected value."
+    );
+}
+
+#[test]
+fn unwrap_or_skip_none() {
+    let value = UnwrapOrSkip {
+        option_field: None,
+        field: String::from("3&t"),
+    };
+    let expected = expect![[r#"
+        {
+          "field": "3&t"
+        }"#]];
+
+    let serialized = serde_json::to_string_pretty(&value).unwrap();
+    expected.assert_eq(&serialized);
+    assert_eq!(
+        value,
+        serde_json::from_str::<UnwrapOrSkip>(&serialized).unwrap(),
+        "Deserialization differs from expected value."
+    );
+}
+
+/// Regression test: a malicious `size_hint` must not cause a capacity-overflow
+/// panic when deserializing into the duplicate-key-prevention adapters.
+///
+/// This is the sibling of the `size_hint_cautious` protection added for
+/// GHSA-7gcf-g7xr-8hxj: the `duplicate_key_impls` constructors used by
+/// `rust::sets_duplicate_value_is_error`, `rust::maps_duplicate_key_is_error`,
+/// `rust::sets_last_value_wins` and `rust::maps_first_key_wins` previously
+/// passed the deserializer-reported `size_hint` straight to
+/// `with_capacity_and_hasher`, so a hostile self-describing input claiming a
+/// huge length panicked the parser ("Hash table capacity overflow") before a
+/// single element was read.
+mod malicious_size_hint {
+    use serde::{
+        de::{
+            value::Error as VError, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor,
+        },
+        Deserialize,
+    };
+    use std::collections::{HashMap, HashSet};
+
+    // A deserializer whose seq/map report `size_hint == usize::MAX` but yield no
+    // elements — mimicking untrusted input that lies about its length.
+    struct EvilDe;
+
+    impl<'de> Deserializer<'de> for EvilDe {
+        type Error = VError;
+
+        fn deserialize_seq<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, VError> {
+            visitor.visit_seq(EvilAccess)
+        }
+        fn deserialize_map<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, VError> {
+            visitor.visit_map(EvilAccess)
+        }
+
+        serde::forward_to_deserialize_any! {
+            bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+            bytes byte_buf option unit unit_struct newtype_struct tuple
+            tuple_struct struct enum identifier ignored_any
+        }
+        fn deserialize_any<V: Visitor<'de>>(self, _v: V) -> Result<V::Value, VError> {
+            unimplemented!()
+        }
+    }
+
+    struct EvilAccess;
+
+    impl<'de> SeqAccess<'de> for EvilAccess {
+        type Error = VError;
+        fn next_element_seed<T: DeserializeSeed<'de>>(
+            &mut self,
+            _seed: T,
+        ) -> Result<Option<T::Value>, VError> {
+            Ok(None)
+        }
+        fn size_hint(&self) -> Option<usize> {
+            Some(usize::MAX)
+        }
+    }
+
+    impl<'de> MapAccess<'de> for EvilAccess {
+        type Error = VError;
+        fn next_key_seed<K: DeserializeSeed<'de>>(
+            &mut self,
+            _seed: K,
+        ) -> Result<Option<K::Value>, VError> {
+            Ok(None)
+        }
+        fn next_value_seed<V: DeserializeSeed<'de>>(
+            &mut self,
+            _seed: V,
+        ) -> Result<V::Value, VError> {
+            unreachable!()
+        }
+        fn size_hint(&self) -> Option<usize> {
+            Some(usize::MAX)
+        }
+    }
+
+    #[derive(Deserialize)]
+    #[serde(transparent)]
+    struct SetPreventDup(
+        #[serde(with = "::serde_with::rust::sets_duplicate_value_is_error")] HashSet<u64>,
+    );
+
+    #[derive(Deserialize)]
+    #[serde(transparent)]
+    struct MapPreventDup(
+        #[serde(with = "::serde_with::rust::maps_duplicate_key_is_error")] HashMap<u64, u64>,
+    );
+
+    #[derive(Deserialize)]
+    #[serde(transparent)]
+    struct SetLastWins(#[serde(with = "::serde_with::rust::sets_last_value_wins")] HashSet<u64>);
+
+    #[derive(Deserialize)]
+    #[serde(transparent)]
+    struct MapFirstWins(
+        #[serde(with = "::serde_with::rust::maps_first_key_wins")] HashMap<u64, u64>,
+    );
+
+    #[test]
+    fn sets_duplicate_value_is_error_huge_size_hint() {
+        assert!(SetPreventDup::deserialize(EvilDe).unwrap().0.is_empty());
+    }
+
+    #[test]
+    fn maps_duplicate_key_is_error_huge_size_hint() {
+        assert!(MapPreventDup::deserialize(EvilDe).unwrap().0.is_empty());
+    }
+
+    #[test]
+    fn sets_last_value_wins_huge_size_hint() {
+        assert!(SetLastWins::deserialize(EvilDe).unwrap().0.is_empty());
+    }
+
+    #[test]
+    fn maps_first_key_wins_huge_size_hint() {
+        assert!(MapFirstWins::deserialize(EvilDe).unwrap().0.is_empty());
+    }
 }

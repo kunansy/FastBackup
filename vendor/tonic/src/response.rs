@@ -1,4 +1,30 @@
-use crate::{metadata::MetadataMap, Extensions};
+/*
+ *
+ * Copyright 2025 gRPC authors.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to
+ * deal in the Software without restriction, including without limitation the
+ * rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+ * sell copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+ * IN THE SOFTWARE.
+ *
+ */
+
+use http::Extensions;
+
+use crate::metadata::MetadataMap;
 
 /// A gRPC response and metadata from an RPC call.
 #[derive(Debug)]
@@ -73,7 +99,7 @@ impl<T> Response<T> {
         Response {
             metadata: MetadataMap::from_headers(head.headers),
             message,
-            extensions: Extensions::from_http(head.extensions),
+            extensions: head.extensions,
         }
     }
 
@@ -82,7 +108,7 @@ impl<T> Response<T> {
 
         *res.version_mut() = http::Version::HTTP_2;
         *res.headers_mut() = self.metadata.into_sanitized_headers();
-        *res.extensions_mut() = self.extensions.into_http();
+        *res.extensions_mut() = self.extensions;
 
         res
     }
@@ -118,26 +144,33 @@ impl<T> Response<T> {
     /// **Note**: This only has effect on responses to unary requests and responses to client to
     /// server streams. Response streams (server to client stream and bidirectional streams) will
     /// still be compressed according to the configuration of the server.
-    #[cfg(feature = "gzip")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "gzip")))]
+    #[cfg(any(feature = "gzip", feature = "deflate", feature = "zstd"))]
     pub fn disable_compression(&mut self) {
         self.extensions_mut()
             .insert(crate::codec::compression::SingleMessageCompressionOverride::Disable);
     }
 }
 
+impl<T> From<T> for Response<T> {
+    fn from(inner: T) -> Self {
+        Response::new(inner)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::metadata::MetadataValue;
+    use crate::metadata::{MetadataKey, MetadataValue};
 
     #[test]
     fn reserved_headers_are_excluded() {
         let mut r = Response::new(1);
 
         for header in &MetadataMap::GRPC_RESERVED_HEADERS {
-            r.metadata_mut()
-                .insert(*header, MetadataValue::from_static("invalid"));
+            r.metadata_mut().insert(
+                MetadataKey::unchecked_from_header_name(header.clone()),
+                MetadataValue::from_static("invalid"),
+            );
         }
 
         let http_response = r.into_http();

@@ -8,11 +8,11 @@ error[E0277]: the trait bound `NotImplFm: FromMeta` is not satisfied
             ()
             Arc<T>
             AtomicBool
+            BTreeMap<String, V>
+            BTreeMap<proc_macro2::Ident, V>
+            Callable
             ExprArray
             ExprPath
-            Flag
-            HashMap<String, V, S>
-            HashMap<proc_macro2::Ident, V, S>
           and $N others
 
 error[E0277]: the trait bound `NotImplFm: FromMeta` is not satisfied
@@ -25,9 +25,9 @@ error[E0277]: the trait bound `NotImplFm: FromMeta` is not satisfied
              ()
              Arc<T>
              AtomicBool
+             BTreeMap<String, V>
+             BTreeMap<proc_macro2::Ident, V>
+             Callable
              ExprArray
              ExprPath
-             Flag
-             HashMap<String, V, S>
-             HashMap<proc_macro2::Ident, V, S>
            and $N others

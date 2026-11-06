@@ -1,14 +1,22 @@
 #![warn(rust_2018_idioms)]
-#![cfg(all(feature = "full", not(target_os = "wasi")))] // Wasi doesn't support panic recovery
+#![cfg(any(
+    all(feature = "full", not(target_os = "wasi")), // Wasi doesn't support panic recovery
+    all(target_os = "emscripten", feature = "rt", feature = "time")
+))]
 
+#[cfg(not(target_family = "wasm"))]
 use std::sync::Arc;
+#[cfg(not(target_family = "wasm"))]
 use std::thread::sleep;
+#[cfg(not(target_family = "wasm"))]
 use tokio::time::Duration;
 
 use tokio::runtime::Builder;
 
+#[cfg(all(panic = "unwind", not(target_family = "wasm")))]
 struct PanicOnDrop;
 
+#[cfg(all(panic = "unwind", not(target_family = "wasm")))]
 impl Drop for PanicOnDrop {
     fn drop(&mut self) {
         panic!("Well what did you expect would happen...");
@@ -17,6 +25,7 @@ impl Drop for PanicOnDrop {
 
 /// Checks that a suspended task can be aborted without panicking as reported in
 /// issue #3157: <https://github.com/tokio-rs/tokio/issues/3157>.
+#[cfg(not(target_family = "wasm"))]
 #[test]
 fn test_abort_without_panic_3157() {
     let rt = Builder::new_multi_thread()
@@ -39,6 +48,7 @@ fn test_abort_without_panic_3157() {
 /// Checks that a suspended task can be aborted inside of a current_thread
 /// executor without panicking as reported in issue #3662:
 /// <https://github.com/tokio-rs/tokio/issues/3662>.
+#[cfg(not(target_family = "wasm"))]
 #[test]
 fn test_abort_without_panic_3662() {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -102,6 +112,7 @@ fn test_abort_without_panic_3662() {
 /// Checks that a suspended LocalSet task can be aborted from a remote thread
 /// without panicking and without running the tasks destructor on the wrong thread.
 /// <https://github.com/tokio-rs/tokio/issues/3929>
+#[cfg(not(target_family = "wasm"))]
 #[test]
 fn remote_abort_local_set_3929() {
     struct DropCheck {
@@ -145,6 +156,7 @@ fn remote_abort_local_set_3929() {
 
 /// Checks that a suspended task can be aborted even if the `JoinHandle` is immediately dropped.
 /// issue #3964: <https://github.com/tokio-rs/tokio/issues/3964>.
+#[cfg(not(target_family = "wasm"))]
 #[test]
 fn test_abort_wakes_task_3964() {
     let rt = Builder::new_current_thread().enable_time().build().unwrap();
@@ -175,8 +187,8 @@ fn test_abort_wakes_task_3964() {
 
 /// Checks that aborting a task whose destructor panics does not allow the
 /// panic to escape the task.
+#[cfg(all(panic = "unwind", not(target_family = "wasm")))]
 #[test]
-#[cfg(panic = "unwind")]
 fn test_abort_task_that_panics_on_drop_contained() {
     let rt = Builder::new_current_thread().enable_time().build().unwrap();
 
@@ -199,8 +211,8 @@ fn test_abort_task_that_panics_on_drop_contained() {
 }
 
 /// Checks that aborting a task whose destructor panics has the expected result.
+#[cfg(all(panic = "unwind", not(target_family = "wasm")))]
 #[test]
-#[cfg(panic = "unwind")]
 fn test_abort_task_that_panics_on_drop_returned() {
     let rt = Builder::new_current_thread().enable_time().build().unwrap();
 
@@ -216,5 +228,109 @@ fn test_abort_task_that_panics_on_drop_returned() {
 
         handle.abort();
         assert!(handle.await.unwrap_err().is_panic());
+    });
+}
+
+// It's not clear where these tests belong. This was the place suggested by @Darksonn:
+// https://github.com/tokio-rs/tokio/pull/6753#issuecomment-2271434176
+/// Checks that a `JoinError` with a panic payload prints the expected text.
+#[test]
+#[cfg(panic = "unwind")]
+fn test_join_error_display() {
+    let rt = Builder::new_current_thread().build().unwrap();
+
+    rt.block_on(async move {
+        // `String` payload
+        let join_err = tokio::spawn(async move {
+            let value = 1234;
+            panic!("Format-args payload: {value}")
+        })
+        .await
+        .unwrap_err();
+
+        // We can't assert the full output because the task ID can change.
+        let join_err_str = join_err.to_string();
+
+        assert!(
+            join_err_str.starts_with("task ")
+                && join_err_str.ends_with(" panicked with message \"Format-args payload: 1234\""),
+            "Unexpected join_err_str {join_err_str:?}"
+        );
+
+        // `&'static str` payload
+        let join_err = tokio::spawn(async move { panic!("Const payload") })
+            .await
+            .unwrap_err();
+
+        let join_err_str = join_err.to_string();
+
+        assert!(
+            join_err_str.starts_with("task ")
+                && join_err_str.ends_with(" panicked with message \"Const payload\""),
+            "Unexpected join_err_str {join_err_str:?}"
+        );
+
+        // Non-string payload
+        let join_err = tokio::spawn(async move { std::panic::panic_any(1234i32) })
+            .await
+            .unwrap_err();
+
+        let join_err_str = join_err.to_string();
+
+        assert!(
+            join_err_str.starts_with("task ") && join_err_str.ends_with(" panicked"),
+            "Unexpected join_err_str {join_err_str:?}"
+        );
+    });
+}
+
+/// Checks that a `JoinError` with a panic payload prints the expected text from `Debug`.
+#[test]
+#[cfg(panic = "unwind")]
+fn test_join_error_debug() {
+    let rt = Builder::new_current_thread().build().unwrap();
+
+    rt.block_on(async move {
+        // `String` payload
+        let join_err = tokio::spawn(async move {
+            let value = 1234;
+            panic!("Format-args payload: {value}")
+        })
+        .await
+        .unwrap_err();
+
+        // We can't assert the full output because the task ID can change.
+        let join_err_str = format!("{join_err:?}");
+
+        assert!(
+            join_err_str.starts_with("JoinError::Panic(Id(")
+                && join_err_str.ends_with("), \"Format-args payload: 1234\", ...)"),
+            "Unexpected join_err_str {join_err_str:?}"
+        );
+
+        // `&'static str` payload
+        let join_err = tokio::spawn(async move { panic!("Const payload") })
+            .await
+            .unwrap_err();
+
+        let join_err_str = format!("{join_err:?}");
+
+        assert!(
+            join_err_str.starts_with("JoinError::Panic(Id(")
+                && join_err_str.ends_with("), \"Const payload\", ...)"),
+            "Unexpected join_err_str {join_err_str:?}"
+        );
+
+        // Non-string payload
+        let join_err = tokio::spawn(async move { std::panic::panic_any(1234i32) })
+            .await
+            .unwrap_err();
+
+        let join_err_str = format!("{join_err:?}");
+
+        assert!(
+            join_err_str.starts_with("JoinError::Panic(Id(") && join_err_str.ends_with("), ...)"),
+            "Unexpected join_err_str {join_err_str:?}"
+        );
     });
 }

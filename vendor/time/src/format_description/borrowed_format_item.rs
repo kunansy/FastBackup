@@ -11,13 +11,19 @@ use crate::format_description::Component;
 /// A complete description of how to format and parse a type.
 #[non_exhaustive]
 #[cfg_attr(not(feature = "alloc"), derive(Debug))]
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Eq)]
 pub enum BorrowedFormatItem<'a> {
     /// Bytes that are formatted as-is.
     ///
-    /// **Note**: If you call the `format` method that returns a `String`, these bytes will be
-    /// passed through `String::from_utf8_lossy`.
+    /// **Note**: These bytes **should** be UTF-8, but are not required to be. The value is passed
+    /// through `String::from_utf8_lossy` when necessary.
+    #[deprecated(
+        since = "0.3.48",
+        note = "use `StringLiteral` instead; raw bytes are not recommended"
+    )]
     Literal(&'a [u8]),
+    /// A string that is formatted as-is.
+    StringLiteral(&'a str),
     /// A minimal representation of a single non-literal item.
     Component(Component),
     /// A series of literals or components that collectively form a partial or complete
@@ -36,9 +42,12 @@ pub enum BorrowedFormatItem<'a> {
 
 #[cfg(feature = "alloc")]
 impl fmt::Debug for BorrowedFormatItem<'_> {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            #[expect(deprecated)]
             Self::Literal(literal) => f.write_str(&String::from_utf8_lossy(literal)),
+            Self::StringLiteral(literal) => f.write_str(literal),
             Self::Component(component) => component.fmt(f),
             Self::Compound(compound) => compound.fmt(f),
             Self::Optional(item) => f.debug_tuple("Optional").field(item).finish(),
@@ -47,7 +56,29 @@ impl fmt::Debug for BorrowedFormatItem<'_> {
     }
 }
 
+impl PartialEq for BorrowedFormatItem<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            // trivial equality checks
+            #[expect(deprecated)]
+            (Self::Literal(a), Self::Literal(b)) => a == b,
+            (Self::StringLiteral(a), Self::StringLiteral(b)) => a == b,
+            (Self::Component(a), Self::Component(b)) => a == b,
+            (Self::Compound(a), Self::Compound(b)) => a == b,
+            (Self::Optional(a), Self::Optional(b)) => a == b,
+            (Self::First(a), Self::First(b)) => a == b,
+            // bytes vs string (back-compatibility)
+            #[expect(deprecated)]
+            (Self::Literal(a), Self::StringLiteral(b)) => *a == b.as_bytes(),
+            #[expect(deprecated)]
+            (Self::StringLiteral(a), Self::Literal(b)) => a.as_bytes() == *b,
+            _ => false,
+        }
+    }
+}
+
 impl From<Component> for BorrowedFormatItem<'_> {
+    #[inline]
     fn from(component: Component) -> Self {
         Self::Component(component)
     }
@@ -56,6 +87,7 @@ impl From<Component> for BorrowedFormatItem<'_> {
 impl TryFrom<BorrowedFormatItem<'_>> for Component {
     type Error = error::DifferentVariant;
 
+    #[inline]
     fn try_from(value: BorrowedFormatItem<'_>) -> Result<Self, Self::Error> {
         match value {
             BorrowedFormatItem::Component(component) => Ok(component),
@@ -65,6 +97,7 @@ impl TryFrom<BorrowedFormatItem<'_>> for Component {
 }
 
 impl<'a> From<&'a [BorrowedFormatItem<'_>]> for BorrowedFormatItem<'a> {
+    #[inline]
     fn from(items: &'a [BorrowedFormatItem<'_>]) -> Self {
         Self::Compound(items)
     }
@@ -73,6 +106,7 @@ impl<'a> From<&'a [BorrowedFormatItem<'_>]> for BorrowedFormatItem<'a> {
 impl<'a> TryFrom<BorrowedFormatItem<'a>> for &[BorrowedFormatItem<'a>] {
     type Error = error::DifferentVariant;
 
+    #[inline]
     fn try_from(value: BorrowedFormatItem<'a>) -> Result<Self, Self::Error> {
         match value {
             BorrowedFormatItem::Compound(items) => Ok(items),
@@ -82,24 +116,28 @@ impl<'a> TryFrom<BorrowedFormatItem<'a>> for &[BorrowedFormatItem<'a>] {
 }
 
 impl PartialEq<Component> for BorrowedFormatItem<'_> {
+    #[inline]
     fn eq(&self, rhs: &Component) -> bool {
         matches!(self, Self::Component(component) if component == rhs)
     }
 }
 
 impl PartialEq<BorrowedFormatItem<'_>> for Component {
+    #[inline]
     fn eq(&self, rhs: &BorrowedFormatItem<'_>) -> bool {
         rhs == self
     }
 }
 
 impl PartialEq<&[Self]> for BorrowedFormatItem<'_> {
+    #[inline]
     fn eq(&self, rhs: &&[Self]) -> bool {
         matches!(self, Self::Compound(compound) if compound == rhs)
     }
 }
 
 impl PartialEq<BorrowedFormatItem<'_>> for &[BorrowedFormatItem<'_>] {
+    #[inline]
     fn eq(&self, rhs: &BorrowedFormatItem<'_>) -> bool {
         rhs == self
     }

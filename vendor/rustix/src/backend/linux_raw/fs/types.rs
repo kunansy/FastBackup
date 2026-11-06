@@ -1,4 +1,6 @@
-use crate::backend::c;
+use crate::ffi;
+#[allow(unused_imports)]
+use crate::types::Padding;
 use bitflags::bitflags;
 
 bitflags! {
@@ -7,7 +9,7 @@ bitflags! {
     /// [`accessat`]: fn.accessat.html
     #[repr(transparent)]
     #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
-    pub struct Access: c::c_uint {
+    pub struct Access: ffi::c_uint {
         /// `R_OK`
         const READ_OK = linux_raw_sys::general::R_OK;
 
@@ -33,7 +35,7 @@ bitflags! {
     /// [`statat`]: crate::fs::statat
     #[repr(transparent)]
     #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
-    pub struct AtFlags: c::c_uint {
+    pub struct AtFlags: ffi::c_uint {
         /// `AT_SYMLINK_NOFOLLOW`
         const SYMLINK_NOFOLLOW = linux_raw_sys::general::AT_SYMLINK_NOFOLLOW;
 
@@ -67,9 +69,10 @@ bitflags! {
 }
 
 bitflags! {
-    /// `S_I*` constants for use with [`openat`], [`chmodat`], and [`fchmod`].
+    /// `S_I*` constants for use with [`openat`], [`openat2`], [`chmodat`], and [`fchmod`].
     ///
     /// [`openat`]: crate::fs::openat
+    /// [`openat2`]: crate::fs::openat2
     /// [`chmodat`]: crate::fs::chmodat
     /// [`fchmod`]: crate::fs::fchmod
     #[repr(transparent)]
@@ -130,7 +133,7 @@ impl Mode {
     /// `Mode`.
     #[inline]
     pub const fn from_raw_mode(st_mode: RawMode) -> Self {
-        Self::from_bits_truncate(st_mode)
+        Self::from_bits_truncate(st_mode & !linux_raw_sys::general::S_IFMT)
     }
 
     /// Construct an `st_mode` value from a `Mode`.
@@ -172,7 +175,7 @@ bitflags! {
     /// [`openat`]: crate::fs::openat
     #[repr(transparent)]
     #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
-    pub struct OFlags: c::c_uint {
+    pub struct OFlags: ffi::c_uint {
         /// `O_ACCMODE`
         const ACCMODE = linux_raw_sys::general::O_ACCMODE;
 
@@ -197,13 +200,13 @@ bitflags! {
         /// `O_DIRECTORY`
         const DIRECTORY = linux_raw_sys::general::O_DIRECTORY;
 
-        /// `O_DSYNC`.
+        /// `O_DSYNC`
         const DSYNC = linux_raw_sys::general::O_SYNC;
 
         /// `O_EXCL`
         const EXCL = linux_raw_sys::general::O_EXCL;
 
-        /// `O_FSYNC`.
+        /// `O_FSYNC`
         const FSYNC = linux_raw_sys::general::O_SYNC;
 
         /// `O_NOFOLLOW`
@@ -226,7 +229,7 @@ bitflags! {
         /// `O_NOCTTY`
         const NOCTTY = linux_raw_sys::general::O_NOCTTY;
 
-        /// `O_RSYNC`.
+        /// `O_RSYNC`
         const RSYNC = linux_raw_sys::general::O_SYNC;
 
         /// `O_SYNC`
@@ -249,6 +252,20 @@ bitflags! {
 
         /// `O_DIRECT`
         const DIRECT = linux_raw_sys::general::O_DIRECT;
+
+        /// `O_LARGEFILE`
+        ///
+        /// Rustix and/or libc will automatically set this flag when
+        /// appropriate in the [`rustix::fs::open`] family of functions, so
+        /// typical users do not need to care about it. It may be reported in
+        /// the return of `fcntl_getfl`, though.
+        const LARGEFILE = linux_raw_sys::general::O_LARGEFILE;
+
+        /// `O_ASYNC`, `FASYNC`
+        ///
+        /// This flag can't be used with the [`rustix::fs::open`] family of
+        /// functions, use [`rustix::fs::fcntl_setfl`] instead.
+        const ASYNC = linux_raw_sys::general::FASYNC;
 
         /// <https://docs.rs/bitflags/*/bitflags/#externally-defined-flags>
         const _ = !0;
@@ -291,7 +308,7 @@ bitflags! {
     /// [`renameat_with`]: crate::fs::renameat_with
     #[repr(transparent)]
     #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
-    pub struct RenameFlags: c::c_uint {
+    pub struct RenameFlags: ffi::c_uint {
         /// `RENAME_EXCHANGE`
         const EXCHANGE = linux_raw_sys::general::RENAME_EXCHANGE;
 
@@ -418,7 +435,7 @@ bitflags! {
     /// [`memfd_create`]: crate::fs::memfd_create
     #[repr(transparent)]
     #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
-    pub struct MemfdFlags: c::c_uint {
+    pub struct MemfdFlags: ffi::c_uint {
         /// `MFD_CLOEXEC`
         const CLOEXEC = linux_raw_sys::general::MFD_CLOEXEC;
 
@@ -428,9 +445,14 @@ bitflags! {
         /// `MFD_HUGETLB` (since Linux 4.14)
         const HUGETLB = linux_raw_sys::general::MFD_HUGETLB;
 
+        /// `MFD_NOEXEC_SEAL` (since Linux 6.3)
+        const NOEXEC_SEAL = linux_raw_sys::general::MFD_NOEXEC_SEAL;
+        /// `MFD_EXEC` (since Linux 6.3)
+        const EXEC = linux_raw_sys::general::MFD_EXEC;
+
         /// `MFD_HUGE_64KB`
         const HUGE_64KB = linux_raw_sys::general::MFD_HUGE_64KB;
-        /// `MFD_HUGE_512JB`
+        /// `MFD_HUGE_512KB`
         const HUGE_512KB = linux_raw_sys::general::MFD_HUGE_512KB;
         /// `MFD_HUGE_1MB`
         const HUGE_1MB = linux_raw_sys::general::MFD_HUGE_1MB;
@@ -467,76 +489,18 @@ bitflags! {
     #[repr(transparent)]
     #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
     pub struct SealFlags: u32 {
-        /// `F_SEAL_SEAL`.
+        /// `F_SEAL_SEAL`
         const SEAL = linux_raw_sys::general::F_SEAL_SEAL;
-        /// `F_SEAL_SHRINK`.
+        /// `F_SEAL_SHRINK`
         const SHRINK = linux_raw_sys::general::F_SEAL_SHRINK;
-        /// `F_SEAL_GROW`.
+        /// `F_SEAL_GROW`
         const GROW = linux_raw_sys::general::F_SEAL_GROW;
-        /// `F_SEAL_WRITE`.
+        /// `F_SEAL_WRITE`
         const WRITE = linux_raw_sys::general::F_SEAL_WRITE;
         /// `F_SEAL_FUTURE_WRITE` (since Linux 5.1)
         const FUTURE_WRITE = linux_raw_sys::general::F_SEAL_FUTURE_WRITE;
-
-        /// <https://docs.rs/bitflags/*/bitflags/#externally-defined-flags>
-        const _ = !0;
-    }
-}
-
-bitflags! {
-    /// `STATX_*` constants for use with [`statx`].
-    ///
-    /// [`statx`]: crate::fs::statx
-    #[repr(transparent)]
-    #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
-    pub struct StatxFlags: u32 {
-        /// `STATX_TYPE`
-        const TYPE = linux_raw_sys::general::STATX_TYPE;
-
-        /// `STATX_MODE`
-        const MODE = linux_raw_sys::general::STATX_MODE;
-
-        /// `STATX_NLINK`
-        const NLINK = linux_raw_sys::general::STATX_NLINK;
-
-        /// `STATX_UID`
-        const UID = linux_raw_sys::general::STATX_UID;
-
-        /// `STATX_GID`
-        const GID = linux_raw_sys::general::STATX_GID;
-
-        /// `STATX_ATIME`
-        const ATIME = linux_raw_sys::general::STATX_ATIME;
-
-        /// `STATX_MTIME`
-        const MTIME = linux_raw_sys::general::STATX_MTIME;
-
-        /// `STATX_CTIME`
-        const CTIME = linux_raw_sys::general::STATX_CTIME;
-
-        /// `STATX_INO`
-        const INO = linux_raw_sys::general::STATX_INO;
-
-        /// `STATX_SIZE`
-        const SIZE = linux_raw_sys::general::STATX_SIZE;
-
-        /// `STATX_BLOCKS`
-        const BLOCKS = linux_raw_sys::general::STATX_BLOCKS;
-
-        /// `STATX_BASIC_STATS`
-        const BASIC_STATS = linux_raw_sys::general::STATX_BASIC_STATS;
-
-        /// `STATX_BTIME`
-        const BTIME = linux_raw_sys::general::STATX_BTIME;
-
-        /// `STATX_MNT_ID` (since Linux 5.8)
-        const MNT_ID = linux_raw_sys::general::STATX_MNT_ID;
-
-        /// `STATX_DIOALIGN` (since Linux 6.1)
-        const DIOALIGN = linux_raw_sys::general::STATX_DIOALIGN;
-
-        /// `STATX_ALL`
-        const ALL = linux_raw_sys::general::STATX_ALL;
+        /// `F_SEAL_EXEC` (since Linux 6.3)
+        const EXEC = linux_raw_sys::general::F_SEAL_EXEC;
 
         /// <https://docs.rs/bitflags/*/bitflags/#externally-defined-flags>
         const _ = !0;
@@ -572,35 +536,40 @@ bitflags! {
 
 bitflags! {
     /// `ST_*` constants for use with [`StatVfs`].
+    ///
+    /// These are the values the kernel reports in `statfs`'s `f_flags`,
+    /// which `statvfs` passes through unconverted. linux-raw-sys does not
+    /// define the `ST_*` names, and they are not all equal to the `MS_*`
+    /// ones: `ST_RELATIME` is `0x1000`, while `MS_RELATIME` is `1 << 21`.
     #[repr(transparent)]
     #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
     pub struct StatVfsMountFlags: u64 {
         /// `ST_MANDLOCK`
-        const MANDLOCK = linux_raw_sys::general::MS_MANDLOCK as u64;
+        const MANDLOCK = 0x0040;
 
         /// `ST_NOATIME`
-        const NOATIME = linux_raw_sys::general::MS_NOATIME as u64;
+        const NOATIME = 0x0400;
 
         /// `ST_NODEV`
-        const NODEV = linux_raw_sys::general::MS_NODEV as u64;
+        const NODEV = 0x0004;
 
         /// `ST_NODIRATIME`
-        const NODIRATIME = linux_raw_sys::general::MS_NODIRATIME as u64;
+        const NODIRATIME = 0x0800;
 
         /// `ST_NOEXEC`
-        const NOEXEC = linux_raw_sys::general::MS_NOEXEC as u64;
+        const NOEXEC = 0x0008;
 
         /// `ST_NOSUID`
-        const NOSUID = linux_raw_sys::general::MS_NOSUID as u64;
+        const NOSUID = 0x0002;
 
         /// `ST_RDONLY`
-        const RDONLY = linux_raw_sys::general::MS_RDONLY as u64;
+        const RDONLY = 0x0001;
 
         /// `ST_RELATIME`
-        const RELATIME = linux_raw_sys::general::MS_RELATIME as u64;
+        const RELATIME = 0x1000;
 
         /// `ST_SYNCHRONOUS`
-        const SYNCHRONOUS = linux_raw_sys::general::MS_SYNCHRONOUS as u64;
+        const SYNCHRONOUS = 0x0010;
 
         /// <https://docs.rs/bitflags/*/bitflags/#externally-defined-flags>
         const _ = !0;
@@ -632,17 +601,17 @@ pub enum FlockOperation {
 ///
 /// [`statat`]: crate::fs::statat
 /// [`fstat`]: crate::fs::fstat
-// On 32-bit, and mips64, Linux's `struct stat64` has a 32-bit `st_mtime` and
-// friends, so we use our own struct, populated from `statx` where possible, to
-// avoid the y2038 bug.
+// On 32-bit with `struct stat64` and mips64 with `struct stat`, Linux's
+// `st_mtime` and friends are 32-bit, so we use our own struct, populated from
+// `statx` where possible, to avoid the y2038 bug.
 #[cfg(any(
     target_pointer_width = "32",
     target_arch = "mips64",
     target_arch = "mips64r6"
 ))]
-#[repr(C)]
 #[derive(Debug, Copy, Clone)]
 #[allow(missing_docs)]
+#[non_exhaustive]
 pub struct Stat {
     pub st_dev: u64,
     pub st_mode: u32,
@@ -653,14 +622,11 @@ pub struct Stat {
     pub st_size: i64,
     pub st_blksize: u32,
     pub st_blocks: u64,
-    #[deprecated(note = "Use `rustix::fs::StatExt::atime` instead.")]
-    pub st_atime: u64,
+    pub st_atime: i64,
     pub st_atime_nsec: u32,
-    #[deprecated(note = "Use `rustix::fs::StatExt::mtime` instead.")]
-    pub st_mtime: u64,
+    pub st_mtime: i64,
     pub st_mtime_nsec: u32,
-    #[deprecated(note = "Use `rustix::fs::StatExt::ctime` instead.")]
-    pub st_ctime: u64,
+    pub st_ctime: i64,
     pub st_ctime_nsec: u32,
     pub st_ino: u64,
 }
@@ -669,19 +635,185 @@ pub struct Stat {
 ///
 /// [`statat`]: crate::fs::statat
 /// [`fstat`]: crate::fs::fstat
-#[cfg(all(
-    target_pointer_width = "64",
-    not(target_arch = "mips64"),
-    not(target_arch = "mips64r6")
-))]
-pub type Stat = linux_raw_sys::general::stat;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+#[allow(missing_docs)]
+#[non_exhaustive]
+#[cfg(target_arch = "x86_64")]
+pub struct Stat {
+    pub st_dev: ffi::c_ulong,
+    pub st_ino: ffi::c_ulong,
+    pub st_nlink: ffi::c_ulong,
+    pub st_mode: ffi::c_uint,
+    pub st_uid: ffi::c_uint,
+    pub st_gid: ffi::c_uint,
+    pub(crate) __pad0: Padding<ffi::c_uint>,
+    pub st_rdev: ffi::c_ulong,
+    pub st_size: ffi::c_long,
+    pub st_blksize: ffi::c_long,
+    pub st_blocks: ffi::c_long,
+    pub st_atime: ffi::c_long,
+    pub st_atime_nsec: ffi::c_ulong,
+    pub st_mtime: ffi::c_long,
+    pub st_mtime_nsec: ffi::c_ulong,
+    pub st_ctime: ffi::c_long,
+    pub st_ctime_nsec: ffi::c_ulong,
+    pub(crate) __unused: Padding<[ffi::c_long; 3]>,
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+#[allow(missing_docs)]
+#[non_exhaustive]
+#[cfg(target_arch = "aarch64")]
+pub struct Stat {
+    pub st_dev: ffi::c_ulong,
+    pub st_ino: ffi::c_ulong,
+    pub st_mode: ffi::c_uint,
+    pub st_nlink: ffi::c_uint,
+    pub st_uid: ffi::c_uint,
+    pub st_gid: ffi::c_uint,
+    pub st_rdev: ffi::c_ulong,
+    pub(crate) __pad1: Padding<ffi::c_ulong>,
+    pub st_size: ffi::c_long,
+    pub st_blksize: ffi::c_int,
+    pub(crate) __pad2: Padding<ffi::c_int>,
+    pub st_blocks: ffi::c_long,
+    pub st_atime: ffi::c_long,
+    pub st_atime_nsec: ffi::c_ulong,
+    pub st_mtime: ffi::c_long,
+    pub st_mtime_nsec: ffi::c_ulong,
+    pub st_ctime: ffi::c_long,
+    pub st_ctime_nsec: ffi::c_ulong,
+    pub(crate) __unused4: Padding<ffi::c_uint>,
+    pub(crate) __unused5: Padding<ffi::c_uint>,
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+#[allow(missing_docs)]
+#[non_exhaustive]
+#[cfg(target_arch = "riscv64")]
+pub struct Stat {
+    pub st_dev: ffi::c_ulong,
+    pub st_ino: ffi::c_ulong,
+    pub st_mode: ffi::c_uint,
+    pub st_nlink: ffi::c_uint,
+    pub st_uid: ffi::c_uint,
+    pub st_gid: ffi::c_uint,
+    pub st_rdev: ffi::c_ulong,
+    pub(crate) __pad1: Padding<ffi::c_ulong>,
+    pub st_size: ffi::c_long,
+    pub st_blksize: ffi::c_int,
+    pub(crate) __pad2: Padding<ffi::c_int>,
+    pub st_blocks: ffi::c_long,
+    pub st_atime: ffi::c_long,
+    pub st_atime_nsec: ffi::c_ulong,
+    pub st_mtime: ffi::c_long,
+    pub st_mtime_nsec: ffi::c_ulong,
+    pub st_ctime: ffi::c_long,
+    pub st_ctime_nsec: ffi::c_ulong,
+    pub(crate) __unused4: Padding<ffi::c_uint>,
+    pub(crate) __unused5: Padding<ffi::c_uint>,
+}
+// This follows `stat`. powerpc64 defines a `stat64` but it's not used.
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+#[allow(missing_docs)]
+#[non_exhaustive]
+#[cfg(target_arch = "powerpc64")]
+pub struct Stat {
+    pub st_dev: ffi::c_ulong,
+    pub st_ino: ffi::c_ulong,
+    pub st_nlink: ffi::c_ulong,
+    pub st_mode: ffi::c_uint,
+    pub st_uid: ffi::c_uint,
+    pub st_gid: ffi::c_uint,
+    pub st_rdev: ffi::c_ulong,
+    pub st_size: ffi::c_long,
+    pub st_blksize: ffi::c_ulong,
+    pub st_blocks: ffi::c_ulong,
+    pub st_atime: ffi::c_long,
+    pub st_atime_nsec: ffi::c_ulong,
+    pub st_mtime: ffi::c_long,
+    pub st_mtime_nsec: ffi::c_ulong,
+    pub st_ctime: ffi::c_long,
+    pub st_ctime_nsec: ffi::c_ulong,
+    pub(crate) __unused4: Padding<ffi::c_ulong>,
+    pub(crate) __unused5: Padding<ffi::c_ulong>,
+    pub(crate) __unused6: Padding<ffi::c_ulong>,
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+#[allow(missing_docs)]
+#[non_exhaustive]
+#[cfg(target_arch = "s390x")]
+pub struct Stat {
+    pub st_dev: ffi::c_ulong,
+    pub st_ino: ffi::c_ulong,
+    pub st_nlink: ffi::c_ulong,
+    pub st_mode: ffi::c_uint,
+    pub st_uid: ffi::c_uint,
+    pub st_gid: ffi::c_uint,
+    pub(crate) __pad1: Padding<ffi::c_uint>,
+    pub st_rdev: ffi::c_ulong,
+    pub st_size: ffi::c_long, // Linux has `c_ulong` but we make it signed.
+    pub st_atime: ffi::c_long,
+    pub st_atime_nsec: ffi::c_ulong,
+    pub st_mtime: ffi::c_long,
+    pub st_mtime_nsec: ffi::c_ulong,
+    pub st_ctime: ffi::c_long,
+    pub st_ctime_nsec: ffi::c_ulong,
+    pub st_blksize: ffi::c_ulong,
+    pub st_blocks: ffi::c_long,
+    pub(crate) __unused: Padding<[ffi::c_ulong; 3]>,
+}
 
 /// `struct statfs` for use with [`statfs`] and [`fstatfs`].
 ///
 /// [`statfs`]: crate::fs::statfs
 /// [`fstatfs`]: crate::fs::fstatfs
 #[allow(clippy::module_name_repetitions)]
-pub type StatFs = linux_raw_sys::general::statfs64;
+#[repr(C)]
+#[cfg_attr(target_arch = "arm", repr(packed(4)))]
+#[derive(Debug, Copy, Clone)]
+#[allow(missing_docs)]
+#[non_exhaustive]
+pub struct StatFs {
+    pub f_type: FsWord,
+    #[cfg(not(any(target_arch = "arm", target_arch = "s390x")))]
+    pub f_bsize: ffi::c_long,
+    #[cfg(any(target_arch = "arm", target_arch = "s390x"))]
+    pub f_bsize: ffi::c_uint,
+    pub f_blocks: u64,
+    pub f_bfree: u64,
+    pub f_bavail: u64,
+    pub f_files: u64,
+    pub f_ffree: u64,
+    pub f_fsid: Fsid,
+    #[cfg(not(any(target_arch = "arm", target_arch = "s390x")))]
+    pub f_namelen: ffi::c_long,
+    #[cfg(any(target_arch = "arm", target_arch = "s390x"))]
+    pub f_namelen: ffi::c_uint,
+    #[cfg(not(any(target_arch = "arm", target_arch = "s390x")))]
+    pub f_frsize: ffi::c_long,
+    #[cfg(any(target_arch = "arm", target_arch = "s390x"))]
+    pub f_frsize: ffi::c_uint,
+    #[cfg(not(any(target_arch = "arm", target_arch = "s390x")))]
+    pub f_flags: ffi::c_long,
+    #[cfg(any(target_arch = "arm", target_arch = "s390x"))]
+    pub f_flags: ffi::c_uint,
+    #[cfg(not(target_arch = "s390x"))]
+    pub(crate) f_spare: Padding<[ffi::c_long; 4]>,
+    #[cfg(target_arch = "s390x")]
+    pub(crate) f_spare: Padding<[ffi::c_uint; 5]>,
+}
+
+/// `fsid_t` for use with [`StatFs`].
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+#[allow(missing_docs)]
+pub struct Fsid {
+    pub(crate) val: [ffi::c_int; 2],
+}
 
 /// `struct statvfs` for use with [`statvfs`] and [`fstatvfs`].
 ///
@@ -702,41 +834,25 @@ pub struct StatVfs {
     pub f_namemax: u64,
 }
 
-/// `struct statx` for use with [`statx`].
-///
-/// [`statx`]: crate::fs::statx
-pub type Statx = linux_raw_sys::general::statx;
-
-/// `struct statx_timestamp` for use with [`Statx`].
-pub type StatxTimestamp = linux_raw_sys::general::statx_timestamp;
-
 /// `mode_t`
-#[cfg(not(any(
-    target_arch = "x86",
-    target_arch = "sparc",
-    target_arch = "avr",
-    target_arch = "arm",
-)))]
-pub type RawMode = linux_raw_sys::general::__kernel_mode_t;
-
-/// `mode_t`
-#[cfg(any(
-    target_arch = "x86",
-    target_arch = "sparc",
-    target_arch = "avr",
-    target_arch = "arm",
-))]
-// Don't use `__kernel_mode_t` since it's `u16` which differs from `st_size`.
-pub type RawMode = c::c_uint;
+pub type RawMode = ffi::c_uint;
 
 /// `dev_t`
-// Within the kernel the dev_t is 32-bit, but userspace uses a 64-bit field.
+// Within the kernel the `dev_t` is 32-bit, but userspace uses a 64-bit field.
 pub type Dev = u64;
 
 /// `__fsword_t`
-#[cfg(not(any(target_arch = "mips64", target_arch = "mips64r6")))]
-pub type FsWord = linux_raw_sys::general::__fsword_t;
+#[cfg(not(any(
+    target_arch = "mips64",
+    target_arch = "mips64r6",
+    target_arch = "s390x"
+)))]
+pub type FsWord = ffi::c_long;
 
 /// `__fsword_t`
 #[cfg(any(target_arch = "mips64", target_arch = "mips64r6"))]
 pub type FsWord = i64;
+
+/// `__fsword_t`
+#[cfg(target_arch = "s390x")]
+pub type FsWord = u32;

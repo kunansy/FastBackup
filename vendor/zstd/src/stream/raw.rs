@@ -132,7 +132,16 @@ pub struct Status {
 
 /// An in-memory decoder for streams of data.
 pub struct Decoder<'a> {
-    context: zstd_safe::DCtx<'a>,
+    context: MaybeOwnedDCtx<'a>,
+}
+
+fn create_dctx<'a>() -> io::Result<zstd_safe::DCtx<'a>> {
+    zstd_safe::DCtx::try_create().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            "zstd could not allocate a decompression context",
+        )
+    })
 }
 
 impl Decoder<'static> {
@@ -143,35 +152,68 @@ impl Decoder<'static> {
 
     /// Creates a new decoder initialized with the given dictionary.
     pub fn with_dictionary(dictionary: &[u8]) -> io::Result<Self> {
-        let mut context = zstd_safe::DCtx::create();
+        let mut context = create_dctx()?;
         context.init().map_err(map_error_code)?;
         context
             .load_dictionary(dictionary)
             .map_err(map_error_code)?;
-        Ok(Decoder { context })
+        Ok(Decoder {
+            context: MaybeOwnedDCtx::Owned(context),
+        })
     }
 }
 
 impl<'a> Decoder<'a> {
+    /// Creates a new decoder which employs the provided context for deserialization.
+    ///
+    /// The context's session is reset first: anything left over from a frame
+    /// that a previous user of the context did not finish is discarded.
+    /// Parameters and dictionary are kept.
+    pub fn with_context(context: &'a mut zstd_safe::DCtx<'static>) -> Self {
+        // Otherwise we would start by handing out what is left of the
+        // previous decoder's output. Resetting only the session cannot fail.
+        let _ = context.reset(zstd_safe::ResetDirective::SessionOnly);
+
+        Self {
+            context: MaybeOwnedDCtx::Borrowed(context),
+        }
+    }
+
     /// Creates a new decoder, using an existing `DecoderDictionary`.
     pub fn with_prepared_dictionary<'b>(
-        dictionary: &DecoderDictionary<'b>,
+        dictionary: &'a DecoderDictionary<'b>,
     ) -> io::Result<Self>
     where
         'b: 'a,
     {
-        let mut context = zstd_safe::DCtx::create();
+        let mut context = create_dctx()?;
         context
             .ref_ddict(dictionary.as_ddict())
             .map_err(map_error_code)?;
-        Ok(Decoder { context })
+        Ok(Decoder {
+            context: MaybeOwnedDCtx::Owned(context),
+        })
+    }
+
+    /// Creates a new decoder, using a ref prefix
+    pub fn with_ref_prefix<'b>(ref_prefix: &'b [u8]) -> io::Result<Self>
+    where
+        'b: 'a,
+    {
+        let mut context = create_dctx()?;
+        context.ref_prefix(ref_prefix).map_err(map_error_code)?;
+        Ok(Decoder {
+            context: MaybeOwnedDCtx::Owned(context),
+        })
     }
 
     /// Sets a decompression parameter for this decoder.
     pub fn set_parameter(&mut self, parameter: DParameter) -> io::Result<()> {
-        self.context
-            .set_parameter(parameter)
-            .map_err(map_error_code)?;
+        match &mut self.context {
+            MaybeOwnedDCtx::Owned(x) => x.set_parameter(parameter),
+            MaybeOwnedDCtx::Borrowed(x) => x.set_parameter(parameter),
+        }
+        .map_err(map_error_code)?;
         Ok(())
     }
 }
@@ -182,9 +224,11 @@ impl Operation for Decoder<'_> {
         input: &mut InBuffer<'_>,
         output: &mut OutBuffer<'_, C>,
     ) -> io::Result<usize> {
-        self.context
-            .decompress_stream(output, input)
-            .map_err(map_error_code)
+        match &mut self.context {
+            MaybeOwnedDCtx::Owned(x) => x.decompress_stream(output, input),
+            MaybeOwnedDCtx::Borrowed(x) => x.decompress_stream(output, input),
+        }
+        .map_err(map_error_code)
     }
 
     fn flush<C: WriteBuf + ?Sized>(
@@ -205,9 +249,15 @@ impl Operation for Decoder<'_> {
     }
 
     fn reinit(&mut self) -> io::Result<()> {
-        self.context
-            .reset(zstd_safe::ResetDirective::SessionOnly)
-            .map_err(map_error_code)?;
+        match &mut self.context {
+            MaybeOwnedDCtx::Owned(x) => {
+                x.reset(zstd_safe::ResetDirective::SessionOnly)
+            }
+            MaybeOwnedDCtx::Borrowed(x) => {
+                x.reset(zstd_safe::ResetDirective::SessionOnly)
+            }
+        }
+        .map_err(map_error_code)?;
         Ok(())
     }
 
@@ -229,7 +279,7 @@ impl Operation for Decoder<'_> {
 
 /// An in-memory encoder for streams of data.
 pub struct Encoder<'a> {
-    context: zstd_safe::CCtx<'a>,
+    context: MaybeOwnedCCtx<'a>,
 }
 
 impl Encoder<'static> {
@@ -250,14 +300,32 @@ impl Encoder<'static> {
             .load_dictionary(dictionary)
             .map_err(map_error_code)?;
 
-        Ok(Encoder { context })
+        Ok(Encoder {
+            context: MaybeOwnedCCtx::Owned(context),
+        })
     }
 }
 
 impl<'a> Encoder<'a> {
+    /// Creates a new encoder that uses the provided context for serialization.
+    ///
+    /// The context's session is reset first: anything left over from a frame
+    /// that a previous user of the context did not finish is discarded, and
+    /// so is the pledged source size (set it on the encoder instead).
+    /// Parameters and dictionary are kept.
+    pub fn with_context(context: &'a mut zstd_safe::CCtx<'static>) -> Self {
+        // Otherwise the input buffered by the previous encoder would become
+        // the start of our frame. Resetting only the session cannot fail.
+        let _ = context.reset(zstd_safe::ResetDirective::SessionOnly);
+
+        Self {
+            context: MaybeOwnedCCtx::Borrowed(context),
+        }
+    }
+
     /// Creates a new encoder using an existing `EncoderDictionary`.
     pub fn with_prepared_dictionary<'b>(
-        dictionary: &EncoderDictionary<'b>,
+        dictionary: &'a EncoderDictionary<'b>,
     ) -> io::Result<Self>
     where
         'b: 'a,
@@ -266,14 +334,39 @@ impl<'a> Encoder<'a> {
         context
             .ref_cdict(dictionary.as_cdict())
             .map_err(map_error_code)?;
-        Ok(Encoder { context })
+        Ok(Encoder {
+            context: MaybeOwnedCCtx::Owned(context),
+        })
+    }
+
+    /// Creates a new encoder initialized with the given ref prefix.
+    pub fn with_ref_prefix<'b>(
+        level: i32,
+        ref_prefix: &'b [u8],
+    ) -> io::Result<Self>
+    where
+        'b: 'a,
+    {
+        let mut context = zstd_safe::CCtx::create();
+
+        context
+            .set_parameter(CParameter::CompressionLevel(level))
+            .map_err(map_error_code)?;
+
+        context.ref_prefix(ref_prefix).map_err(map_error_code)?;
+
+        Ok(Encoder {
+            context: MaybeOwnedCCtx::Owned(context),
+        })
     }
 
     /// Sets a compression parameter for this encoder.
     pub fn set_parameter(&mut self, parameter: CParameter) -> io::Result<()> {
-        self.context
-            .set_parameter(parameter)
-            .map_err(map_error_code)?;
+        match &mut self.context {
+            MaybeOwnedCCtx::Owned(x) => x.set_parameter(parameter),
+            MaybeOwnedCCtx::Borrowed(x) => x.set_parameter(parameter),
+        }
+        .map_err(map_error_code)?;
         Ok(())
     }
 
@@ -289,9 +382,15 @@ impl<'a> Encoder<'a> {
         &mut self,
         pledged_src_size: Option<u64>,
     ) -> io::Result<()> {
-        self.context
-            .set_pledged_src_size(pledged_src_size)
-            .map_err(map_error_code)?;
+        match &mut self.context {
+            MaybeOwnedCCtx::Owned(x) => {
+                x.set_pledged_src_size(pledged_src_size)
+            }
+            MaybeOwnedCCtx::Borrowed(x) => {
+                x.set_pledged_src_size(pledged_src_size)
+            }
+        }
+        .map_err(map_error_code)?;
         Ok(())
     }
 }
@@ -302,16 +401,22 @@ impl<'a> Operation for Encoder<'a> {
         input: &mut InBuffer<'_>,
         output: &mut OutBuffer<'_, C>,
     ) -> io::Result<usize> {
-        self.context
-            .compress_stream(output, input)
-            .map_err(map_error_code)
+        match &mut self.context {
+            MaybeOwnedCCtx::Owned(x) => x.compress_stream(output, input),
+            MaybeOwnedCCtx::Borrowed(x) => x.compress_stream(output, input),
+        }
+        .map_err(map_error_code)
     }
 
     fn flush<C: WriteBuf + ?Sized>(
         &mut self,
         output: &mut OutBuffer<'_, C>,
     ) -> io::Result<usize> {
-        self.context.flush_stream(output).map_err(map_error_code)
+        match &mut self.context {
+            MaybeOwnedCCtx::Owned(x) => x.flush_stream(output),
+            MaybeOwnedCCtx::Borrowed(x) => x.flush_stream(output),
+        }
+        .map_err(map_error_code)
     }
 
     fn finish<C: WriteBuf + ?Sized>(
@@ -319,15 +424,35 @@ impl<'a> Operation for Encoder<'a> {
         output: &mut OutBuffer<'_, C>,
         _finished_frame: bool,
     ) -> io::Result<usize> {
-        self.context.end_stream(output).map_err(map_error_code)
+        match &mut self.context {
+            MaybeOwnedCCtx::Owned(x) => x.end_stream(output),
+            MaybeOwnedCCtx::Borrowed(x) => x.end_stream(output),
+        }
+        .map_err(map_error_code)
     }
 
     fn reinit(&mut self) -> io::Result<()> {
-        self.context
-            .reset(zstd_safe::ResetDirective::SessionOnly)
-            .map_err(map_error_code)?;
+        match &mut self.context {
+            MaybeOwnedCCtx::Owned(x) => {
+                x.reset(zstd_safe::ResetDirective::SessionOnly)
+            }
+            MaybeOwnedCCtx::Borrowed(x) => {
+                x.reset(zstd_safe::ResetDirective::SessionOnly)
+            }
+        }
+        .map_err(map_error_code)?;
         Ok(())
     }
+}
+
+enum MaybeOwnedCCtx<'a> {
+    Owned(zstd_safe::CCtx<'a>),
+    Borrowed(&'a mut zstd_safe::CCtx<'static>),
+}
+
+enum MaybeOwnedDCtx<'a> {
+    Owned(zstd_safe::DCtx<'a>),
+    Borrowed(&'a mut zstd_safe::DCtx<'static>),
 }
 
 #[cfg(test)]

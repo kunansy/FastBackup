@@ -77,15 +77,14 @@ logging levels, the letter case is not significant.
 
 Tests can use the `env_logger` crate to see log messages generated during that test:
 
-```toml
-[dependencies]
-log = "0.4.0"
-
-[dev-dependencies]
-env_logger = "0.10.0"
+```console
+$ cargo add log
+$ cargo add --dev env_logger
 ```
 
 ```rust
+use log::info;
+
 fn add_one(num: i32) -> i32 {
     info!("add_one called with {}", num);
     num + 1
@@ -94,7 +93,6 @@ fn add_one(num: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use log::info;
 
     fn init() {
         let _ = env_logger::builder().is_test(true).try_init();

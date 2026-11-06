@@ -50,12 +50,6 @@ pub(crate) fn check_raw_pointer<T>(value: *mut c_void) -> Option<NonNull<T>> {
     NonNull::new(value.cast())
 }
 
-/// Create an array value containing all default values, inferring the type.
-#[inline]
-pub(crate) fn default_array<T: Default + Copy, const N: usize>() -> [T; N] {
-    [T::default(); N]
-}
-
 /// Create a union value containing a default value in one of its arms.
 ///
 /// The field names a union field which must have the same size as the union
@@ -74,7 +68,7 @@ macro_rules! default_union {
                 core::mem::size_of_val(&u),
                 core::mem::size_of_val(&field_value)
             );
-            const_assert_eq!(memoffset::offset_of_union!($union, $field), 0);
+            static_assertions::const_assert_eq!(memoffset::offset_of_union!($union, $field), 0);
         }
 
         u

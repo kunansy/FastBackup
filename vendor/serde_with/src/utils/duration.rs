@@ -1,5 +1,10 @@
 //! Internal Helper types
 
+// Serialization of large numbers can result in overflows
+// The time calculations are prone to this, so lint here extra
+// https://github.com/jonasbb/serde_with/issues/771
+#![warn(clippy::as_conversions)]
+
 use crate::{
     formats::{Flexible, Format, Strict, Strictness},
     prelude::*,
@@ -23,13 +28,17 @@ impl Sign {
         *self == Sign::Negative
     }
 
-    pub(crate) fn apply<T>(&self, value: T) -> T
-    where
-        T: core::ops::Neg<Output = T>,
-    {
+    pub(crate) fn apply_f64(&self, value: f64) -> f64 {
         match *self {
             Sign::Positive => value,
-            Sign::Negative => value.neg(),
+            Sign::Negative => -value,
+        }
+    }
+
+    pub(crate) fn apply_i64(&self, value: i64) -> Option<i64> {
+        match *self {
+            Sign::Positive => Some(value),
+            Sign::Negative => value.checked_neg(),
         }
     }
 }
@@ -48,7 +57,17 @@ impl DurationSigned {
         }
     }
 
-    #[cfg(any(feature = "chrono_0_4", feature = "time_0_3"))]
+    pub(crate) fn checked_mul(mut self, rhs: u32) -> Option<Self> {
+        self.duration = self.duration.checked_mul(rhs)?;
+        Some(self)
+    }
+
+    pub(crate) fn checked_div(mut self, rhs: u32) -> Option<Self> {
+        self.duration = self.duration.checked_div(rhs)?;
+        Some(self)
+    }
+
+    #[cfg(any(feature = "chrono_0_4", feature = "jiff_0_2", feature = "time_0_3"))]
     pub(crate) fn with_duration(sign: Sign, duration: Duration) -> Self {
         Self { sign, duration }
     }
@@ -65,7 +84,6 @@ impl DurationSigned {
         .ok_or_else(|| DeError::custom("timestamp is outside the range for std::time::SystemTime"))
     }
 
-    #[cfg(feature = "std")]
     pub(crate) fn to_std_duration<'de, D>(self) -> Result<Duration, D::Error>
     where
         D: Deserializer<'de>,
@@ -99,24 +117,6 @@ impl From<&SystemTime> for DurationSigned {
                 duration: err.duration(),
             },
         }
-    }
-}
-
-impl core::ops::Mul<u32> for DurationSigned {
-    type Output = DurationSigned;
-
-    fn mul(mut self, rhs: u32) -> Self::Output {
-        self.duration *= rhs;
-        self
-    }
-}
-
-impl core::ops::Div<u32> for DurationSigned {
-    type Output = DurationSigned;
-
-    fn div(mut self, rhs: u32) -> Self::Output {
-        self.duration /= rhs;
-        self
     }
 }
 
@@ -156,9 +156,17 @@ where
     where
         S: Serializer,
     {
-        let mut secs = source.sign.apply(source.duration.as_secs() as i64);
+        let mut secs = source
+            .sign
+            .apply_i64(i64::try_from(source.duration.as_secs()).map_err(|_| {
+                SerError::custom("The Duration of Timestamp is outside the supported range.")
+            })?)
+            .ok_or_else(|| {
+                S::Error::custom("The Duration of Timestamp is outside the supported range.")
+            })?;
 
         // Properly round the value
+        // TODO check for overflows BUG771
         if source.duration.subsec_millis() >= 500 {
             if source.sign.is_positive() {
                 secs += 1;
@@ -178,7 +186,9 @@ where
     where
         S: Serializer,
     {
-        let mut secs = source.sign.apply(source.duration.as_secs() as f64);
+        // as conversions are necessary for floats
+        #[allow(clippy::as_conversions)]
+        let mut secs = source.sign.apply_f64(source.duration.as_secs() as f64);
 
         // Properly round the value
         if source.duration.subsec_millis() >= 500 {
@@ -201,7 +211,14 @@ where
     where
         S: Serializer,
     {
-        let mut secs = source.sign.apply(source.duration.as_secs() as i64);
+        let mut secs = source
+            .sign
+            .apply_i64(i64::try_from(source.duration.as_secs()).map_err(|_| {
+                SerError::custom("The Duration of Timestamp is outside the supported range.")
+            })?)
+            .ok_or_else(|| {
+                S::Error::custom("The Duration of Timestamp is outside the supported range.")
+            })?;
 
         // Properly round the value
         if source.duration.subsec_millis() >= 500 {
@@ -225,7 +242,7 @@ where
     {
         source
             .sign
-            .apply(utils::duration_as_secs_f64(&source.duration))
+            .apply_f64(source.duration.as_secs_f64())
             .serialize(serializer)
     }
 }
@@ -241,7 +258,7 @@ where
     {
         source
             .sign
-            .apply(utils::duration_as_secs_f64(&source.duration))
+            .apply_f64(source.duration.as_secs_f64())
             .to_string()
             .serialize(serializer)
     }
@@ -261,7 +278,8 @@ macro_rules! duration_impls {
             where
                 S: Serializer,
             {
-                $inner::<FORMAT, STRICTNESS>::serialize_as(&(*source * $factor), serializer)
+                let value = source.checked_mul($factor).ok_or_else(|| S::Error::custom("Failed to serialize value as the value cannot be represented."))?;
+                $inner::<FORMAT, STRICTNESS>::serialize_as(&value, serializer)
             }
         }
 
@@ -276,7 +294,8 @@ macro_rules! duration_impls {
                 D: Deserializer<'de>,
             {
                 let dur = $inner::<FORMAT, STRICTNESS>::deserialize_as(deserializer)?;
-                Ok(dur / $factor)
+                let dur = dur.checked_div($factor).ok_or_else(|| D::Error::custom("Failed to deserialize value as the value cannot be represented."))?;
+                Ok(dur)
             }
         }
 
@@ -296,7 +315,7 @@ duration_impls!(
 );
 
 struct DurationVisitorFlexible;
-impl<'de> Visitor<'de> for DurationVisitorFlexible {
+impl Visitor<'_> for DurationVisitorFlexible {
     type Value = DurationSigned;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -307,11 +326,12 @@ impl<'de> Visitor<'de> for DurationVisitorFlexible {
     where
         E: DeError,
     {
-        if value >= 0 {
-            Ok(DurationSigned::new(Sign::Positive, value as u64, 0))
+        let sign = if value >= 0 {
+            Sign::Positive
         } else {
-            Ok(DurationSigned::new(Sign::Negative, (-value) as u64, 0))
-        }
+            Sign::Negative
+        };
+        Ok(DurationSigned::new(sign, value.unsigned_abs(), 0))
     }
 
     fn visit_u64<E>(self, secs: u64) -> Result<Self::Value, E>
@@ -356,13 +376,12 @@ impl<'de> DeserializeAs<'de, DurationSigned> for DurationSeconds<i64, Strict> {
     where
         D: Deserializer<'de>,
     {
-        i64::deserialize(deserializer).map(|mut secs: i64| {
-            let mut sign = Sign::Positive;
-            if secs.is_negative() {
-                secs = -secs;
-                sign = Sign::Negative;
-            }
-            DurationSigned::new(sign, secs as u64, 0)
+        i64::deserialize(deserializer).map(|secs: i64| {
+            let sign = match secs.is_negative() {
+                true => Sign::Negative,
+                false => Sign::Positive,
+            };
+            DurationSigned::new(sign, secs.abs_diff(0), 0)
         })
     }
 }
@@ -387,24 +406,23 @@ impl<'de> DeserializeAs<'de, DurationSigned> for DurationSeconds<String, Strict>
     {
         struct DurationDeserializationVisitor;
 
-        impl<'de> Visitor<'de> for DurationDeserializationVisitor {
+        impl Visitor<'_> for DurationDeserializationVisitor {
             type Value = DurationSigned;
 
             fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                write!(formatter, "a string containing a number")
+                formatter.write_str("a string containing a number")
             }
 
             fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
             where
                 E: DeError,
             {
-                let mut secs: i64 = value.parse().map_err(DeError::custom)?;
-                let mut sign = Sign::Positive;
-                if secs.is_negative() {
-                    secs = -secs;
-                    sign = Sign::Negative;
-                }
-                Ok(DurationSigned::new(sign, secs as u64, 0))
+                let secs: i64 = value.parse().map_err(DeError::custom)?;
+                let sign = match secs.is_negative() {
+                    true => Sign::Negative,
+                    false => Sign::Positive,
+                };
+                Ok(DurationSigned::new(sign, secs.abs_diff(0), 0))
             }
         }
 
@@ -505,7 +523,16 @@ fn parse_float_into_time_parts(mut value: &str) -> Result<(Sign, u64, u32), Pars
             let seconds = parts.next().expect("Float contains exactly one part");
             if let Ok(seconds) = seconds.parse() {
                 let subseconds = parts.next().expect("Float contains exactly one part");
-                let subseclen = subseconds.chars().count() as u32;
+                let subseclen = u32::try_from(subseconds.chars().count()).map_err(|_| {
+                    #[cfg(feature = "alloc")]
+                    return ParseFloatError::Custom(alloc::format!(
+                        "Duration and Timestamps with no more than 9 digits precision, but '{value}' has more"
+                    ));
+                    #[cfg(not(feature = "alloc"))]
+                    return ParseFloatError::Custom(
+                        "Duration and Timestamps with no more than 9 digits precision",
+                    );
+                })?;
                 if subseclen > 9 {
                     #[cfg(feature = "alloc")]
                     return Err(ParseFloatError::Custom(alloc::format!(
@@ -532,6 +559,124 @@ fn parse_float_into_time_parts(mut value: &str) -> Result<(Sign, u64, u32), Pars
         _ => Err(ParseFloatError::InvalidValue),
     }
 }
+
+/// The following macros are used to implement `SerializeAs` and `DeserializeAs` for the various `DurationSigned` types
+///
+/// ```rust,ignore
+/// use_duration_signed_ser!(
+///     DurationSeconds DurationSeconds,
+///     DurationMilliSeconds DurationMilliSeconds,
+///     DurationMicroSeconds DurationMicroSeconds,
+///     DurationNanoSeconds DurationNanoSeconds,
+///     => {
+///         SignedDuration; duration_into_duration_signed =>
+///         {i64, STRICTNESS => STRICTNESS: Strictness}
+///         {f64, STRICTNESS => STRICTNESS: Strictness}
+///         #[cfg(feature = "alloc")] {String, STRICTNESS => STRICTNESS: Strictness}
+///     }
+/// );
+/// ```
+///
+/// They take the conversion that should be implemented publicly (`DurationSeconds`, `TimestampSeconds`, etc.) and the internal
+/// conversion that is used with the `DurationSigned` (`DurationSeconds`) and then the types that should be implemented
+/// for (`i64`, `f64`, `String`) and the strictness that should be used (Strict, Flexible).
+#[cfg(any(feature = "chrono_0_4", feature = "jiff_0_2", feature = "time_0_3"))]
+macro_rules! use_duration_signed_ser {
+    (
+        $main_trait:ident $internal_trait:ident
+        $(
+            => {
+                $ty:ty; $converter:ident =>
+                $($(#[$attr:meta])? {
+                    $format:ty, $strictness:ty =>
+                    $($tbound:ident: $bound:ident $(,)?)*
+                })*
+            }
+        )+
+    ) => {
+        $($(
+            $(#[$attr])?
+            impl<$($tbound ,)*> SerializeAs<$ty> for $main_trait<$format, $strictness>
+            where
+                $($tbound: $bound,)*
+            {
+                fn serialize_as<S>(source: &$ty, serializer: S) -> Result<S::Ok, S::Error>
+                where
+                    S: Serializer,
+                {
+                    let dur: DurationSigned = $converter(source);
+                    $internal_trait::<$format, $strictness>::serialize_as(
+                        &dur,
+                        serializer,
+                    )
+                }
+            }
+        )*)+
+    };
+    (
+        $main_traitA:ident $internal_traitA:ident,
+        $main_traitB:ident $internal_traitB:ident,
+        $main_traitC:ident $internal_traitC:ident,
+        $main_traitD:ident $internal_traitD:ident,
+        $(=> $rest:tt)+
+    ) => {
+        use_duration_signed_ser!($main_traitA $internal_traitA $(=> $rest)+);
+        use_duration_signed_ser!($main_traitB $internal_traitB $(=> $rest)+);
+        use_duration_signed_ser!($main_traitC $internal_traitC $(=> $rest)+);
+        use_duration_signed_ser!($main_traitD $internal_traitD $(=> $rest)+);
+    };
+}
+// Make the macros available to the rest of the crate
+#[cfg(any(feature = "chrono_0_4", feature = "jiff_0_2", feature = "time_0_3"))]
+pub(crate) use use_duration_signed_ser;
+
+/// The following macros are used to implement `SerializeAs` and `DeserializeAs` for the various `DurationSigned` types
+#[cfg(any(feature = "chrono_0_4", feature = "jiff_0_2", feature = "time_0_3"))]
+macro_rules! use_duration_signed_de {
+    (
+        $main_trait:ident $internal_trait:ident
+        $(
+            => {
+                $ty:ty; $converter:ident =>
+                $($(#[$attr:meta])? {
+                    $format:ty, $strictness:ty =>
+                    $($tbound:ident: $bound:ident)*
+                })*
+            }
+        )+
+    ) =>{
+        $($(
+            $(#[$attr])?
+            impl<'de, $($tbound,)*> DeserializeAs<'de, $ty> for $main_trait<$format, $strictness>
+            where
+                $($tbound: $bound,)*
+            {
+                fn deserialize_as<D>(deserializer: D) -> Result<$ty, D::Error>
+                where
+                    D: Deserializer<'de>,
+                {
+                    let dur: DurationSigned = $internal_trait::<$format, $strictness>::deserialize_as(deserializer)?;
+                    $converter::<D>(dur)
+                }
+            }
+        )*)+
+    };
+    (
+        $main_traitA:ident $internal_traitA:ident,
+        $main_traitB:ident $internal_traitB:ident,
+        $main_traitC:ident $internal_traitC:ident,
+        $main_traitD:ident $internal_traitD:ident,
+        $(=> $rest:tt)+
+    ) => {
+        use_duration_signed_de!($main_traitA $internal_traitA $(=> $rest)+);
+        use_duration_signed_de!($main_traitB $internal_traitB $(=> $rest)+);
+        use_duration_signed_de!($main_traitC $internal_traitC $(=> $rest)+);
+        use_duration_signed_de!($main_traitD $internal_traitD $(=> $rest)+);
+    };
+}
+// Make the macros available to the rest of the crate
+#[cfg(any(feature = "chrono_0_4", feature = "jiff_0_2", feature = "time_0_3"))]
+pub(crate) use use_duration_signed_de;
 
 #[test]
 fn test_parse_float_into_time_parts() {

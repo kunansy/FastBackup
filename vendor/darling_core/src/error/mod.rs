@@ -18,10 +18,11 @@ use syn::{Expr, Lit, LitStr, Path};
 #[cfg(feature = "diagnostics")]
 mod child;
 mod kind;
+mod util;
 
 use crate::util::path_to_string;
 
-use self::kind::{ErrorKind, ErrorUnknownField};
+use self::kind::{ErrorKind, ErrorUnknownValue, UnknownValuePosition};
 
 /// An alias of `Result` specific to attribute parsing.
 pub type Result<T> = ::std::result::Result<T, Error>;
@@ -105,7 +106,7 @@ impl Error {
     /// Creates a new error for a field name that appears in the input but does not correspond
     /// to a known field.
     pub fn unknown_field(name: &str) -> Self {
-        Error::new(ErrorKind::UnknownField(name.into()))
+        Error::new(ErrorUnknownValue::new(UnknownValuePosition::Field, name).into())
     }
 
     /// Creates a new error for a field name that appears in the input but does not correspond
@@ -122,7 +123,27 @@ impl Error {
         T: AsRef<str> + 'a,
         I: IntoIterator<Item = &'a T>,
     {
-        Error::new(ErrorUnknownField::with_alts(field, alternates).into())
+        Error::new(
+            ErrorUnknownValue::with_alts(UnknownValuePosition::Field, field, alternates).into(),
+        )
+    }
+
+    /// Creates a new error for a field name that appears in the input but does not correspond to
+    /// a known attribute. The second argument is the list of known attributes; if a similar name
+    /// is found that will be shown in the emitted error message.
+    pub fn unknown_field_path_with_alts<'a, T, I>(field: &Path, alternates: I) -> Self
+    where
+        T: AsRef<str> + 'a,
+        I: IntoIterator<Item = &'a T>,
+    {
+        Error::new(ErrorKind::UnknownField(
+            ErrorUnknownValue::with_alts(
+                UnknownValuePosition::Field,
+                &path_to_string(field),
+                alternates,
+            )
+            .into(),
+        ))
     }
 
     /// Creates a new error for a struct or variant that does not adhere to the supported shape.
@@ -243,7 +264,17 @@ impl Error {
 
     /// Creates a new error for a value which doesn't match a set of expected literals.
     pub fn unknown_value(value: &str) -> Self {
-        Error::new(ErrorKind::UnknownValue(value.into()))
+        Error::new(ErrorUnknownValue::new(UnknownValuePosition::Value, value).into())
+    }
+
+    pub fn unknown_value_with_alts<'a, T, I>(value: &str, alternates: I) -> Self
+    where
+        T: AsRef<str> + 'a,
+        I: IntoIterator<Item = &'a T>,
+    {
+        Error::new(
+            ErrorUnknownValue::with_alts(UnknownValuePosition::Value, value, alternates).into(),
+        )
     }
 
     /// Creates a new error for a list which did not get enough items to proceed.
@@ -389,6 +420,75 @@ impl Error {
         self.kind.len()
     }
 
+    /// Consider additional field names as "did you mean" suggestions for
+    /// unknown field errors **if and only if** the caller appears to be operating
+    /// at error's origin (meaning no calls to [`Self::at`] have yet taken place).
+    ///
+    /// # Usage
+    /// `flatten` fields in derived trait implementations rely on this method to offer correct
+    /// "did you mean" suggestions in errors.
+    ///
+    /// Because the `flatten` field receives _all_ unknown fields, if a user mistypes a field name
+    /// that is present on the outer struct but not the flattened struct, they would get an incomplete
+    /// or inferior suggestion unless this method was invoked.
+    pub fn add_sibling_alts_for_unknown_field<'a, T, I>(mut self, alternates: I) -> Self
+    where
+        T: AsRef<str> + 'a,
+        I: IntoIterator<Item = &'a T>,
+    {
+        // The error may have bubbled up before this method was called,
+        // and in those cases adding alternates would be incorrect.
+        if !self.locations.is_empty() {
+            return self;
+        }
+
+        // This is a callback because we don't want to use the iterator
+        // if we don't need to.
+        let collect_alts = || {
+            alternates
+                .into_iter()
+                .map(|s| s.as_ref())
+                .collect::<Vec<_>>()
+        };
+
+        if let ErrorKind::UnknownField(unknown_field) = &mut self.kind {
+            unknown_field.add_alts(&collect_alts());
+        } else if let ErrorKind::Multiple(errors) = self.kind {
+            // Gather up the alternates to avoid unnecessary allocations
+            // on a per-contained-error basis.
+            let alts = collect_alts();
+            self.kind = ErrorKind::Multiple(
+                errors
+                    .into_iter()
+                    .map(|err| err.add_sibling_alts_for_unknown_field_internal(&alts))
+                    .collect(),
+            )
+        }
+
+        self
+    }
+
+    fn add_sibling_alts_for_unknown_field_internal(mut self, alternates: &[&str]) -> Self {
+        // The error may have bubbled up before this method was called,
+        // and in those cases adding alternates would be incorrect.
+        if !self.locations.is_empty() {
+            return self;
+        }
+
+        if let ErrorKind::UnknownField(unknown_field) = &mut self.kind {
+            unknown_field.add_alts(alternates);
+        } else if let ErrorKind::Multiple(errors) = self.kind {
+            self.kind = ErrorKind::Multiple(
+                errors
+                    .into_iter()
+                    .map(|err| err.add_sibling_alts_for_unknown_field_internal(alternates))
+                    .collect(),
+            )
+        }
+
+        self
+    }
+
     /// Adds a location chain to the head of the error's existing locations.
     fn prepend_at(mut self, mut locations: Vec<String>) -> Self {
         if !locations.is_empty() {
@@ -447,6 +547,7 @@ impl Error {
         // since it's redundant and not consistent with native compiler diagnostics.
         let diagnostic = match self.kind {
             ErrorKind::UnknownField(euf) => euf.into_diagnostic(self.span),
+            ErrorKind::UnknownValue(euv) => euv.into_diagnostic(self.span),
             _ => match self.span {
                 Some(span) => span.unwrap().error(self.kind.to_string()),
                 None => Diagnostic::new(Level::Error, self.to_string()),
@@ -568,17 +669,13 @@ impl Error {
 }
 
 impl StdError for Error {
-    fn description(&self) -> &str {
-        self.kind.description()
-    }
-
     fn cause(&self) -> Option<&dyn StdError> {
         None
     }
 }
 
 impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.kind)?;
         if !self.locations.is_empty() {
             write!(f, " at {}", self.locations.join("/"))?;

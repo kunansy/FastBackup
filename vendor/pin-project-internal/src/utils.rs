@@ -3,16 +3,16 @@
 use std::mem;
 
 use proc_macro2::{Group, Spacing, Span, TokenStream, TokenTree};
-use quote::{quote, quote_spanned, ToTokens};
+use quote::{ToTokens, quote, quote_spanned};
 use syn::{
+    Attribute, ExprPath, ExprStruct, Generics, Ident, Item, Lifetime, LifetimeParam, Macro,
+    PatStruct, PatTupleStruct, Path, PathArguments, PredicateType, QSelf, Result, Token, Type,
+    TypeParamBound, TypePath, Variant, Visibility, WherePredicate,
     parse::{Parse, ParseBuffer, ParseStream},
     parse_quote,
     punctuated::Punctuated,
     token,
     visit_mut::{self, VisitMut},
-    Attribute, ExprPath, ExprStruct, Generics, Ident, Item, Lifetime, LifetimeParam, Macro,
-    PatStruct, PatTupleStruct, Path, PathArguments, PredicateType, QSelf, Result, Token, Type,
-    TypeParamBound, TypePath, Variant, Visibility, WherePredicate,
 };
 
 pub(crate) type Variants = Punctuated<Variant, Token![,]>;
@@ -105,7 +105,7 @@ fn respan_tokens(tokens: TokenStream, span: Span) -> TokenStream {
         .collect()
 }
 
-// =================================================================================================
+// -----------------------------------------------------------------------------
 // extension traits
 
 pub(crate) trait SliceExt {
@@ -157,7 +157,7 @@ impl<'a> ParseBufferExt<'a> for ParseBuffer<'a> {
     }
 }
 
-// =================================================================================================
+// -----------------------------------------------------------------------------
 // visitors
 
 // Replace `self`/`Self` with `__self`/`self_ty`.
@@ -198,7 +198,7 @@ impl ReplaceReceiver<'_> {
 
         path.leading_colon = Some(**path.segments.pairs().next().unwrap().punct().unwrap());
 
-        let segments = mem::replace(&mut path.segments, Punctuated::new());
+        let segments = mem::take(&mut path.segments);
         path.segments = segments.into_pairs().skip(1).collect();
     }
 

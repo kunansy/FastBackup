@@ -1,5 +1,3 @@
-#![cfg(feature = "service_account")]
-
 //! This module provides a flow that obtains tokens for service accounts.
 //!
 //! Service accounts are usually used by software (i.e., non-human actors) to get access to
@@ -8,25 +6,29 @@
 //!
 //! Resources:
 //! - [Using OAuth 2.0 for Server to Server
-//! Applications](https://developers.google.com/identity/protocols/OAuth2ServiceAccount)
+//!   Applications](https://developers.google.com/identity/protocols/OAuth2ServiceAccount)
 //! - [JSON Web Tokens](https://jwt.io/)
 //!
 //! Copyright (c) 2016 Google Inc (lewinb@google.com).
 
+use crate::client::SendRequest;
 use crate::error::Error;
 use crate::types::TokenInfo;
 
-use std::{error::Error as StdError, io, path::PathBuf};
+use std::{io, path::PathBuf};
 
 use base64::Engine as _;
-use http::Uri;
-use hyper::client::connect::Connection;
-use hyper::header;
-use rustls::{self, crypto::ring::sign, pki_types::PrivateKeyDer, sign::SigningKey};
+
+use http::header;
+use http_body_util::BodyExt;
+#[cfg(all(feature = "aws-lc-rs", not(feature = "ring")))]
+use rustls::crypto::aws_lc_rs as crypto_provider;
+#[cfg(feature = "ring")]
+use rustls::crypto::ring as crypto_provider;
+use rustls::pki_types::pem::PemObject;
+use rustls::{self, pki_types::PrivateKeyDer, sign::SigningKey};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
-use tokio::io::{AsyncRead, AsyncWrite};
-use tower_service::Service;
 use url::form_urlencoded;
 
 const GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:jwt-bearer";
@@ -35,26 +37,6 @@ const GOOGLE_RS256_HEAD: &str = r#"{"alg":"RS256","typ":"JWT"}"#;
 /// Encodes s as Base64
 fn append_base64<T: AsRef<[u8]> + ?Sized>(s: &T, out: &mut String) {
     base64::engine::general_purpose::URL_SAFE.encode_string(s, out)
-}
-
-/// Decode a PKCS8 formatted RSA key.
-fn decode_rsa_key(pem_pkcs8: &str) -> Result<PrivateKeyDer, io::Error> {
-    let private_keys = rustls_pemfile::pkcs8_private_keys(&mut pem_pkcs8.as_bytes());
-
-    match private_keys {
-        Ok(mut keys) if !keys.is_empty() => {
-            keys.truncate(1);
-            Ok(PrivateKeyDer::Pkcs8(keys.remove(0).into()))
-        }
-        Ok(_) => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "Not enough private keys in PEM",
-        )),
-        Err(_) => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "Error reading key from PEM",
-        )),
-    }
 }
 
 /// JSON schema of secret service account key.
@@ -128,14 +110,14 @@ pub(crate) struct JWTSigner {
 
 impl JWTSigner {
     fn new(private_key: &str) -> Result<Self, io::Error> {
-        let key = decode_rsa_key(private_key)?;
-        let signing_key = sign::RsaSigningKey::new(&key)
-            .map_err(|_| io::Error::new(io::ErrorKind::Other, "Couldn't initialize signer"))?;
+        let key = PrivateKeyDer::from_pem_slice(private_key.as_bytes()).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "Error reading key from PEM")
+        })?;
+        let signing_key = crypto_provider::sign::RsaSigningKey::new(&key)
+            .map_err(|_| io::Error::other("Couldn't initialize signer"))?;
         let signer = signing_key
             .choose_scheme(&[rustls::SignatureScheme::RSA_PKCS1_SHA256])
-            .ok_or_else(|| {
-                io::Error::new(io::ErrorKind::Other, "Couldn't choose signing scheme")
-            })?;
+            .ok_or_else(|| io::Error::other("Couldn't choose signing scheme"))?;
         Ok(JWTSigner { signer })
     }
 
@@ -168,7 +150,7 @@ pub(crate) enum FlowOptsKey {
     /// A path at which the key can be read from disk
     Path(PathBuf),
     /// An already initialized key
-    Key(ServiceAccountKey),
+    Key(Box<ServiceAccountKey>),
 }
 
 /// ServiceAccountFlow can fetch oauth tokens using a service account.
@@ -182,7 +164,7 @@ impl ServiceAccountFlow {
     pub(crate) async fn new(opts: ServiceAccountFlowOpts) -> Result<Self, io::Error> {
         let key = match opts.key {
             FlowOptsKey::Path(path) => crate::read_service_account_key(path).await?,
-            FlowOptsKey::Key(key) => key,
+            FlowOptsKey::Key(key) => *key,
         };
 
         let signer = JWTSigner::new(&key.private_key)?;
@@ -194,35 +176,29 @@ impl ServiceAccountFlow {
     }
 
     /// Send a request for a new Bearer token to the OAuth provider.
-    pub(crate) async fn token<S, T>(
+    pub(crate) async fn token<T>(
         &self,
-        hyper_client: &hyper::Client<S>,
+        hyper_client: &impl SendRequest,
         scopes: &[T],
     ) -> Result<TokenInfo, Error>
     where
         T: AsRef<str>,
-        S: Service<Uri> + Clone + Send + Sync + 'static,
-        S::Response: Connection + AsyncRead + AsyncWrite + Send + Unpin + 'static,
-        S::Future: Send + Unpin + 'static,
-        S::Error: Into<Box<dyn StdError + Send + Sync>>,
     {
         let claims = Claims::new(&self.key, scopes, self.subject.as_deref());
-        let signed = self.signer.sign_claims(&claims).map_err(|_| {
-            Error::LowLevelError(io::Error::new(
-                io::ErrorKind::Other,
-                "unable to sign claims",
-            ))
-        })?;
+        let signed = self
+            .signer
+            .sign_claims(&claims)
+            .map_err(|_| Error::LowLevelError(io::Error::other("unable to sign claims")))?;
         let rqbody = form_urlencoded::Serializer::new(String::new())
             .extend_pairs(&[("grant_type", GRANT_TYPE), ("assertion", signed.as_str())])
             .finish();
-        let request = hyper::Request::post(&self.key.token_uri)
+        let request = http::Request::post(&self.key.token_uri)
             .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-            .body(hyper::Body::from(rqbody))
+            .body(rqbody)
             .unwrap();
         log::debug!("requesting token from service account: {:?}", request);
         let (head, body) = hyper_client.request(request).await?.into_parts();
-        let body = hyper::body::to_bytes(body).await?;
+        let body = body.collect().await?.to_bytes();
         log::debug!("received response; head: {:?}, body: {:?}", head, body);
         TokenInfo::from_json(&body)
     }
@@ -234,9 +210,10 @@ mod tests {
     use crate::helper::read_service_account_key;
 
     // Valid but deactivated key.
-    const TEST_PRIVATE_KEY_PATH: &'static str = "examples/Sanguine-69411a0c0eea.json";
+    const TEST_PRIVATE_KEY_PATH: &str = "examples/Sanguine-69411a0c0eea.json";
 
     // Uncomment this test to verify that we can successfully obtain tokens.
+    #[cfg(feature = "hyper-rustls")]
     // #[tokio::test]
     #[allow(dead_code)]
     async fn test_service_account_e2e() {
@@ -246,13 +223,18 @@ mod tests {
         })
         .await
         .unwrap();
-        let client = hyper::Client::builder().build(
-            hyper_rustls::HttpsConnectorBuilder::new()
-                .with_native_roots()
-                .https_only()
-                .enable_http1()
-                .enable_http2()
-                .build(),
+        let client = crate::client::HttpClient::new(
+            hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+                .build(
+                    hyper_rustls::HttpsConnectorBuilder::new()
+                        .with_provider_and_native_roots(crypto_provider::default_provider())
+                        .unwrap()
+                        .https_only()
+                        .enable_http1()
+                        .enable_http2()
+                        .build(),
+                ),
+            None,
         );
         println!(
             "{:?}",
@@ -305,7 +287,7 @@ mod tests {
 
         let signature = signature.unwrap();
         assert_eq!(
-            signature.split(".").nth(0).unwrap(),
+            signature.split('.').next().unwrap(),
             "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9"
         );
     }

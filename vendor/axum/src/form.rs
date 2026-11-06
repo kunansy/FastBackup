@@ -1,21 +1,27 @@
-use crate::body::HttpBody;
+use crate::extract::Request;
 use crate::extract::{rejection::*, FromRequest, RawForm};
-use crate::BoxError;
-use async_trait::async_trait;
 use axum_core::response::{IntoResponse, Response};
 use axum_core::RequestExt;
 use http::header::CONTENT_TYPE;
-use http::{Request, StatusCode};
-use serde::de::DeserializeOwned;
-use serde::Serialize;
+use http::StatusCode;
+use serde_core::{de::DeserializeOwned, Serialize};
 
 /// URL encoded extractor and response.
 ///
 /// # As extractor
 ///
-/// If used as an extractor `Form` will deserialize the query parameters for `GET` and `HEAD`
-/// requests and `application/x-www-form-urlencoded` encoded request bodies for other methods. It
-/// supports any type that implements [`serde::Deserialize`].
+/// If used as an extractor, `Form` will deserialize form data from the request,
+/// specifically:
+///
+/// - If the request has a method of `GET` or `HEAD`, the form data will be read
+///   from the query string (same as with [`Query`])
+/// - If the request has a different method, the form will be read from the body
+///   of the request. It must have a `content-type` of
+///   `application/x-www-form-urlencoded` for this to work. If you want to parse
+///   `multipart/form-data` request bodies, use [`Multipart`] instead.
+///
+/// This matches how HTML forms are sent by browsers by default.
+/// In both cases, the inner type `T` must implement [`serde::Deserialize`].
 ///
 /// ⚠️ Since parsing form data might require consuming the request body, the `Form` extractor must be
 /// *last* if there are multiple extractors in a handler. See ["the order of
@@ -38,10 +44,10 @@ use serde::Serialize;
 /// }
 /// ```
 ///
-/// Note that `Content-Type: multipart/form-data` requests are not supported. Use [`Multipart`]
-/// instead.
-///
 /// # As response
+///
+/// `Form` can also be used to encode any type that implements
+/// [`serde::Serialize`] as `application/x-www-form-urlencoded`
 ///
 /// ```rust
 /// use axum::Form;
@@ -57,37 +63,37 @@ use serde::Serialize;
 /// }
 /// ```
 ///
+/// [`Query`]: crate::extract::Query
 /// [`Multipart`]: crate::extract::Multipart
 #[cfg_attr(docsrs, doc(cfg(feature = "form")))]
 #[derive(Debug, Clone, Copy, Default)]
 #[must_use]
 pub struct Form<T>(pub T);
 
-#[async_trait]
-impl<T, S, B> FromRequest<S, B> for Form<T>
+impl<T, S> FromRequest<S> for Form<T>
 where
     T: DeserializeOwned,
-    B: HttpBody + Send + 'static,
-    B::Data: Send,
-    B::Error: Into<BoxError>,
     S: Send + Sync,
 {
     type Rejection = FormRejection;
 
-    async fn from_request(req: Request<B>, _state: &S) -> Result<Self, Self::Rejection> {
+    async fn from_request(req: Request, _state: &S) -> Result<Self, Self::Rejection> {
         let is_get_or_head =
             req.method() == http::Method::GET || req.method() == http::Method::HEAD;
 
         match req.extract().await {
             Ok(RawForm(bytes)) => {
-                let value =
-                    serde_urlencoded::from_bytes(&bytes).map_err(|err| -> FormRejection {
+                let deserializer =
+                    serde_urlencoded::Deserializer::new(form_urlencoded::parse(&bytes));
+                let value = serde_path_to_error::deserialize(deserializer).map_err(
+                    |err| -> FormRejection {
                         if is_get_or_head {
                             FailedToDeserializeForm::from_err(err).into()
                         } else {
                             FailedToDeserializeFormBody::from_err(err).into()
                         }
-                    })?;
+                    },
+                )?;
                 Ok(Form(value))
             }
             Err(RawFormRejection::BytesRejection(r)) => Err(FormRejection::BytesRejection(r)),
@@ -103,30 +109,34 @@ where
     T: Serialize,
 {
     fn into_response(self) -> Response {
-        match serde_urlencoded::to_string(&self.0) {
-            Ok(body) => (
-                [(CONTENT_TYPE, mime::APPLICATION_WWW_FORM_URLENCODED.as_ref())],
-                body,
-            )
-                .into_response(),
-            Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+        // Extracted into separate fn so it's only compiled once for all T.
+        fn make_response(ser_result: Result<String, serde_urlencoded::ser::Error>) -> Response {
+            match ser_result {
+                Ok(body) => (
+                    [(CONTENT_TYPE, mime::APPLICATION_WWW_FORM_URLENCODED.as_ref())],
+                    body,
+                )
+                    .into_response(),
+                Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+            }
         }
+
+        make_response(serde_urlencoded::to_string(&self.0))
     }
 }
-
 axum_core::__impl_deref!(Form);
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::{
-        body::{Empty, Full},
         routing::{on, MethodFilter},
         test_helpers::TestClient,
         Router,
     };
-    use bytes::Bytes;
-    use http::{header::CONTENT_TYPE, Method, Request};
+
+    use super::*;
+    use axum_core::body::Body;
+    use http::{Method, Request};
     use mime::APPLICATION_WWW_FORM_URLENCODED;
     use serde::{Deserialize, Serialize};
     use std::fmt::Debug;
@@ -140,7 +150,7 @@ mod tests {
     async fn check_query<T: DeserializeOwned + PartialEq + Debug>(uri: impl AsRef<str>, value: T) {
         let req = Request::builder()
             .uri(uri.as_ref())
-            .body(Empty::<Bytes>::new())
+            .body(Body::empty())
             .unwrap();
         assert_eq!(Form::<T>::from_request(req, &()).await.unwrap().0, value);
     }
@@ -150,9 +160,7 @@ mod tests {
             .uri("http://example.com/test")
             .method(Method::POST)
             .header(CONTENT_TYPE, APPLICATION_WWW_FORM_URLENCODED.as_ref())
-            .body(Full::<Bytes>::new(
-                serde_urlencoded::to_string(&value).unwrap().into(),
-            ))
+            .body(Body::from(serde_urlencoded::to_string(&value).unwrap()))
             .unwrap();
         assert_eq!(Form::<T>::from_request(req, &()).await.unwrap().0, value);
     }
@@ -214,13 +222,12 @@ mod tests {
             .uri("http://example.com/test")
             .method(Method::POST)
             .header(CONTENT_TYPE, mime::APPLICATION_JSON.as_ref())
-            .body(Full::<Bytes>::new(
+            .body(Body::from(
                 serde_urlencoded::to_string(&Pagination {
                     size: Some(10),
                     page: None,
                 })
-                .unwrap()
-                .into(),
+                .unwrap(),
             ))
             .unwrap();
         assert!(matches!(
@@ -242,22 +249,29 @@ mod tests {
         let app = Router::new().route(
             "/",
             on(
-                MethodFilter::GET | MethodFilter::POST,
+                MethodFilter::GET.or(MethodFilter::POST),
                 |_: Form<Payload>| async {},
             ),
         );
 
         let client = TestClient::new(app);
 
-        let res = client.get("/?a=false").send().await;
+        let res = client.get("/?a=false").await;
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            res.text().await,
+            "Failed to deserialize form: a: invalid digit found in string"
+        );
 
         let res = client
             .post("/")
             .header(CONTENT_TYPE, APPLICATION_WWW_FORM_URLENCODED.as_ref())
             .body("a=false")
-            .send()
             .await;
         assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            res.text().await,
+            "Failed to deserialize form body: a: invalid digit found in string"
+        );
     }
 }

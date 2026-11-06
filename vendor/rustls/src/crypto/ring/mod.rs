@@ -1,25 +1,26 @@
-use crate::crypto::{CryptoProvider, KeyProvider, SecureRandom};
+use pki_types::PrivateKeyDer;
+pub(crate) use ring as ring_like;
+use webpki::ring as webpki_algs;
+use zeroize::Zeroizing;
+
+use crate::Error;
+use crate::crypto::{CryptoProvider, KeyProvider, SecureRandom, SupportedKxGroup};
 use crate::enums::SignatureScheme;
 use crate::rand::GetRandomFailed;
 use crate::sign::SigningKey;
 use crate::suites::SupportedCipherSuite;
+use crate::sync::Arc;
 use crate::webpki::WebPkiSupportedAlgorithms;
-use crate::Error;
-
-use pki_types::PrivateKeyDer;
-use webpki::ring as webpki_algs;
-
-use alloc::sync::Arc;
-
-pub(crate) use ring as ring_like;
 
 /// Using software keys for authentication.
 pub mod sign;
 
 pub(crate) mod hash;
+#[cfg(any(test, feature = "tls12"))]
 pub(crate) mod hmac;
 pub(crate) mod kx;
 pub(crate) mod quic;
+#[cfg(feature = "std")]
 pub(crate) mod ticketer;
 #[cfg(feature = "tls12")]
 pub(crate) mod tls12;
@@ -31,7 +32,7 @@ pub(crate) mod tls13;
 pub fn default_provider() -> CryptoProvider {
     CryptoProvider {
         cipher_suites: DEFAULT_CIPHER_SUITES.to_vec(),
-        kx_groups: ALL_KX_GROUPS.to_vec(),
+        kx_groups: DEFAULT_KX_GROUPS.to_vec(),
         signature_verification_algorithms: SUPPORTED_SIG_ALGS,
         secure_random: &Ring,
         key_provider: &Ring,
@@ -57,7 +58,7 @@ impl KeyProvider for Ring {
         &self,
         key_der: PrivateKeyDer<'static>,
     ) -> Result<Arc<dyn SigningKey>, Error> {
-        sign::any_supported_type(&key_der)
+        sign::any_supported_type(&Zeroizing::new(key_der))
     }
 }
 
@@ -116,7 +117,9 @@ static SUPPORTED_SIG_ALGS: WebPkiSupportedAlgorithms = WebPkiSupportedAlgorithms
         webpki_algs::RSA_PKCS1_2048_8192_SHA256,
         webpki_algs::RSA_PKCS1_2048_8192_SHA384,
         webpki_algs::RSA_PKCS1_2048_8192_SHA512,
-        webpki_algs::RSA_PKCS1_3072_8192_SHA384,
+        webpki_algs::RSA_PKCS1_2048_8192_SHA256_ABSENT_PARAMS,
+        webpki_algs::RSA_PKCS1_2048_8192_SHA384_ABSENT_PARAMS,
+        webpki_algs::RSA_PKCS1_2048_8192_SHA512_ABSENT_PARAMS,
     ],
     mapping: &[
         // Note: for TLS1.2 the curve is not fixed by SignatureScheme. For TLS1.3 it is.
@@ -165,13 +168,19 @@ static SUPPORTED_SIG_ALGS: WebPkiSupportedAlgorithms = WebPkiSupportedAlgorithms
 /// All defined key exchange groups supported by *ring* appear in this module.
 ///
 /// [`ALL_KX_GROUPS`] is provided as an array of all of these values.
+/// [`DEFAULT_KX_GROUPS`] is provided as an array of this provider's defaults.
 pub mod kx_group {
-    pub use super::kx::SECP256R1;
-    pub use super::kx::SECP384R1;
-    pub use super::kx::X25519;
+    pub use super::kx::{SECP256R1, SECP384R1, X25519};
 }
 
-pub use kx::ALL_KX_GROUPS;
+/// A list of the default key exchange groups supported by this provider.
+pub static DEFAULT_KX_GROUPS: &[&dyn SupportedKxGroup] = ALL_KX_GROUPS;
+
+/// A list of all the key exchange groups supported by this provider.
+pub static ALL_KX_GROUPS: &[&dyn SupportedKxGroup] =
+    &[kx_group::X25519, kx_group::SECP256R1, kx_group::SECP384R1];
+
+#[cfg(feature = "std")]
 pub use ticketer::Ticketer;
 
 /// Compatibility shims between ring 0.16.x and 0.17.x API
@@ -188,4 +197,8 @@ mod ring_shim {
         })
         .map_err(|_| ())
     }
+}
+
+pub(super) fn fips() -> bool {
+    false
 }

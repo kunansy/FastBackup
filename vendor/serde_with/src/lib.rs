@@ -1,66 +1,49 @@
-#![warn(
-    clippy::semicolon_if_nothing_returned,
-    // New clippy lints, not yet stable
-    // clippy::std_instead_of_core,
-    // clippy::std_instead_of_alloc,
-    // clippy::alloc_instead_of_core,
-    missing_docs,
-    rust_2018_idioms,
-    rustdoc::missing_crate_level_docs,
-    trivial_casts,
-    trivial_numeric_casts,
-    unused_extern_crates,
-    unused_import_braces,
-    unused_qualifications,
-    variant_size_differences
-)]
-#![doc(test(attr(forbid(unsafe_code))))]
-#![doc(test(attr(deny(
-    missing_debug_implementations,
-    trivial_casts,
-    trivial_numeric_casts,
-    unused_extern_crates,
-    unused_import_braces,
-    unused_qualifications,
-))))]
-#![doc(test(attr(warn(rust_2018_idioms))))]
+#![doc(test(attr(
+    allow(
+        unknown_lints,
+        // Problematic handling for foreign From<T> impls in tests
+        // https://github.com/rust-lang/rust/issues/121621
+        non_local_definitions,
+        // Some tests use foo as name
+        clippy::disallowed_names,
+    ),
+    deny(
+        missing_debug_implementations,
+        rust_2018_idioms,
+        trivial_casts,
+        trivial_numeric_casts,
+        unused_extern_crates,
+        unused_import_braces,
+        unused_qualifications,
+        warnings,
+    ),
+    forbid(unsafe_code),
+)))]
 // Not needed for 2018 edition and conflicts with `rust_2018_idioms`
 #![doc(test(no_crate_inject))]
-#![doc(html_root_url = "https://docs.rs/serde_with/2.3.3/")]
+#![doc(html_root_url = "https://docs.rs/serde_with/3.24.0/")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
-#![allow(
-    // clippy is broken and shows wrong warnings
-    // clippy on stable does not know yet about the lint name
-    unknown_lints,
-    // https://github.com/rust-lang/rust-clippy/issues/8560
-    clippy::only_used_in_recursion,
-    // https://github.com/rust-lang/rust-clippy/issues/8867
-    clippy::derive_partial_eq_without_eq,
-    // https://github.com/rust-lang/rust-clippy/issues/9101
-    clippy::explicit_auto_deref
-)]
 #![no_std]
 
 //! [![crates.io badge](https://img.shields.io/crates/v/serde_with.svg)](https://crates.io/crates/serde_with/)
-//! [![Build Status](https://github.com/jonasbb/serde_with/workflows/Rust%20CI/badge.svg)](https://github.com/jonasbb/serde_with)
+//! [![Build Status](https://github.com/jonasbb/serde_with/actions/workflows/ci.yaml/badge.svg)](https://github.com/jonasbb/serde_with)
 //! [![codecov](https://codecov.io/gh/jonasbb/serde_with/branch/master/graph/badge.svg)](https://codecov.io/gh/jonasbb/serde_with)
 //! [![CII Best Practices](https://bestpractices.coreinfrastructure.org/projects/4322/badge)](https://bestpractices.coreinfrastructure.org/projects/4322)
-//! [![Rustexplorer](https://img.shields.io/badge/Try%20on-rustexplorer-lightgrey?logo=rust&logoColor=orange)](https://www.rustexplorer.com/b/py7ida)
 //!
 //! ---
 //!
-//! This crate provides custom de/serialization helpers to use in combination with [serde's with-annotation][with-annotation] and with the improved [`serde_as`][as-annotation]-annotation.
+//! This crate provides custom de/serialization helpers to use in combination with [serde's `with` annotation][with-annotation] and with the improved [`serde_as`][as-annotation]-annotation.
 //! Some common use cases are:
 //!
 //! * De/Serializing a type using the `Display` and `FromStr` traits, e.g., for `u8`, `url::Url`, or `mime::Mime`.
-//!      Check [`DisplayFromStr`] for details.
+//!   Check [`DisplayFromStr`] for details.
 //! * Support for arrays larger than 32 elements or using const generics.
-//!     With `serde_as` large arrays are supported, even if they are nested in other types.
-//!     `[bool; 64]`, `Option<[u8; M]>`, and `Box<[[u8; 64]; N]>` are all supported, as [this examples shows](#large-and-const-generic-arrays).
+//!   With `serde_as` large arrays are supported, even if they are nested in other types.
+//!   `[bool; 64]`, `Option<[u8; M]>`, and `Box<[[u8; 64]; N]>` are all supported, as [this examples shows](#large-and-const-generic-arrays).
 //! * Skip serializing all empty `Option` types with [`#[skip_serializing_none]`][skip_serializing_none].
-//! * Apply a prefix to each field name of a struct, without changing the de/serialize implementations of the struct using [`with_prefix!`][].
+//! * Apply a prefix / suffix to each field name of a struct, without changing the de/serialize implementations of the struct using [`with_prefix!`][] / [`with_suffix!`][].
 //! * Deserialize a comma separated list like `#hash,#tags,#are,#great` into a `Vec<String>`.
-//!      Check the documentation for [`serde_with::StringWithSeparator::<CommaSeparator, T>`][StringWithSeparator].
+//!   Check the documentation for [`serde_with::StringWithSeparator::<CommaSeparator, T>`][StringWithSeparator].
 //!
 //! ## Getting Help
 //!
@@ -91,13 +74,10 @@
 //!
 //! ## `DisplayFromStr`
 //!
-//! [![Rustexplorer](https://img.shields.io/badge/Try%20on-rustexplorer-lightgrey?logo=rust&logoColor=orange)](https://www.rustexplorer.com/b/py7ida)
 //! ```rust
-//! # #[cfg(feature = "macros")]
+//! # #[cfg(all(feature = "macros", feature = "json"))] {
 //! # use serde::{Deserialize, Serialize};
-//! # #[cfg(feature = "macros")]
 //! # use serde_with::{serde_as, DisplayFromStr};
-//! # #[cfg(feature = "macros")]
 //! #[serde_as]
 //! # #[derive(Debug, Eq, PartialEq)]
 //! #[derive(Deserialize, Serialize)]
@@ -107,7 +87,6 @@
 //!     bar: u8,
 //! }
 //!
-//! # #[cfg(all(feature = "macros", feature = "json"))] {
 //! // This will serialize
 //! # let foo =
 //! Foo {bar: 12}
@@ -118,7 +97,7 @@
 //! {"bar": "12"}
 //! # "#;
 //! # assert_eq!(json.replace(" ", "").replace("\n", ""), serde_json::to_string(&foo).unwrap());
-//! # assert_eq!(foo, serde_json::from_str(&json).unwrap());
+//! # assert_eq!(foo, serde_json::from_str(json).unwrap());
 //! # }
 //! ```
 //!
@@ -129,13 +108,10 @@
 //!
 //! On top of it, `[u8; N]` (aka, bytes) can use the specialized `"Bytes"` for efficiency much like the `serde_bytes` crate.
 //!
-//! [![Rustexplorer](https://img.shields.io/badge/Try%20on-rustexplorer-lightgrey?logo=rust&logoColor=orange)](https://www.rustexplorer.com/b/um0xyi)
 //! ```rust
-//! # #[cfg(feature = "macros")]
+//! # #[cfg(all(feature = "macros", feature = "json"))] {
 //! # use serde::{Deserialize, Serialize};
-//! # #[cfg(feature = "macros")]
 //! # use serde_with::{serde_as, Bytes};
-//! # #[cfg(feature = "macros")]
 //! #[serde_as]
 //! # #[derive(Debug, Eq, PartialEq)]
 //! #[derive(Deserialize, Serialize)]
@@ -153,7 +129,6 @@
 //!     bytes: [u8; M],
 //! }
 //!
-//! # #[cfg(all(feature = "macros", feature = "json"))] {
 //! // This allows us to serialize a struct like this
 //! let arrays: Arrays<100, 128> = Arrays {
 //!     constgeneric: [true; 100],
@@ -171,13 +146,10 @@
 //! If many fields are optional, putting the annotations on the structs can become tedious.
 //! The `#[skip_serializing_none]` attribute must be placed *before* the `#[derive]`.
 //!
-//! [![Rustexplorer](https://img.shields.io/badge/Try%20on-rustexplorer-lightgrey?logo=rust&logoColor=orange)](https://www.rustexplorer.com/b/xr1tm0)
 //! ```rust
-//! # #[cfg(feature = "macros")]
+//! # #[cfg(all(feature = "macros", feature = "json"))] {
 //! # use serde::{Deserialize, Serialize};
-//! # #[cfg(feature = "macros")]
 //! # use serde_with::skip_serializing_none;
-//! # #[cfg(feature = "macros")]
 //! #[skip_serializing_none]
 //! # #[derive(Debug, Eq, PartialEq)]
 //! #[derive(Deserialize, Serialize)]
@@ -191,7 +163,6 @@
 //!     g: Option<usize>,
 //! }
 //!
-//! # #[cfg(all(feature = "macros", feature = "json"))] {
 //! // This will serialize
 //! # let foo =
 //! Foo {a: None, b: None, c: None, d: Some(4), e: None, f: None, g: Some(7)}
@@ -202,13 +173,13 @@
 //! {"d": 4, "g": 7}
 //! # "#;
 //! # assert_eq!(json.replace(" ", "").replace("\n", ""), serde_json::to_string(&foo).unwrap());
-//! # assert_eq!(foo, serde_json::from_str(&json).unwrap());
+//! # assert_eq!(foo, serde_json::from_str(json).unwrap());
 //! # }
 //! ```
 //!
 //! ## Advanced `serde_as` usage
 //!
-//! This example is mainly supposed to highlight the flexibility of the `serde_as`-annotation compared to [serde's with-annotation][with-annotation].
+//! This example is mainly supposed to highlight the flexibility of the `serde_as` annotation compared to [serde's `with` annotation][with-annotation].
 //! More details about `serde_as` can be found in the [user guide].
 //!
 //! ```rust
@@ -217,6 +188,7 @@
 //! #     serde::{Deserialize, Serialize},
 //! #     serde_with::{serde_as, DisplayFromStr, DurationSeconds, hex::Hex, Map},
 //! # };
+//! # #[cfg(all(feature = "macros", feature = "hex"))]
 //! use std::time::Duration;
 //!
 //! # #[cfg(all(feature = "macros", feature = "hex"))]
@@ -252,7 +224,7 @@
 //! }
 //! # "#;
 //! # assert_eq!(json.replace(" ", "").replace("\n", ""), serde_json::to_string(&foo).unwrap());
-//! # assert_eq!(foo, serde_json::from_str(&json).unwrap());
+//! # assert_eq!(foo, serde_json::from_str(json).unwrap());
 //!
 //! // and serializes
 //! # let foo =
@@ -277,28 +249,32 @@
 //! }
 //! # "#;
 //! # assert_eq!(json.replace(" ", "").replace("\n", ""), serde_json::to_string(&foo).unwrap());
-//! # assert_eq!(foo, serde_json::from_str(&json).unwrap());
+//! # assert_eq!(foo, serde_json::from_str(json).unwrap());
 //! # }
 //! ```
 //!
-//! [`DisplayFromStr`]: https://docs.rs/serde_with/2.3.3/serde_with/struct.DisplayFromStr.html
-//! [`with_prefix!`]: https://docs.rs/serde_with/2.3.3/serde_with/macro.with_prefix.html
-//! [feature flags]: https://docs.rs/serde_with/2.3.3/serde_with/guide/feature_flags/index.html
-//! [skip_serializing_none]: https://docs.rs/serde_with/2.3.3/serde_with/attr.skip_serializing_none.html
-//! [StringWithSeparator]: https://docs.rs/serde_with/2.3.3/serde_with/struct.StringWithSeparator.html
-//! [user guide]: https://docs.rs/serde_with/2.3.3/serde_with/guide/index.html
+//! [`DisplayFromStr`]: https://docs.rs/serde_with/3.24.0/serde_with/struct.DisplayFromStr.html
+//! [`with_prefix!`]: https://docs.rs/serde_with/3.24.0/serde_with/macro.with_prefix.html
+//! [`with_suffix!`]: https://docs.rs/serde_with/3.24.0/serde_with/macro.with_suffix.html
+//! [feature flags]: https://docs.rs/serde_with/3.24.0/serde_with/guide/feature_flags/index.html
+//! [skip_serializing_none]: https://docs.rs/serde_with/3.24.0/serde_with/attr.skip_serializing_none.html
+//! [StringWithSeparator]: https://docs.rs/serde_with/3.24.0/serde_with/struct.StringWithSeparator.html
+//! [user guide]: https://docs.rs/serde_with/3.24.0/serde_with/guide/index.html
 //! [with-annotation]: https://serde.rs/field-attrs.html#with
-//! [as-annotation]: https://docs.rs/serde_with/2.3.3/serde_with/guide/serde_as/index.html
+//! [as-annotation]: https://docs.rs/serde_with/3.24.0/serde_with/guide/serde_as/index.html
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
 #[doc(hidden)]
-pub extern crate core;
+extern crate core;
 #[doc(hidden)]
-pub extern crate serde;
+extern crate serde_core;
 #[cfg(feature = "std")]
 extern crate std;
 
+#[cfg(feature = "base58")]
+#[cfg_attr(docsrs, doc(cfg(feature = "base58")))]
+pub mod base58;
 #[cfg(feature = "base64")]
 #[cfg_attr(docsrs, doc(cfg(feature = "base64")))]
 pub mod base64;
@@ -309,6 +285,7 @@ pub mod chrono_0_4;
 #[cfg(feature = "chrono")]
 #[cfg_attr(docsrs, doc(cfg(feature = "chrono")))]
 pub mod chrono {
+    pub use crate::chrono_0_4::*;
     pub use chrono_0_4::*;
 }
 #[cfg(feature = "alloc")]
@@ -319,37 +296,50 @@ mod duplicate_key_impls;
 #[cfg(feature = "alloc")]
 mod enum_map;
 #[cfg(feature = "std")]
-mod flatten_maybe;
+/// NOT PUBLIC API
+#[doc(hidden)]
+pub mod flatten_maybe;
 pub mod formats;
 #[cfg(feature = "hex")]
 #[cfg_attr(docsrs, doc(cfg(feature = "hex")))]
 pub mod hex;
+#[cfg(feature = "jiff_0_2")]
+#[cfg_attr(docsrs, doc(cfg(feature = "jiff_0_2")))]
+pub mod jiff_0_2;
 #[cfg(feature = "json")]
 #[cfg_attr(docsrs, doc(cfg(feature = "json")))]
 pub mod json;
 #[cfg(feature = "alloc")]
 mod key_value_map;
 pub mod rust;
+#[cfg(feature = "schemars_0_8")]
+#[cfg_attr(docsrs, doc(cfg(feature = "schemars_0_8")))]
+pub mod schemars_0_8;
+#[cfg(feature = "schemars_0_9")]
+#[cfg_attr(docsrs, doc(cfg(feature = "schemars_0_9")))]
+pub mod schemars_0_9;
+#[cfg(feature = "schemars_1")]
+#[cfg_attr(docsrs, doc(cfg(feature = "schemars_1")))]
+pub mod schemars_1;
 pub mod ser;
-#[cfg(feature = "std")]
 mod serde_conv;
 #[cfg(feature = "time_0_3")]
 #[cfg_attr(docsrs, doc(cfg(feature = "time_0_3")))]
 pub mod time_0_3;
 mod utils;
-#[cfg(feature = "std")]
+#[cfg(feature = "alloc")]
 #[doc(hidden)]
 pub mod with_prefix;
+#[cfg(feature = "alloc")]
+#[doc(hidden)]
+pub mod with_suffix;
 
 // Taken from shepmaster/snafu
 // Originally licensed as MIT+Apache 2
-// https://github.com/shepmaster/snafu/blob/fd37d79d4531ed1d3eebffad0d658928eb860cfe/src/lib.rs#L121-L165
+// https://github.com/shepmaster/snafu/blob/90991b609e8928ceebf7df1b040408539d21adda/src/lib.rs#L343-L376
 #[cfg(feature = "guide")]
 #[allow(unused_macro_rules)]
 macro_rules! generate_guide {
-    (pub mod $name:ident; $($rest:tt)*) => {
-        generate_guide!(@gen ".", pub mod $name { } $($rest)*);
-    };
     (pub mod $name:ident { $($children:tt)* } $($rest:tt)*) => {
         generate_guide!(@gen ".", pub mod $name { $($children)* } $($rest)*);
     };
@@ -358,16 +348,27 @@ macro_rules! generate_guide {
         generate_guide!(@gen $prefix, pub mod $name { } $($rest)*);
     };
     (@gen $prefix:expr, @code pub mod $name:ident; $($rest:tt)*) => {
+        #[cfg(feature = "guide")]
         pub mod $name;
+
+        #[cfg(not(feature = "guide"))]
+        /// Not currently built; please add the `guide` feature flag.
+        pub mod $name {}
+
         generate_guide!(@gen $prefix, $($rest)*);
     };
     (@gen $prefix:expr, pub mod $name:ident { $($children:tt)* } $($rest:tt)*) => {
-        doc_comment::doc_comment! {
-            include_str!(concat!($prefix, "/", stringify!($name), ".md")),
-            pub mod $name {
-                generate_guide!(@gen concat!($prefix, "/", stringify!($name)), $($children)*);
-            }
+        #[cfg(feature = "guide")]
+        #[doc = include_str!(concat!($prefix, "/", stringify!($name), ".md"))]
+        pub mod $name {
+            generate_guide!(@gen concat!($prefix, "/", stringify!($name)), $($children)*);
         }
+        #[cfg(not(feature = "guide"))]
+        /// Not currently built; please add the `guide` feature flag.
+        pub mod $name {
+            generate_guide!(@gen concat!($prefix, "/", stringify!($name)), $($children)*);
+        }
+
         generate_guide!(@gen $prefix, $($rest)*);
     };
 }
@@ -375,7 +376,7 @@ macro_rules! generate_guide {
 #[cfg(feature = "guide")]
 generate_guide! {
     pub mod guide {
-        pub mod feature_flags;
+        @code pub mod feature_flags;
         pub mod serde_as;
         pub mod serde_as_transformations;
     }
@@ -403,12 +404,14 @@ pub(crate) mod prelude {
         fmt::{self, Display},
         hash::{BuildHasher, Hash},
         marker::PhantomData,
+        ops::{Bound, Range, RangeFrom, RangeInclusive, RangeTo},
         option::Option,
+        pin::Pin,
         result::Result,
-        str::FromStr,
+        str::{self, FromStr},
         time::Duration,
     };
-    pub use serde::{
+    pub use serde_core::{
         de::{
             Deserialize, DeserializeOwned, DeserializeSeed, Deserializer, EnumAccess,
             Error as DeError, Expected, IgnoredAny, IntoDeserializer, MapAccess, SeqAccess,
@@ -454,8 +457,8 @@ pub use serde_with_macros::*;
 
 /// Adapter to convert from `serde_as` to the serde traits.
 ///
-/// The `As` type adapter allows using types which implement [`DeserializeAs`] or [`SerializeAs`] in place of serde's with-annotation.
-/// The with-annotation allows running custom code when de/serializing, however it is quite inflexible.
+/// The `As` type adapter allows using types which implement [`DeserializeAs`] or [`SerializeAs`] in place of serde's `with` annotation.
+/// The `with` annotation allows running custom code when de/serializing, however it is quite inflexible.
 /// The traits [`DeserializeAs`]/[`SerializeAs`] are more flexible, as they allow composition and nesting of types to create more complex de/serialization behavior.
 /// However, they are not directly compatible with serde, as they are not provided by serde.
 /// The `As` type adapter makes them compatible, by forwarding the function calls to `serialize`/`deserialize` to the corresponding functions `serialize_as` and `deserialize_as`.
@@ -469,6 +472,7 @@ pub use serde_with_macros::*;
 /// # use serde::{Deserialize, Serialize};
 /// # use serde_with::{As, DisplayFromStr};
 /// #
+/// # #[allow(dead_code)]
 /// #[derive(Deserialize, Serialize)]
 /// # struct S {
 /// // Serialize numbers as sequence of strings, using Display and FromStr
@@ -486,6 +490,7 @@ pub use serde_with_macros::*;
 /// # use serde_with::{As, DisplayFromStr, Same};
 /// # use std::collections::BTreeMap;
 /// #
+/// # #[allow(dead_code)]
 /// #[derive(Deserialize, Serialize)]
 /// # struct S {
 /// // Serialize map, turn keys into strings but keep type of value
@@ -495,13 +500,13 @@ pub use serde_with_macros::*;
 /// # }
 /// ```
 ///
-/// [serde_as]: https://docs.rs/serde_with/2.3.3/serde_with/attr.serde_as.html
+/// [serde_as]: https://docs.rs/serde_with/3.24.0/serde_with/attr.serde_as.html
 pub struct As<T: ?Sized>(PhantomData<T>);
 
 /// Adapter to convert from `serde_as` to the serde traits.
 ///
 /// This is the counter-type to [`As`][].
-/// It can be used whenever a type implementing [`DeserializeAs`][]/[`SerializeAs`][] is required but the normal `Deserialize`/`Serialize` traits should be used.
+/// It can be used whenever a type implementing [`DeserializeAs`]/[`SerializeAs`] is required but the normal [`Deserialize`](::serde_core::Deserialize)/[`Serialize`](::serde_core::Serialize) traits should be used.
 /// Check [`As`] for an example.
 pub struct Same;
 
@@ -515,7 +520,7 @@ pub struct Same;
 /// support, which can be found in some crates.
 ///
 /// If you control the type you want to de/serialize, you can instead use the two derive macros, [`SerializeDisplay`] and [`DeserializeFromStr`].
-/// They properly implement the traits [`serde::Serialize`] and [`serde::Deserialize`] such that user of the type no longer have to use the `serde_as` system.
+/// They properly implement the traits [`Serialize`](::serde_core::Serialize) and [`Deserialize`](::serde_core::Deserialize) such that user of the type no longer have to use the `serde_as` system.
 ///
 /// # Examples
 ///
@@ -545,7 +550,7 @@ pub struct Same;
 ///     mime: mime::STAR_STAR,
 ///     number: 777,
 /// };
-/// assert_eq!(json!({ "mime": "*/*", "number": "777" }), serde_json::to_value(&x).unwrap());
+/// assert_eq!(json!({ "mime": "*/*", "number": "777" }), serde_json::to_value(x).unwrap());
 /// # }
 /// ```
 ///
@@ -553,9 +558,52 @@ pub struct Same;
 /// [`FromStr`]: std::str::FromStr
 pub struct DisplayFromStr;
 
+/// Use the first format if [`De/Serializer::is_human_readable`], otherwise use the second
+///
+/// If the second format is not specified, the normal
+/// [`Deserialize`](::serde_core::Deserialize)/[`Serialize`](::serde_core::Serialize) traits are used.
+///
+/// # Examples
+///
+/// ```rust
+/// # #[cfg(feature = "macros")] {
+/// # use serde::{Deserialize, Serialize};
+/// # use serde_json::json;
+/// # use serde_with::{serde_as, DisplayFromStr, IfIsHumanReadable, DurationMilliSeconds, DurationSeconds};
+/// use std::time::Duration;
+///
+/// #[serde_as]
+/// #[derive(Deserialize, Serialize)]
+/// struct A {
+///     #[serde_as(as = "IfIsHumanReadable<DisplayFromStr>")]
+///     number: u32,
+/// }
+/// let x = A {
+///     number: 777,
+/// };
+/// assert_eq!(json!({ "number": "777" }), serde_json::to_value(&x).unwrap());
+/// assert_eq!(vec![145, 205, 3, 9], rmp_serde::to_vec(&x).unwrap());
+///
+/// #[serde_as]
+/// #[derive(Deserialize, Serialize)]
+/// struct B {
+///     #[serde_as(as = "IfIsHumanReadable<DurationMilliSeconds, DurationSeconds>")]
+///     duration: Duration,
+/// }
+/// let x = B {
+///     duration: Duration::from_millis(1500),
+/// };
+/// assert_eq!(json!({ "duration": 1500 }), serde_json::to_value(&x).unwrap());
+/// assert_eq!(vec![145, 2], rmp_serde::to_vec(&x).unwrap());
+/// # }
+/// ```
+/// [`De/Serializer::is_human_readable`]: serde_core::Serializer::is_human_readable
+/// [`is_human_readable`]: serde_core::Serializer::is_human_readable
+pub struct IfIsHumanReadable<H, F = Same>(PhantomData<H>, PhantomData<F>);
+
 /// De/Serialize a [`Option<String>`] type while transforming the empty string to [`None`]
 ///
-/// Convert an [`Option<T>`] from/to string using [`FromStr`] and [`AsRef<str>`] implementations.
+/// Convert an [`Option<T>`] from/to string using [`FromStr`] and [`Display`](::core::fmt::Display) implementations.
 /// An empty string is deserialized as [`None`] and a [`None`] vice versa.
 ///
 /// # Examples
@@ -582,17 +630,70 @@ pub struct DisplayFromStr;
 /// let x = A {
 ///     tags: Some("This is text".to_string()),
 /// };
-/// assert_eq!(json!({ "tags": "This is text" }), serde_json::to_value(&x).unwrap());
+/// assert_eq!(json!({ "tags": "This is text" }), serde_json::to_value(x).unwrap());
 ///
 /// let x = A {
 ///     tags: None,
 /// };
-/// assert_eq!(json!({ "tags": "" }), serde_json::to_value(&x).unwrap());
+/// assert_eq!(json!({ "tags": "" }), serde_json::to_value(x).unwrap());
 /// # }
 /// ```
 ///
 /// [`FromStr`]: std::str::FromStr
 pub struct NoneAsEmptyString;
+
+/// De/Serialize an [`Option<NonZero*>`] losslessly as the inner integer
+///
+/// Serde natively supports [`NonZeroU8`] and friends, but rejects `0` during deserialization.
+/// This adapter treats `0` as [`None`] and any other value as [`Some`], allowing the wire format
+/// to always be a plain integer.
+///
+/// Supported in-memory types are [`Option<NonZeroU8>`], [`Option<NonZeroU16>`], [`Option<NonZeroU32>`],
+/// [`Option<NonZeroU64>`], [`Option<NonZeroU128>`], [`Option<NonZeroUsize>`], [`Option<NonZeroI8>`],
+/// [`Option<NonZeroI16>`], [`Option<NonZeroI32>`], [`Option<NonZeroI64>`], [`Option<NonZeroI128>`],
+/// and [`Option<NonZeroIsize>`].
+///
+/// # Examples
+///
+/// ```
+/// # #[cfg(feature = "macros")] {
+/// # use core::num::NonZeroU32;
+/// # use serde::{Deserialize, Serialize};
+/// # use serde_json::json;
+/// # use serde_with::{serde_as, NoneAsZero};
+/// #
+/// #[serde_as]
+/// # #[derive(Debug, PartialEq)]
+/// #[derive(Deserialize, Serialize)]
+/// struct Data {
+///     #[serde_as(as = "NoneAsZero")]
+///     value: Option<NonZeroU32>,
+/// }
+///
+/// let data = Data { value: NonZeroU32::new(7) };
+/// assert_eq!(json!({"value": 7}), serde_json::to_value(&data).unwrap());
+/// assert_eq!(data, serde_json::from_value(json!({"value": 7})).unwrap());
+///
+/// let none = Data { value: None };
+/// assert_eq!(json!({"value": 0}), serde_json::to_value(&none).unwrap());
+/// assert_eq!(none, serde_json::from_value(json!({"value": 0})).unwrap());
+/// # }
+/// ```
+///
+/// [`NonZeroU8`]: core::num::NonZeroU8
+/// [`Option<NonZeroU8>`]: core::num::NonZeroU8
+/// [`Option<NonZeroU16>`]: core::num::NonZeroU16
+/// [`Option<NonZeroU32>`]: core::num::NonZeroU32
+/// [`Option<NonZeroU64>`]: core::num::NonZeroU64
+/// [`Option<NonZeroU128>`]: core::num::NonZeroU128
+/// [`Option<NonZeroUsize>`]: core::num::NonZeroUsize
+/// [`Option<NonZeroI8>`]: core::num::NonZeroI8
+/// [`Option<NonZeroI16>`]: core::num::NonZeroI16
+/// [`Option<NonZeroI32>`]: core::num::NonZeroI32
+/// [`Option<NonZeroI64>`]: core::num::NonZeroI64
+/// [`Option<NonZeroI128>`]: core::num::NonZeroI128
+/// [`Option<NonZeroIsize>`]: core::num::NonZeroIsize
+pub struct NoneAsZero;
 
 /// Deserialize value and return [`Default`] on error
 ///
@@ -672,7 +773,7 @@ pub struct NoneAsEmptyString;
 /// struct C {
 ///     #[serde_as(as = "Vec<DefaultOnError<DisplayFromStr>>")]
 ///     value: Vec<u32>,
-/// };
+/// }
 ///
 /// let c: C = serde_json::from_value(json!({
 ///     "value": ["1", "2", "a3", "", {}, "6"]
@@ -728,7 +829,7 @@ pub struct DefaultOnError<T = Same>(PhantomData<T>);
 /// struct C {
 ///     #[serde_as(as = "Vec<DefaultOnNull<DisplayFromStr>>")]
 ///     value: Vec<u32>,
-/// };
+/// }
 ///
 /// let c: C = serde_json::from_value(json!({
 ///     "value": ["1", "2", null, null, "5"]
@@ -789,29 +890,33 @@ pub struct BytesOrString;
 
 /// De/Serialize Durations as number of seconds.
 ///
-/// De/serialize durations as number of seconds with subsecond precision.
-/// Subsecond precision is *only* supported for [`DurationSecondsWithFrac`], but not for [`DurationSeconds`].
+/// De/serialize durations as number of seconds with sub-second precision.
+/// Sub-second precision is *only* supported for [`DurationSecondsWithFrac`], but not for [`DurationSeconds`].
 /// You can configure the serialization format between integers, floats, and stringified numbers with the `FORMAT` specifier and configure the deserialization with the `STRICTNESS` specifier.
 ///
 /// The `STRICTNESS` specifier can either be [`formats::Strict`] or [`formats::Flexible`] and defaults to [`formats::Strict`].
 /// [`formats::Strict`] means that deserialization only supports the type given in `FORMAT`, e.g., if `FORMAT` is `u64` deserialization from a `f64` will error.
 /// [`formats::Flexible`] means that deserialization will perform a best effort to extract the correct duration and allows deserialization from any type.
 /// For example, deserializing `DurationSeconds<f64, Flexible>` will discard any subsecond precision during deserialization from `f64` and will parse a `String` as an integer number.
+/// Serialization of integers will round the duration to the nearest value.
 ///
 /// This type also supports [`chrono::Duration`] with the `chrono_0_4`-[feature flag].
+/// This type also supports [`jiff::SignedDuration`][::jiff_0_2::SignedDuration] with the `jiff_0_2`-[feature flag].
 /// This type also supports [`time::Duration`][::time_0_3::Duration] with the `time_0_3`-[feature flag].
 ///
 /// This table lists the available `FORMAT`s for the different duration types.
 /// The `FORMAT` specifier defaults to `u64`/`f64`.
 ///
-/// | Duration Type         | Converter                 | Available `FORMAT`s      |
-/// | --------------------- | ------------------------- | ------------------------ |
-/// | `std::time::Duration` | `DurationSeconds`         | *`u64`*, `f64`, `String` |
-/// | `std::time::Duration` | `DurationSecondsWithFrac` | *`f64`*, `String`        |
-/// | `chrono::Duration`    | `DurationSeconds`         | `i64`, `f64`, `String`   |
-/// | `chrono::Duration`    | `DurationSecondsWithFrac` | *`f64`*, `String`        |
-/// | `time::Duration`      | `DurationSeconds`         | `i64`, `f64`, `String`   |
-/// | `time::Duration`      | `DurationSecondsWithFrac` | *`f64`*, `String`        |
+/// | Duration Type          | Converter                 | Available `FORMAT`s      |
+/// | ---------------------- | ------------------------- | ------------------------ |
+/// | `std::time::Duration`  | `DurationSeconds`         | *`u64`*, `f64`, `String` |
+/// | `std::time::Duration`  | `DurationSecondsWithFrac` | *`f64`*, `String`        |
+/// | `chrono::Duration`     | `DurationSeconds`         | `i64`, `f64`, `String`   |
+/// | `chrono::Duration`     | `DurationSecondsWithFrac` | *`f64`*, `String`        |
+/// | `jiff::SignedDuration` | `DurationSeconds`         | `i64`, `f64`, `String`   |
+/// | `jiff::SignedDuration` | `DurationSecondsWithFrac` | *`f64`*, `String`        |
+/// | `time::Duration`       | `DurationSeconds`         | `i64`, `f64`, `String`   |
+/// | `time::Duration`       | `DurationSecondsWithFrac` | *`f64`*, `String`        |
 ///
 /// # Examples
 ///
@@ -832,7 +937,7 @@ pub struct BytesOrString;
 ///     d_f64: Duration,
 ///     #[serde_as(as = "DurationSeconds<String>")]
 ///     d_string: Duration,
-/// };
+/// }
 ///
 /// // Serialization
 /// // See how the values get rounded, since subsecond precision is not allowed.
@@ -848,7 +953,7 @@ pub struct BytesOrString;
 ///     "d_f64": 12346.0,
 ///     "d_string": "12346",
 /// });
-/// assert_eq!(expected, serde_json::to_value(&d).unwrap());
+/// assert_eq!(expected, serde_json::to_value(d).unwrap());
 ///
 /// // Deserialization works too
 /// // Subsecond precision in numbers will be rounded away
@@ -890,7 +995,7 @@ pub struct BytesOrString;
 ///     d_f64: Duration,
 ///     #[serde_as(as = "DurationSeconds<String>")]
 ///     d_string: Duration,
-/// };
+/// }
 ///
 /// // Serialization
 /// // See how the values get rounded, since subsecond precision is not allowed.
@@ -906,7 +1011,7 @@ pub struct BytesOrString;
 ///     "d_f64": -12345.0,
 ///     "d_string": "12346",
 /// });
-/// assert_eq!(expected, serde_json::to_value(&d).unwrap());
+/// assert_eq!(expected, serde_json::to_value(d).unwrap());
 ///
 /// // Deserialization works too
 /// // Subsecond precision in numbers will be rounded away
@@ -926,7 +1031,7 @@ pub struct BytesOrString;
 /// ```
 ///
 /// [`chrono::Duration`]: ::chrono_0_4::Duration
-/// [feature flag]: https://docs.rs/serde_with/2.3.3/serde_with/guide/feature_flags/index.html
+/// [feature flag]: https://docs.rs/serde_with/3.24.0/serde_with/guide/feature_flags/index.html
 pub struct DurationSeconds<
     FORMAT: formats::Format = u64,
     STRICTNESS: formats::Strictness = formats::Strict,
@@ -937,6 +1042,7 @@ pub struct DurationSeconds<
 /// De/serialize durations as number of seconds with subsecond precision.
 /// Subsecond precision is *only* supported for [`DurationSecondsWithFrac`], but not for [`DurationSeconds`].
 /// You can configure the serialization format between integers, floats, and stringified numbers with the `FORMAT` specifier and configure the deserialization with the `STRICTNESS` specifier.
+/// Serialization of integers will round the duration to the nearest value.
 ///
 /// The `STRICTNESS` specifier can either be [`formats::Strict`] or [`formats::Flexible`] and defaults to [`formats::Strict`].
 /// [`formats::Strict`] means that deserialization only supports the type given in `FORMAT`, e.g., if `FORMAT` is `u64` deserialization from a `f64` will error.
@@ -944,19 +1050,22 @@ pub struct DurationSeconds<
 /// For example, deserializing `DurationSeconds<f64, Flexible>` will discard any subsecond precision during deserialization from `f64` and will parse a `String` as an integer number.
 ///
 /// This type also supports [`chrono::Duration`] with the `chrono`-[feature flag].
+/// This type also supports [`jiff::SignedDuration`][::jiff_0_2::SignedDuration] with the `jiff_0_2`-[feature flag].
 /// This type also supports [`time::Duration`][::time_0_3::Duration] with the `time_0_3`-[feature flag].
 ///
 /// This table lists the available `FORMAT`s for the different duration types.
 /// The `FORMAT` specifier defaults to `u64`/`f64`.
 ///
-/// | Duration Type         | Converter                 | Available `FORMAT`s      |
-/// | --------------------- | ------------------------- | ------------------------ |
-/// | `std::time::Duration` | `DurationSeconds`         | *`u64`*, `f64`, `String` |
-/// | `std::time::Duration` | `DurationSecondsWithFrac` | *`f64`*, `String`        |
-/// | `chrono::Duration`    | `DurationSeconds`         | `i64`, `f64`, `String`   |
-/// | `chrono::Duration`    | `DurationSecondsWithFrac` | *`f64`*, `String`        |
-/// | `time::Duration`      | `DurationSeconds`         | `i64`, `f64`, `String`   |
-/// | `time::Duration`      | `DurationSecondsWithFrac` | *`f64`*, `String`        |
+/// | Duration Type          | Converter                 | Available `FORMAT`s      |
+/// | ---------------------- | ------------------------- | ------------------------ |
+/// | `std::time::Duration`  | `DurationSeconds`         | *`u64`*, `f64`, `String` |
+/// | `std::time::Duration`  | `DurationSecondsWithFrac` | *`f64`*, `String`        |
+/// | `chrono::Duration`     | `DurationSeconds`         | `i64`, `f64`, `String`   |
+/// | `chrono::Duration`     | `DurationSecondsWithFrac` | *`f64`*, `String`        |
+/// | `jiff::SignedDuration` | `DurationSeconds`         | `i64`, `f64`, `String`   |
+/// | `jiff::SignedDuration` | `DurationSecondsWithFrac` | *`f64`*, `String`        |
+/// | `time::Duration`       | `DurationSeconds`         | `i64`, `f64`, `String`   |
+/// | `time::Duration`       | `DurationSecondsWithFrac` | *`f64`*, `String`        |
 ///
 /// # Examples
 ///
@@ -975,7 +1084,7 @@ pub struct DurationSeconds<
 ///     d_f64: Duration,
 ///     #[serde_as(as = "DurationSecondsWithFrac<String>")]
 ///     d_string: Duration,
-/// };
+/// }
 ///
 /// // Serialization
 /// // See how the values get rounded, since subsecond precision is not allowed.
@@ -989,7 +1098,7 @@ pub struct DurationSeconds<
 ///     "d_f64": 12345.5,
 ///     "d_string": "12345.999999",
 /// });
-/// assert_eq!(expected, serde_json::to_value(&d).unwrap());
+/// assert_eq!(expected, serde_json::to_value(d).unwrap());
 ///
 /// // Deserialization works too
 /// // Subsecond precision in numbers will be rounded away
@@ -1027,7 +1136,7 @@ pub struct DurationSeconds<
 ///     d_f64: Duration,
 ///     #[serde_as(as = "DurationSecondsWithFrac<String>")]
 ///     d_string: Duration,
-/// };
+/// }
 ///
 /// // Serialization
 ///
@@ -1040,7 +1149,7 @@ pub struct DurationSeconds<
 ///     "d_f64": -12344.5,
 ///     "d_string": "12345.999999",
 /// });
-/// assert_eq!(expected, serde_json::to_value(&d).unwrap());
+/// assert_eq!(expected, serde_json::to_value(d).unwrap());
 ///
 /// // Deserialization works too
 ///
@@ -1057,7 +1166,7 @@ pub struct DurationSeconds<
 /// ```
 ///
 /// [`chrono::Duration`]: ::chrono_0_4::Duration
-/// [feature flag]: https://docs.rs/serde_with/2.3.3/serde_with/guide/feature_flags/index.html
+/// [feature flag]: https://docs.rs/serde_with/3.24.0/serde_with/guide/feature_flags/index.html
 pub struct DurationSecondsWithFrac<
     FORMAT: formats::Format = f64,
     STRICTNESS: formats::Strictness = formats::Strict,
@@ -1116,6 +1225,7 @@ pub struct DurationNanoSecondsWithFrac<
 /// De/serialize timestamps as seconds since the UNIX epoch.
 /// Subsecond precision is *only* supported for [`TimestampSecondsWithFrac`], but not for [`TimestampSeconds`].
 /// You can configure the serialization format between integers, floats, and stringified numbers with the `FORMAT` specifier and configure the deserialization with the `STRICTNESS` specifier.
+/// Serialization of integers will round the timestamp to the nearest value.
 ///
 /// The `STRICTNESS` specifier can either be [`formats::Strict`] or [`formats::Flexible`] and defaults to [`formats::Strict`].
 /// [`formats::Strict`] means that deserialization only supports the type given in `FORMAT`, e.g., if `FORMAT` is `i64` deserialization from a `f64` will error.
@@ -1123,6 +1233,7 @@ pub struct DurationNanoSecondsWithFrac<
 /// For example, deserializing `TimestampSeconds<f64, Flexible>` will discard any subsecond precision during deserialization from `f64` and will parse a `String` as an integer number.
 ///
 /// This type also supports [`chrono::DateTime`] with the `chrono_0_4`-[feature flag].
+/// This type also supports [`jiff::Timestamp`][::jiff_0_2::Timestamp], [`jiff::Zoned`][::jiff_0_2::Zoned], and [`jiff::civil::DateTime`][::jiff_0_2::civil::DateTime] with the `jiff_0_2`-[feature flag].
 /// This type also supports [`time::OffsetDateTime`][::time_0_3::OffsetDateTime] and [`time::PrimitiveDateTime`][::time_0_3::PrimitiveDateTime] with the `time_0_3`-[feature flag].
 ///
 /// This table lists the available `FORMAT`s for the different timestamp types.
@@ -1138,6 +1249,12 @@ pub struct DurationNanoSecondsWithFrac<
 /// | `chrono::DateTime<Local>` | `TimestampSecondsWithFrac` | *`f64`*, `String`        |
 /// | `chrono::NaiveDateTime`   | `TimestampSeconds`         | *`i64`*, `f64`, `String` |
 /// | `chrono::NaiveDateTime`   | `TimestampSecondsWithFrac` | *`f64`*, `String`        |
+/// | `jiff::Timestamp`         | `TimestampSeconds`         | *`i64`*, `f64`, `String` |
+/// | `jiff::Timestamp`         | `TimestampSecondsWithFrac` | *`f64`*, `String`        |
+/// | `jiff::Zoned`             | `TimestampSeconds`         | *`i64`*, `f64`, `String` |
+/// | `jiff::Zoned`             | `TimestampSecondsWithFrac` | *`f64`*, `String`        |
+/// | `jiff::civil::DateTime`   | `TimestampSeconds`         | *`i64`*, `f64`, `String` |
+/// | `jiff::civil::DateTime`   | `TimestampSecondsWithFrac` | *`f64`*, `String`        |
 /// | `time::OffsetDateTime`    | `TimestampSeconds`         | *`i64`*, `f64`, `String` |
 /// | `time::OffsetDateTime`    | `TimestampSecondsWithFrac` | *`f64`*, `String`        |
 /// | `time::PrimitiveDateTime` | `TimestampSeconds`         | *`i64`*, `f64`, `String` |
@@ -1162,7 +1279,7 @@ pub struct DurationNanoSecondsWithFrac<
 ///     st_f64: SystemTime,
 ///     #[serde_as(as = "TimestampSeconds<String>")]
 ///     st_string: SystemTime,
-/// };
+/// }
 ///
 /// // Serialization
 /// // See how the values get rounded, since subsecond precision is not allowed.
@@ -1178,7 +1295,7 @@ pub struct DurationNanoSecondsWithFrac<
 ///     "st_f64": 12346.0,
 ///     "st_string": "12346",
 /// });
-/// assert_eq!(expected, serde_json::to_value(&ts).unwrap());
+/// assert_eq!(expected, serde_json::to_value(ts).unwrap());
 ///
 /// // Deserialization works too
 /// // Subsecond precision in numbers will be rounded away
@@ -1220,15 +1337,15 @@ pub struct DurationNanoSecondsWithFrac<
 ///     dt_f64: DateTime<Local>,
 ///     #[serde_as(as = "TimestampSeconds<String>")]
 ///     dt_string: DateTime<Utc>,
-/// };
+/// }
 ///
 /// // Serialization
 /// // See how the values get rounded, since subsecond precision is not allowed.
 ///
 /// let ts = Timestamps {
-///     dt_i64: Utc.timestamp(-12345, 0),
-///     dt_f64: Local.timestamp(-12345, 500_000_000),
-///     dt_string: Utc.timestamp(12345, 999_999_999),
+///     dt_i64: Utc.timestamp_opt(-12345, 0).unwrap(),
+///     dt_f64: Local.timestamp_opt(-12345, 500_000_000).unwrap(),
+///     dt_string: Utc.timestamp_opt(12345, 999_999_999).unwrap(),
 /// };
 /// // Observe the different data types
 /// let expected = json!({
@@ -1236,7 +1353,7 @@ pub struct DurationNanoSecondsWithFrac<
 ///     "dt_f64": -12345.0,
 ///     "dt_string": "12346",
 /// });
-/// assert_eq!(expected, serde_json::to_value(&ts).unwrap());
+/// assert_eq!(expected, serde_json::to_value(ts).unwrap());
 ///
 /// // Deserialization works too
 /// // Subsecond precision in numbers will be rounded away
@@ -1247,9 +1364,9 @@ pub struct DurationNanoSecondsWithFrac<
 ///     "dt_string": "12346",
 /// });
 /// let expected = Timestamps {
-///     dt_i64: Utc.timestamp(-12345, 0),
-///     dt_f64: Local.timestamp(-12346, 0),
-///     dt_string: Utc.timestamp(12346, 0),
+///     dt_i64: Utc.timestamp_opt(-12345, 0).unwrap(),
+///     dt_f64: Local.timestamp_opt(-12346, 0).unwrap(),
+///     dt_string: Utc.timestamp_opt(12346, 0).unwrap(),
 /// };
 /// assert_eq!(expected, serde_json::from_value(json).unwrap());
 /// # }
@@ -1258,7 +1375,7 @@ pub struct DurationNanoSecondsWithFrac<
 /// [`SystemTime`]: std::time::SystemTime
 /// [`chrono::DateTime<Local>`]: ::chrono_0_4::DateTime
 /// [`chrono::DateTime<Utc>`]: ::chrono_0_4::DateTime
-/// [feature flag]: https://docs.rs/serde_with/2.3.3/serde_with/guide/feature_flags/index.html
+/// [feature flag]: https://docs.rs/serde_with/3.24.0/serde_with/guide/feature_flags/index.html
 pub struct TimestampSeconds<
     FORMAT: formats::Format = i64,
     STRICTNESS: formats::Strictness = formats::Strict,
@@ -1269,6 +1386,7 @@ pub struct TimestampSeconds<
 /// De/serialize timestamps as seconds since the UNIX epoch.
 /// Subsecond precision is *only* supported for [`TimestampSecondsWithFrac`], but not for [`TimestampSeconds`].
 /// You can configure the serialization format between integers, floats, and stringified numbers with the `FORMAT` specifier and configure the deserialization with the `STRICTNESS` specifier.
+/// Serialization of integers will round the timestamp to the nearest value.
 ///
 /// The `STRICTNESS` specifier can either be [`formats::Strict`] or [`formats::Flexible`] and defaults to [`formats::Strict`].
 /// [`formats::Strict`] means that deserialization only supports the type given in `FORMAT`, e.g., if `FORMAT` is `i64` deserialization from a `f64` will error.
@@ -1276,6 +1394,7 @@ pub struct TimestampSeconds<
 /// For example, deserializing `TimestampSeconds<f64, Flexible>` will discard any subsecond precision during deserialization from `f64` and will parse a `String` as an integer number.
 ///
 /// This type also supports [`chrono::DateTime`] and [`chrono::NaiveDateTime`][NaiveDateTime] with the `chrono`-[feature flag].
+/// This type also supports [`jiff::Timestamp`][::jiff_0_2::Timestamp], [`jiff::Zoned`][::jiff_0_2::Zoned], and [`jiff::civil::DateTime`][::jiff_0_2::civil::DateTime] with the `jiff_0_2`-[feature flag].
 /// This type also supports [`time::OffsetDateTime`][::time_0_3::OffsetDateTime] and [`time::PrimitiveDateTime`][::time_0_3::PrimitiveDateTime] with the `time_0_3`-[feature flag].
 ///
 /// This table lists the available `FORMAT`s for the different timestamp types.
@@ -1291,6 +1410,12 @@ pub struct TimestampSeconds<
 /// | `chrono::DateTime<Local>` | `TimestampSecondsWithFrac` | *`f64`*, `String`        |
 /// | `chrono::NaiveDateTime`   | `TimestampSeconds`         | *`i64`*, `f64`, `String` |
 /// | `chrono::NaiveDateTime`   | `TimestampSecondsWithFrac` | *`f64`*, `String`        |
+/// | `jiff::Timestamp`         | `TimestampSeconds`         | *`i64`*, `f64`, `String` |
+/// | `jiff::Timestamp`         | `TimestampSecondsWithFrac` | *`f64`*, `String`        |
+/// | `jiff::Zoned`             | `TimestampSeconds`         | *`i64`*, `f64`, `String` |
+/// | `jiff::Zoned`             | `TimestampSecondsWithFrac` | *`f64`*, `String`        |
+/// | `jiff::civil::DateTime`   | `TimestampSeconds`         | *`i64`*, `f64`, `String` |
+/// | `jiff::civil::DateTime`   | `TimestampSecondsWithFrac` | *`f64`*, `String`        |
 /// | `time::OffsetDateTime`    | `TimestampSeconds`         | *`i64`*, `f64`, `String` |
 /// | `time::OffsetDateTime`    | `TimestampSecondsWithFrac` | *`f64`*, `String`        |
 /// | `time::PrimitiveDateTime` | `TimestampSeconds`         | *`i64`*, `f64`, `String` |
@@ -1313,7 +1438,7 @@ pub struct TimestampSeconds<
 ///     st_f64: SystemTime,
 ///     #[serde_as(as = "TimestampSecondsWithFrac<String>")]
 ///     st_string: SystemTime,
-/// };
+/// }
 ///
 /// // Serialization
 /// // See how the values get rounded, since subsecond precision is not allowed.
@@ -1327,7 +1452,7 @@ pub struct TimestampSeconds<
 ///     "st_f64": 12345.5,
 ///     "st_string": "12345.999999",
 /// });
-/// assert_eq!(expected, serde_json::to_value(&ts).unwrap());
+/// assert_eq!(expected, serde_json::to_value(ts).unwrap());
 ///
 /// // Deserialization works too
 /// // Subsecond precision in numbers will be rounded away
@@ -1365,20 +1490,20 @@ pub struct TimestampSeconds<
 ///     dt_f64: DateTime<Utc>,
 ///     #[serde_as(as = "TimestampSecondsWithFrac<String>")]
 ///     dt_string: DateTime<Local>,
-/// };
+/// }
 ///
 /// // Serialization
 ///
 /// let ts = Timestamps {
-///     dt_f64: Utc.timestamp(-12345, 500_000_000),
-///     dt_string: Local.timestamp(12345, 999_999_000),
+///     dt_f64: Utc.timestamp_opt(-12345, 500_000_000).unwrap(),
+///     dt_string: Local.timestamp_opt(12345, 999_999_000).unwrap(),
 /// };
 /// // Observe the different data types
 /// let expected = json!({
 ///     "dt_f64": -12344.5,
 ///     "dt_string": "12345.999999",
 /// });
-/// assert_eq!(expected, serde_json::to_value(&ts).unwrap());
+/// assert_eq!(expected, serde_json::to_value(ts).unwrap());
 ///
 /// // Deserialization works too
 ///
@@ -1387,8 +1512,8 @@ pub struct TimestampSeconds<
 ///     "dt_string": "12345.987",
 /// });
 /// let expected = Timestamps {
-///     dt_f64: Utc.timestamp(-12345, 500_000_000),
-///     dt_string: Local.timestamp(12345, 987_000_000),
+///     dt_f64: Utc.timestamp_opt(-12345, 500_000_000).unwrap(),
+///     dt_string: Local.timestamp_opt(12345, 987_000_000).unwrap(),
 /// };
 /// assert_eq!(expected, serde_json::from_value(json).unwrap());
 /// # }
@@ -1399,7 +1524,7 @@ pub struct TimestampSeconds<
 /// [`chrono::DateTime<Local>`]: ::chrono_0_4::DateTime
 /// [`chrono::DateTime<Utc>`]: ::chrono_0_4::DateTime
 /// [NaiveDateTime]: ::chrono_0_4::NaiveDateTime
-/// [feature flag]: https://docs.rs/serde_with/2.3.3/serde_with/guide/feature_flags/index.html
+/// [feature flag]: https://docs.rs/serde_with/3.24.0/serde_with/guide/feature_flags/index.html
 pub struct TimestampSecondsWithFrac<
     FORMAT: formats::Format = f64,
     STRICTNESS: formats::Strictness = formats::Strict,
@@ -1458,7 +1583,7 @@ pub struct TimestampNanoSecondsWithFrac<
 /// Serialization of byte sequences like `&[u8]` or `Vec<u8>` is quite inefficient since each value will be serialized individually.
 /// This converter type optimizes the serialization and deserialization.
 ///
-/// This is a port of the [`serde_bytes`] crate making it compatible with the `serde_as`-annotation, which allows it to be used in more cases than provided by [`serde_bytes`].
+/// This is a port of the [`serde_bytes`] crate making it compatible with the `serde_as` annotation, which allows it to be used in more cases than provided by [`serde_bytes`].
 ///
 /// The type provides de/serialization for these types:
 ///
@@ -1485,7 +1610,6 @@ pub struct TimestampNanoSecondsWithFrac<
 /// # #[derive(Debug, PartialEq)]
 /// #[derive(Deserialize, Serialize)]
 /// struct Test<'a> {
-/// #   #[cfg(FALSE)]
 ///     #[serde_as(as = "Bytes")]
 ///     array: [u8; 15],
 ///     #[serde_as(as = "Bytes")]
@@ -1493,7 +1617,6 @@ pub struct TimestampNanoSecondsWithFrac<
 ///     #[serde_as(as = "Bytes")]
 ///     #[serde(borrow)]
 ///     cow: Cow<'a, [u8]>,
-/// #   #[cfg(FALSE)]
 ///     #[serde_as(as = "Bytes")]
 ///     #[serde(borrow)]
 ///     cow_array: Cow<'a, [u8; 15]>,
@@ -1502,33 +1625,23 @@ pub struct TimestampNanoSecondsWithFrac<
 /// }
 ///
 /// let value = Test {
-/// #   #[cfg(FALSE)]
-///     array: b"0123456789ABCDE".clone(),
+///     array: *b"0123456789ABCDE",
 ///     boxed: b"...".to_vec().into_boxed_slice(),
 ///     cow: Cow::Borrowed(b"FooBar"),
-/// #   #[cfg(FALSE)]
 ///     cow_array: Cow::Borrowed(&[42u8; 15]),
 ///     vec: vec![0x41, 0x61, 0x21],
 /// };
 /// let expected = r#"(
-///     array: "MDEyMzQ1Njc4OUFCQ0RF",
-///     boxed: "Li4u",
-///     cow: "Rm9vQmFy",
-///     cow_array: "KioqKioqKioqKioqKioq",
-///     vec: "QWEh",
+///     array: b"0123456789ABCDE",
+///     boxed: b"...",
+///     cow: b"FooBar",
+///     cow_array: b"***************",
+///     vec: b"Aa!",
 /// )"#;
-/// # drop(expected);
-/// # // Create a fake expected value that doesn't use const generics
-/// # let expected = r#"(
-/// #     boxed: "Li4u",
-/// #     cow: "Rm9vQmFy",
-/// #     vec: "QWEh",
-/// # )"#;
 ///
-/// # let pretty_config = ron::ser::PrettyConfig::new()
-/// #     .new_line("\n".into());
+/// # let pretty_config = ron::ser::PrettyConfig::new().new_line("\n");
 /// assert_eq!(expected, ron::ser::to_string_pretty(&value, pretty_config).unwrap());
-/// assert_eq!(value, ron::from_str(&expected).unwrap());
+/// assert_eq!(value, ron::from_str(expected).unwrap());
 /// # }
 /// ```
 ///
@@ -1539,13 +1652,11 @@ pub struct TimestampNanoSecondsWithFrac<
 /// # #[cfg(feature = "macros")] {
 /// # use serde::{Deserialize, Serialize};
 /// # use serde_with::{serde_as, Bytes};
-/// # use std::borrow::Cow;
 /// #
 /// #[serde_as]
 /// # #[derive(Debug, PartialEq)]
 /// #[derive(Deserialize, Serialize)]
 /// struct TestBorrows<'a> {
-/// #   #[cfg(FALSE)]
 ///     #[serde_as(as = "Bytes")]
 ///     #[serde(borrow)]
 ///     array_buf: &'a [u8; 15],
@@ -1555,22 +1666,15 @@ pub struct TimestampNanoSecondsWithFrac<
 /// }
 ///
 /// let value = TestBorrows {
-/// #   #[cfg(FALSE)]
 ///     array_buf: &[10u8; 15],
 ///     buf: &[20u8, 21u8, 22u8],
 /// };
 /// let expected = r#"(
-///     array_buf: "CgoKCgoKCgoKCgoKCgoK",
-///     buf: "FBUW",
+///     array_buf: b"\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n",
+///     buf: b"\x14\x15\x16",
 /// )"#;
-/// # drop(expected);
-/// # // Create a fake expected value that doesn't use const generics
-/// # let expected = r#"(
-/// #     buf: "FBUW",
-/// # )"#;
 ///
-/// # let pretty_config = ron::ser::PrettyConfig::new()
-/// #     .new_line("\n".into());
+/// # let pretty_config = ron::ser::PrettyConfig::new().new_line("\n");
 /// assert_eq!(expected, ron::ser::to_string_pretty(&value, pretty_config).unwrap());
 /// // RON doesn't support borrowed deserialization of byte arrays
 /// # }
@@ -1629,8 +1733,11 @@ pub struct Bytes;
 /// This distinction is not semantically important on the Rust side, thus both forms should deserialize into the same `Vec`.
 ///
 /// The `OneOrMany` adapter achieves exactly this use case.
-/// The serialization behavior can be tweaked to either always serialize as a list using `PreferMany` or to serialize as the inner element if possible using `PreferOne`.
-/// By default, `PreferOne` is assumed, which can also be omitted like `OneOrMany<_>`.
+/// The serialization behavior can be tweaked to either always serialize as a list using [`PreferMany`] or to serialize as the inner element if possible using [`PreferOne`].
+/// By default, [`PreferOne`] is assumed, which can also be omitted like `OneOrMany<_>`.
+///
+/// [`PreferMany`]: crate::formats::PreferMany
+/// [`PreferOne`]: crate::formats::PreferOne
 ///
 /// # Examples
 ///
@@ -1645,9 +1752,9 @@ pub struct Bytes;
 /// # #[derive(Debug, PartialEq)]
 /// #[derive(Deserialize, serde::Serialize)]
 /// struct Data {
-///     #[serde_as(deserialize_as = "OneOrMany<_, PreferOne>")]
+///     #[serde_as(as = "OneOrMany<_, PreferOne>")]
 ///     countries: Vec<String>,
-///     #[serde_as(deserialize_as = "OneOrMany<_, PreferMany>")]
+///     #[serde_as(as = "OneOrMany<_, PreferMany>")]
 ///     cities: Vec<String>,
 /// }
 ///
@@ -1676,11 +1783,12 @@ pub struct Bytes;
 ///     "countries": "Spain",
 ///     "cities": ["Berlin"],
 /// });
-/// assert_eq!(data, serde_json::from_value(j).unwrap());
+/// assert_eq!(serde_json::to_value(data).unwrap(), j);
 /// # }
 /// ```
-#[cfg(feature = "alloc")]
-pub struct OneOrMany<T, FORMAT: formats::Format = formats::PreferOne>(PhantomData<(T, FORMAT)>);
+pub struct OneOrMany<T: ?Sized, FORMAT: formats::Format = formats::PreferOne>(
+    PhantomData<(FORMAT, T)>,
+);
 
 /// Try multiple deserialization options until one succeeds.
 ///
@@ -1749,7 +1857,7 @@ pub struct PickFirst<T>(PhantomData<T>);
 /// Deserializing works analogue, by deserializing a `T` and then converting into `O`.
 ///
 /// ```rust
-/// # #[cfg(FALSE)] {
+/// # #[cfg(false)] {
 /// struct S {
 ///     #[serde_as(as = "FromInto<T>")]
 ///     value: O,
@@ -1761,7 +1869,7 @@ pub struct PickFirst<T>(PhantomData<T>);
 /// For deserialization the opposite `T: Into<O>` is required.
 /// The `Clone` bound is required since `serialize` operates on a reference but `Into` implementations on references are uncommon.
 ///
-/// **Note**: [`TryFromInto`] is the more generalized version of this adapter which uses the [`TryInto`](std::convert::TryInto) trait instead.
+/// **Note**: [`TryFromInto`] is the more generalized version of this adapter which uses the [`TryInto`] trait instead.
 ///
 /// # Example
 ///
@@ -1825,13 +1933,94 @@ pub struct PickFirst<T>(PhantomData<T>);
 /// ```
 pub struct FromInto<T>(PhantomData<T>);
 
+/// Serialize a reference value by converting to/from a proxy type with serde support.
+///
+/// This adapter serializes a type `O` by converting it into a second type `T` and serializing `T`.
+/// Deserializing works analogue, by deserializing a `T` and then converting into `O`.
+///
+/// ```rust
+/// # #[cfg(false)] {
+/// struct S {
+///     #[serde_as(as = "FromIntoRef<T>")]
+///     value: O,
+/// }
+/// # }
+/// ```
+///
+/// For serialization `O` needs to be `for<'a> &'a O: Into<T>`.
+/// For deserialization the opposite `T: Into<O>` is required.
+///
+/// **Note**: [`TryFromIntoRef`] is the more generalized version of this adapter which uses the [`TryInto`] trait instead.
+///
+/// # Example
+///
+/// ```rust
+/// # #[cfg(feature = "macros")] {
+/// # use serde::{Deserialize, Serialize};
+/// # use serde_json::json;
+/// # use serde_with::{serde_as, FromIntoRef};
+/// #
+/// #[derive(Debug, PartialEq)]
+/// struct Rgb {
+///     red: u8,
+///     green: u8,
+///     blue: u8,
+/// }
+///
+/// # /*
+/// impl From<(u8, u8, u8)> for Rgb { ... }
+/// impl<'a> From<&'a Rgb> for (u8, u8, u8) { ... }
+/// # */
+/// #
+/// # impl From<(u8, u8, u8)> for Rgb {
+/// #     fn from(v: (u8, u8, u8)) -> Self {
+/// #         Rgb {
+/// #             red: v.0,
+/// #             green: v.1,
+/// #             blue: v.2,
+/// #         }
+/// #     }
+/// # }
+/// #
+/// # impl<'a> From<&'a Rgb> for (u8, u8, u8) {
+/// #     fn from(v: &'a Rgb) -> Self {
+/// #         (v.red, v.green, v.blue)
+/// #     }
+/// # }
+///
+/// #[serde_as]
+/// # #[derive(Debug, PartialEq)]
+/// #[derive(Deserialize, Serialize)]
+/// struct Color {
+///     #[serde_as(as = "FromIntoRef<(u8, u8, u8)>")]
+///     rgb: Rgb,
+/// }
+/// let color = Color {
+///     rgb: Rgb {
+///         red: 128,
+///         green: 64,
+///         blue: 32,
+///     },
+/// };
+///
+/// // Define our expected JSON form
+/// let j = json!({
+///     "rgb": [128, 64, 32],
+/// });
+/// // Ensure serialization and deserialization produce the expected results
+/// assert_eq!(j, serde_json::to_value(&color).unwrap());
+/// assert_eq!(color, serde_json::from_value(j).unwrap());
+/// # }
+/// ```
+pub struct FromIntoRef<T>(PhantomData<T>);
+
 /// Serialize value by converting to/from a proxy type with serde support.
 ///
 /// This adapter serializes a type `O` by converting it into a second type `T` and serializing `T`.
 /// Deserializing works analogue, by deserializing a `T` and then converting into `O`.
 ///
 /// ```rust
-/// # #[cfg(FALSE)] {
+/// # #[cfg(false)] {
 /// struct S {
 ///     #[serde_as(as = "TryFromInto<T>")]
 ///     value: O,
@@ -1855,7 +2044,6 @@ pub struct FromInto<T>(PhantomData<T>);
 /// # use serde::{Deserialize, Serialize};
 /// # use serde_json::json;
 /// # use serde_with::{serde_as, TryFromInto};
-/// # use std::convert::TryFrom;
 /// #
 /// #[derive(Clone, Debug, PartialEq)]
 /// enum Boollike {
@@ -1914,6 +2102,94 @@ pub struct FromInto<T>(PhantomData<T>);
 /// # }
 /// ```
 pub struct TryFromInto<T>(PhantomData<T>);
+
+/// Serialize a reference value by converting to/from a proxy type with serde support.
+///
+/// This adapter serializes a type `O` by converting it into a second type `T` and serializing `T`.
+/// Deserializing works analogue, by deserializing a `T` and then converting into `O`.
+///
+/// ```rust
+/// # #[cfg(false)] {
+/// struct S {
+///     #[serde_as(as = "TryFromIntoRef<T>")]
+///     value: O,
+/// }
+/// # }
+/// ```
+///
+/// For serialization `O` needs to be `for<'a> &'a O: TryInto<T>`.
+/// For deserialization the opposite `T: TryInto<O>` is required.
+/// In both cases the `TryInto::Error` type must implement [`Display`](std::fmt::Display).
+///
+/// **Note**: [`FromIntoRef`] is the more specialized version of this adapter which uses the infallible [`Into`] trait instead.
+/// [`TryFromIntoRef`] is strictly more general and can also be used where [`FromIntoRef`] is applicable.
+/// The example shows a use case, when only the deserialization behavior is fallible, but not serializing.
+///
+/// # Example
+///
+/// ```rust
+/// # #[cfg(feature = "macros")] {
+/// # use serde::{Deserialize, Serialize};
+/// # use serde_json::json;
+/// # use serde_with::{serde_as, TryFromIntoRef};
+/// #
+/// #[derive(Debug, PartialEq)]
+/// enum Boollike {
+///     True,
+///     False,
+/// }
+///
+/// # /*
+/// impl<'a> From<&'a Boollike> for u8 { ... }
+/// # */
+/// #
+/// impl TryFrom<u8> for Boollike {
+///     type Error = String;
+///     fn try_from(v: u8) -> Result<Self, Self::Error> {
+///         match v {
+///             0 => Ok(Boollike::False),
+///             1 => Ok(Boollike::True),
+///             _ => Err(format!("Boolikes can only be constructed from 0 or 1 but found {}", v))
+///         }
+///     }
+/// }
+/// #
+/// # impl<'a> From<&'a Boollike> for u8 {
+/// #     fn from(v: &'a Boollike) -> Self {
+/// #        match v {
+/// #            Boollike::True => 1,
+/// #            Boollike::False => 0,
+/// #        }
+/// #     }
+/// # }
+///
+/// #[serde_as]
+/// # #[derive(Debug, PartialEq)]
+/// #[derive(Deserialize, Serialize)]
+/// struct Data {
+///     #[serde_as(as = "TryFromIntoRef<u8>")]
+///     b: Boollike,
+/// }
+/// let data = Data {
+///     b: Boollike::True,
+/// };
+///
+/// // Define our expected JSON form
+/// let j = json!({
+///     "b": 1,
+/// });
+/// // Ensure serialization and deserialization produce the expected results
+/// assert_eq!(j, serde_json::to_value(&data).unwrap());
+/// assert_eq!(data, serde_json::from_value(j).unwrap());
+///
+/// // Numbers besides 0 or 1 should be an error
+/// let j = json!({
+///     "b": 2,
+/// });
+/// assert_eq!("Boolikes can only be constructed from 0 or 1 but found 2", serde_json::from_value::<Data>(j).unwrap_err().to_string());
+/// # }
+/// ```
+pub struct TryFromIntoRef<T>(PhantomData<T>);
 
 /// Borrow `Cow` data during deserialization when possible.
 ///
@@ -1984,12 +2260,37 @@ pub struct TryFromInto<T>(PhantomData<T>);
 #[cfg(feature = "alloc")]
 pub struct BorrowCow;
 
+/// A trait to inspect skipped deserialization errors
+///
+/// The [`VecSkipError`] and [`MapSkipError`] adapters allow to skip values which fail to deserialize.
+/// This trait allows inspecting these errors, for example for logging purposes.
+///
+/// The trait has a single method [`inspect_error`][InspectError::inspect_error], which will be called for each deserialization error.
+/// The default implementation for `()` does nothing.
+///
+/// See the documentation of [`VecSkipError`] and [`MapSkipError`] for usage examples.
+#[cfg(feature = "alloc")]
+pub trait InspectError {
+    /// Inspect a deserialization error which was skipped.
+    fn inspect_error(error: impl serde_core::de::Error);
+}
+
+#[cfg(feature = "alloc")]
+impl InspectError for () {
+    fn inspect_error(_error: impl serde_core::de::Error) {}
+}
+
 /// Deserialize a sequence into `Vec<T>`, skipping elements which fail to deserialize.
 ///
 /// The serialization behavior is identical to `Vec<T>`. This is an alternative to `Vec<T>`
 /// which is resilient against unexpected data.
 ///
+/// You can be notified of skipped elements by providing a type that implements the [`InspectError`] trait.
+/// The second generic argument `I` defaults to `()`, which does nothing.
+///
 /// # Examples
+///
+/// ## Basic Usage
 ///
 /// ```rust
 /// # #[cfg(feature = "macros")] {
@@ -2018,8 +2319,157 @@ pub struct BorrowCow;
 /// assert_eq!(data, serde_json::from_str(source_json).unwrap());
 /// # }
 /// ```
+///
+/// ## Using [`InspectError`](`crate::InspectError`) to log skipped elements
+///
+/// ```rust
+/// # #[cfg(all(feature = "macros", feature = "alloc"))] {
+/// # use serde::{Serialize, Deserialize};
+/// # use serde_with::{serde_as, InspectError, VecSkipError};
+/// # use std::cell::RefCell;
+///
+/// struct ErrorInspector;
+///
+/// thread_local! {
+///     static ERRORS: RefCell<Vec<String>> = RefCell::new(Vec::new());
+/// }
+///
+/// impl InspectError for ErrorInspector {
+///     fn inspect_error(error: impl serde::de::Error) {
+///         ERRORS.with(|errors| errors.borrow_mut().push(error.to_string()));
+///     }
+/// }
+///
+/// #[serde_as]
+/// #[derive(Debug, PartialEq, Deserialize, Serialize)]
+/// struct S {
+///     tag: String,
+///     #[serde_as(as = "VecSkipError<_, ErrorInspector>")]
+///     values: Vec<u8>,
+/// }
+///
+/// let json = r#"{"tag":"type","values":[0, "str", 1, [10, 11], -2, {}, 300]}"#;
+/// let s: S = serde_json::from_str(json).unwrap();
+/// assert_eq!(s.values, vec![0, 1]);
+///
+/// let errors = ERRORS.with(|errors| errors.borrow().clone());
+/// eprintln!("Errors: {errors:#?}");
+/// assert_eq!(errors.len(), 5);
+/// assert!(errors[0].contains("invalid type: string \"str\", expected u8"));
+/// assert!(errors[1].contains("invalid type: sequence, expected u8"));
+/// assert!(errors[2].contains("invalid value: integer `-2`, expected u8"));
+/// assert!(errors[3].contains("invalid type: map, expected u8"));
+/// assert!(errors[4].contains("invalid value: integer `300`, expected u8"));
+/// # }
+/// ```
 #[cfg(feature = "alloc")]
-pub struct VecSkipError<T>(PhantomData<T>);
+pub struct VecSkipError<T, I = ()>(PhantomData<(T, I)>);
+
+/// Deserialize a map, skipping keys and values which fail to deserialize.
+///
+/// By default serde terminates if it fails to deserialize a key or a value when deserializing
+/// a map. Sometimes a map has heterogeneous keys or values but we only care about some specific
+/// types, and it is desirable to skip entries on errors.
+///
+/// You can be notified of skipped elements by providing a type that implements the [`InspectError`] trait.
+/// The third generic argument `I` defaults to `()`, which does nothing.
+///
+/// It is especially useful in conjunction to `#[serde(flatten)]` to capture a map mixed in with
+/// other entries which we don't want to exhaust in the type definition.
+///
+/// The serialization behavior is identical to the underlying map.
+///
+/// The implementation supports both the [`HashMap`] and the [`BTreeMap`] from the standard library.
+///
+/// [`BTreeMap`]: std::collections::BTreeMap
+/// [`HashMap`]: std::collections::HashMap
+///
+/// # Examples
+///
+/// ## Basic Usage
+///
+/// ```rust
+/// # #[cfg(feature = "macros")] {
+/// # use serde::{Deserialize, Serialize};
+/// # use std::collections::BTreeMap;
+/// # use serde_with::{serde_as, DisplayFromStr, MapSkipError};
+/// #
+/// #[serde_as]
+/// # #[derive(Debug, PartialEq)]
+/// #[derive(Deserialize, Serialize)]
+/// struct VersionNames {
+///     yanked: Vec<u16>,
+///     #[serde_as(as = "MapSkipError<DisplayFromStr, _>")]
+///     #[serde(flatten)]
+///     names: BTreeMap<u16, String>,
+/// }
+///
+/// let data = VersionNames {
+///     yanked: vec![2, 5],
+///     names: BTreeMap::from_iter([
+///         (0u16, "v0".to_string()),
+///         (1, "v1".to_string()),
+///         (4, "v4".to_string())
+///     ]),
+/// };
+/// let source_json = r#"{
+///   "0": "v0",
+///   "1": "v1",
+///   "4": "v4",
+///   "yanked": [2, 5],
+///   "last_updated": 1704085200
+/// }"#;
+/// let data_json = r#"{"yanked":[2,5],"0":"v0","1":"v1","4":"v4"}"#;
+/// // Ensure serialization and deserialization produce the expected results
+/// assert_eq!(data_json, serde_json::to_string(&data).unwrap());
+/// assert_eq!(data, serde_json::from_str(source_json).unwrap());
+/// # }
+/// ```
+///
+/// ## Using [`InspectError`](`crate::InspectError`) to log skipped elements
+///
+/// ```rust
+/// # #[cfg(all(feature = "macros", feature = "alloc"))] {
+/// # use serde::{Serialize, Deserialize};
+/// # use serde_with::{serde_as, InspectError, MapSkipError};
+/// # use std::collections::BTreeMap;
+/// # use std::cell::RefCell;
+///
+/// struct ErrorInspector;
+///
+/// thread_local! {
+///     static ERRORS: RefCell<Vec<String>> = RefCell::new(Vec::new());
+/// }
+///
+/// impl InspectError for ErrorInspector {
+///     fn inspect_error(error: impl serde::de::Error) {
+///         ERRORS.with(|errors| errors.borrow_mut().push(error.to_string()));
+///     }
+/// }
+///
+/// #[serde_as]
+/// #[derive(Debug, PartialEq, Deserialize, Serialize)]
+/// struct S {
+///     tag: String,
+///     #[serde_as(as = "MapSkipError<_, _, ErrorInspector>")]
+///     values: BTreeMap<String, u8>,
+/// }
+///
+/// let json = r#"{"tag":"type","values":{"valid":42,"invalid": null,"another":"str","nested":[1,2,3]}}"#;
+/// let s: S = serde_json::from_str(json).unwrap();
+/// assert_eq!(s.values.len(), 1);
+/// assert_eq!(s.values.get("valid"), Some(&42));
+///
+/// let errors = ERRORS.with(|errors| errors.borrow().clone());
+/// assert_eq!(errors.len(), 3);
+/// eprintln!("Errors: {errors:#?}");
+/// assert!(errors[0].contains("invalid type: null, expected u8"));
+/// assert!(errors[1].contains("invalid type: string \"str\", expected u8"));
+/// assert!(errors[2].contains("invalid type: sequence, expected u8"));
+/// # }
+/// ```
+#[cfg(feature = "alloc")]
+pub struct MapSkipError<K, V, I = ()>(PhantomData<(K, V, I)>);
 
 /// Deserialize a boolean from a number
 ///
@@ -2138,7 +2588,6 @@ pub struct StringWithSeparator<Sep, T>(PhantomData<(Sep, T)>);
 /// ```rust
 /// # #[cfg(feature = "macros")] {
 /// # use serde::{Deserialize, Serialize};
-/// # use serde_json::json;
 /// # use serde_with::{serde_as, Map};
 /// #
 /// #[serde_as]
@@ -2231,8 +2680,8 @@ pub struct Seq<V>(PhantomData<V>);
 ///
 /// The implementation supports both the [`HashMap`] and the [`BTreeMap`] from the standard library.
 ///
+/// [`BTreeMap`]: std::collections::BTreeMap
 /// [`HashMap`]: std::collections::HashMap
-/// [`BTreeMap`]: std::collections::HashMap
 ///
 /// # Example
 ///
@@ -2269,15 +2718,15 @@ pub struct Seq<V>(PhantomData<V>);
 #[cfg(feature = "alloc")]
 pub struct MapPreventDuplicates<K, V>(PhantomData<(K, V)>);
 
-/// Ensure that the last value is taken, if duplicate values exist
+/// Ensure that the first key is taken, if duplicate keys exist
 ///
-/// By default serde has a first-value-wins implementation, if duplicate keys for a set exist.
-/// Sometimes the opposite strategy is desired. This helper implements a first-value-wins strategy.
+/// By default serde has a last-key-wins implementation, if duplicate keys for a map exist.
+/// Sometimes the opposite strategy is desired. This helper implements a first-key-wins strategy.
 ///
-/// The implementation supports both the [`HashSet`] and the [`BTreeSet`] from the standard library.
+/// The implementation supports both the [`HashMap`] and the [`BTreeMap`] from the standard library.
 ///
-/// [`HashSet`]: std::collections::HashSet
-/// [`BTreeSet`]: std::collections::HashSet
+/// [`BTreeMap`]: std::collections::BTreeMap
+/// [`HashMap`]: std::collections::HashMap
 #[cfg(feature = "alloc")]
 pub struct MapFirstKeyWins<K, V>(PhantomData<(K, V)>);
 
@@ -2291,8 +2740,8 @@ pub struct MapFirstKeyWins<K, V>(PhantomData<(K, V)>);
 ///
 /// The implementation supports both the [`HashSet`] and the [`BTreeSet`] from the standard library.
 ///
+/// [`BTreeSet`]: std::collections::BTreeSet
 /// [`HashSet`]: std::collections::HashSet
-/// [`BTreeSet`]: std::collections::HashSet
 ///
 /// # Example
 ///
@@ -2333,7 +2782,21 @@ pub struct SetPreventDuplicates<T>(PhantomData<T>);
 ///
 /// The implementation supports both the [`HashSet`] and the [`BTreeSet`] from the standard library.
 ///
+/// [`BTreeSet`]: std::collections::BTreeSet
 /// [`HashSet`]: std::collections::HashSet
-/// [`BTreeSet`]: std::collections::HashSet
 #[cfg(feature = "alloc")]
 pub struct SetLastValueWins<T>(PhantomData<T>);
+
+/// Helper for implementing [`JsonSchema`] on serializers whose output depends
+/// on the type of the concrete field.
+///
+/// It is added implicitly by the [`#[serde_as]`](crate::serde_as) macro when any `schemars`
+/// feature is enabled.
+///
+/// [`JsonSchema`]: ::schemars_1::JsonSchema
+#[cfg(any(
+    feature = "schemars_0_8",
+    feature = "schemars_0_9",
+    feature = "schemars_1"
+))]
+pub struct Schema<T: ?Sized, TA>(PhantomData<T>, PhantomData<TA>);

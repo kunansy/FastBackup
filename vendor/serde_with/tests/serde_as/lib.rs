@@ -1,10 +1,4 @@
-#![allow(
-    // clippy is broken and shows wrong warnings
-    // clippy on stable does not know yet about the lint name
-    unknown_lints,
-    // https://github.com/rust-lang/rust-clippy/issues/8867
-    clippy::derive_partial_eq_without_eq,
-)]
+//! Test Cases
 
 extern crate alloc;
 
@@ -12,6 +6,7 @@ mod collections;
 mod default_on;
 mod enum_map;
 mod frominto;
+mod fromintoref;
 mod key_value_map;
 mod map_tuple_list;
 mod pickfirst;
@@ -27,16 +22,20 @@ use alloc::{
     rc::{Rc, Weak as RcWeak},
     sync::{Arc, Weak as ArcWeak},
 };
-use core::cell::{Cell, RefCell};
+use core::{
+    cell::{Cell, RefCell},
+    ops::{Bound, Range, RangeFrom, RangeInclusive, RangeTo},
+    pin::Pin,
+};
 use expect_test::expect;
 use serde::{Deserialize, Serialize};
 use serde_with::{
     formats::{CommaSeparator, Flexible, Strict},
-    serde_as, BoolFromInt, BytesOrString, DisplayFromStr, Map, NoneAsEmptyString, OneOrMany, Same,
-    Seq, StringWithSeparator,
+    serde_as, BoolFromInt, BytesOrString, DisplayFromStr, IfIsHumanReadable, Map,
+    NoneAsEmptyString, NoneAsZero, OneOrMany, Same, Seq, StringWithSeparator,
 };
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{Mutex, RwLock},
 };
 
@@ -48,11 +47,30 @@ fn test_basic_wrappers() {
 
     is_equal(SBox(Box::new(123)), expect![[r#""123""#]]);
 
+    // Deserialization in generally is not possible, only for unpin types
+    #[serde_as]
+    #[derive(Debug, Serialize, PartialEq)]
+    struct SPin<'a>(#[serde_as(as = "Pin<&DisplayFromStr>")] Pin<&'a u32>);
+    let tmp = 123;
+    check_serialization(SPin(Pin::new(&tmp)), expect![[r#""123""#]]);
+
+    #[serde_as]
+    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    struct SPinBox(#[serde_as(as = "Pin<Box<DisplayFromStr>>")] Pin<Box<u32>>);
+
+    is_equal(SPinBox(Box::pin(123)), expect![[r#""123""#]]);
+
     #[serde_as]
     #[derive(Debug, Serialize, Deserialize, PartialEq)]
     struct SRc(#[serde_as(as = "Rc<DisplayFromStr>")] Rc<u32>);
 
     is_equal(SRc(Rc::new(123)), expect![[r#""123""#]]);
+
+    #[serde_as]
+    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    struct SPinRc(#[serde_as(as = "Pin<Rc<DisplayFromStr>>")] Pin<Rc<u32>>);
+
+    is_equal(SPinRc(Rc::pin(123)), expect![[r#""123""#]]);
 
     #[serde_as]
     #[derive(Debug, Serialize, Deserialize)]
@@ -69,6 +87,12 @@ fn test_basic_wrappers() {
     struct SArc(#[serde_as(as = "Arc<DisplayFromStr>")] Arc<u32>);
 
     is_equal(SArc(Arc::new(123)), expect![[r#""123""#]]);
+
+    #[serde_as]
+    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    struct SPinArc(#[serde_as(as = "Pin<Arc<DisplayFromStr>>")] Pin<Arc<u32>>);
+
+    is_equal(SPinArc(Arc::pin(123)), expect![[r#""123""#]]);
 
     #[serde_as]
     #[derive(Debug, Serialize, Deserialize)]
@@ -136,6 +160,108 @@ fn test_option() {
 }
 
 #[test]
+fn test_bound() {
+    #[serde_as]
+    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    struct S(#[serde_as(as = "Bound<DisplayFromStr>")] Bound<u32>);
+
+    is_equal(S(Bound::Unbounded), expect![[r#""Unbounded""#]]);
+    is_equal(
+        S(Bound::Included(42)),
+        expect![[r#"
+        {
+          "Included": "42"
+        }"#]],
+    );
+    is_equal(
+        S(Bound::Excluded(42)),
+        expect![[r#"
+        {
+          "Excluded": "42"
+        }"#]],
+    );
+    check_error_deserialization::<S>(r#"{}"#, expect![[r#"expected value at line 1 column 2"#]]);
+}
+
+#[test]
+fn test_range() {
+    #[serde_as]
+    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    struct S(#[serde_as(as = "Range<DisplayFromStr>")] Range<u32>);
+
+    is_equal(
+        S(3..7),
+        expect![[r#"
+        {
+          "start": "3",
+          "end": "7"
+        }"#]],
+    );
+    check_error_deserialization::<S>(
+        r#"{"start": false}"#,
+        expect!["invalid type: boolean `false`, expected a string at line 1 column 15"],
+    );
+}
+
+#[test]
+fn test_rangefrom() {
+    #[serde_as]
+    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    struct S(#[serde_as(as = "RangeFrom<DisplayFromStr>")] RangeFrom<u32>);
+
+    is_equal(
+        S(3..),
+        expect![[r#"
+        {
+          "start": "3"
+        }"#]],
+    );
+    check_error_deserialization::<S>(
+        r#"{"start": false}"#,
+        expect!["invalid type: boolean `false`, expected a string at line 1 column 15"],
+    );
+}
+
+#[test]
+fn test_rangeto() {
+    #[serde_as]
+    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    struct S(#[serde_as(as = "RangeTo<DisplayFromStr>")] RangeTo<u32>);
+
+    is_equal(
+        S(..7),
+        expect![[r#"
+        {
+          "end": "7"
+        }"#]],
+    );
+    check_error_deserialization::<S>(
+        r#"{"end": false}"#,
+        expect!["invalid type: boolean `false`, expected a string at line 1 column 13"],
+    );
+}
+
+#[test]
+fn test_rangeinclusive() {
+    #[serde_as]
+    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    struct S(#[serde_as(as = "RangeInclusive<DisplayFromStr>")] RangeInclusive<u32>);
+
+    is_equal(
+        S(3..=7),
+        expect![[r#"
+        {
+          "start": "3",
+          "end": "7"
+        }"#]],
+    );
+    check_error_deserialization::<S>(
+        r#"{"start": false}"#,
+        expect!["invalid type: boolean `false`, expected a string at line 1 column 15"],
+    );
+}
+
+#[test]
 fn test_result() {
     #[serde_as]
     #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -168,6 +294,23 @@ fn test_display_fromstr() {
     struct S(#[serde_as(as = "DisplayFromStr")] u32);
 
     is_equal(S(123), expect![[r#""123""#]]);
+}
+
+#[test]
+fn test_if_is_human_readable() {
+    #[serde_as]
+    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    struct S(#[serde_as(as = "IfIsHumanReadable<DisplayFromStr>")] u32);
+
+    let ser_json = serde_json::to_string(&S(123)).unwrap();
+    assert_eq!(ser_json, r#""123""#);
+    let ser_rmp = rmp_serde::to_vec(&S(123)).unwrap();
+    assert_eq!(ser_rmp, vec![123]);
+
+    let de_json: S = serde_json::from_str(r#""123""#).unwrap();
+    assert_eq!(S(123), de_json);
+    let de_rmp: S = rmp_serde::from_read(&*vec![123]).unwrap();
+    assert_eq!(S(123), de_rmp);
 }
 
 #[test]
@@ -445,7 +588,7 @@ fn test_bytes_or_string() {
 #[test]
 fn string_with_separator() {
     use serde_with::{
-        formats::{CommaSeparator, SpaceSeparator},
+        formats::{CommaSeparator, DosLineSeparator, SpaceSeparator, UnixLineSeparator},
         StringWithSeparator,
     };
 
@@ -455,26 +598,44 @@ fn string_with_separator() {
         #[serde_as(as = "StringWithSeparator::<SpaceSeparator, String>")]
         tags: Vec<String>,
         #[serde_as(as = "StringWithSeparator::<CommaSeparator, String>")]
-        // more_tags: Vec<String>,
         more_tags: BTreeSet<String>,
+        #[serde_as(as = "StringWithSeparator::<UnixLineSeparator, String>")]
+        lf_tags: BTreeSet<String>,
+        #[serde_as(as = "StringWithSeparator::<DosLineSeparator, String>")]
+        crlf_tags: BTreeSet<String>,
     }
 
     let v: A = serde_json::from_str(
         r##"{
     "tags": "#hello #world",
-    "more_tags": "foo,bar,bar"
+    "more_tags": "foo,bar,bar",
+    "lf_tags": "foo\nbar\nbar",
+    "crlf_tags": "foo\r\nbar\r\nbar"
 }"##,
     )
     .unwrap();
     assert_eq!(vec!["#hello", "#world"], v.tags);
-    assert_eq!(2, v.more_tags.len());
+    assert_eq!(
+        BTreeSet::from(["foo".to_string(), "bar".to_string()]),
+        v.more_tags
+    );
+    assert_eq!(
+        BTreeSet::from(["foo".to_string(), "bar".to_string()]),
+        v.lf_tags
+    );
+    assert_eq!(
+        BTreeSet::from(["foo".to_string(), "bar".to_string()]),
+        v.crlf_tags
+    );
 
     let x = A {
         tags: vec!["1".to_string(), "2".to_string(), "3".to_string()],
-        more_tags: Default::default(),
+        more_tags: BTreeSet::default(),
+        lf_tags: BTreeSet::default(),
+        crlf_tags: BTreeSet::default(),
     };
     assert_eq!(
-        r#"{"tags":"1 2 3","more_tags":""}"#,
+        r#"{"tags":"1 2 3","more_tags":"","lf_tags":"","crlf_tags":""}"#,
         serde_json::to_string(&x).unwrap()
     );
 }
@@ -498,6 +659,10 @@ fn test_vec_skip_error() {
         },
         r#"{"tag":"type","values":[0, "str", 1, [10, 11], -2, {}, 300]}"#,
     );
+    check_error_deserialization::<S>(
+        r#"{"tag":"type", "values":[0, "str", 1, , 300]}"#,
+        expect!["expected value at line 1 column 39"],
+    );
     is_equal(
         S {
             tag: "round-trip".into(),
@@ -510,6 +675,188 @@ fn test_vec_skip_error() {
             0,
             255
           ]
+        }"#]],
+    );
+}
+
+#[test]
+fn test_map_skip_error_btreemap() {
+    use serde_with::MapSkipError;
+
+    #[serde_as]
+    #[derive(Debug, PartialEq, Deserialize, Serialize)]
+    struct S {
+        tag: String,
+        #[serde_as(as = "MapSkipError<DisplayFromStr, _>")]
+        values: BTreeMap<u8, u8>,
+    }
+
+    check_deserialization(
+        S {
+            tag: "type".into(),
+            values: [(0, 1), (10, 20)].into_iter().collect(),
+        },
+        r#"
+        {
+          "tag":"type",
+          "values": {
+            "0": 1,
+            "str": 2,
+            "3": "str",
+            "4": [10, 11],
+            "5": {},
+            "10": 20
+          }
+        }"#,
+    );
+    check_error_deserialization::<S>(
+        r#"{"tag":"type", "values":{"0": 1,}}"#,
+        expect!["trailing comma at line 1 column 33"],
+    );
+    is_equal(
+        S {
+            tag: "round-trip".into(),
+            values: [(0, 0), (255, 255)].into_iter().collect(),
+        },
+        expect![[r#"
+        {
+          "tag": "round-trip",
+          "values": {
+            "0": 0,
+            "255": 255
+          }
+        }"#]],
+    );
+}
+
+#[test]
+fn test_map_skip_error_btreemap_flatten() {
+    use serde_with::MapSkipError;
+
+    #[serde_as]
+    #[derive(Debug, PartialEq, Deserialize, Serialize)]
+    struct S {
+        tag: String,
+        #[serde_as(as = "MapSkipError<DisplayFromStr, _>")]
+        #[serde(flatten)]
+        values: BTreeMap<u8, u8>,
+    }
+
+    check_deserialization(
+        S {
+            tag: "type".into(),
+            values: [(0, 1), (10, 20)].into_iter().collect(),
+        },
+        r#"
+        {
+          "tag":"type",
+          "0": 1,
+          "str": 2,
+          "3": "str",
+          "4": [10, 11],
+          "5": {},
+          "10": 20
+        }"#,
+    );
+    is_equal(
+        S {
+            tag: "round-trip".into(),
+            values: [(0, 0), (255, 255)].into_iter().collect(),
+        },
+        expect![[r#"
+        {
+          "tag": "round-trip",
+          "0": 0,
+          "255": 255
+        }"#]],
+    );
+}
+
+#[test]
+fn test_map_skip_error_hashmap() {
+    use serde_with::MapSkipError;
+
+    #[serde_as]
+    #[derive(Debug, PartialEq, Deserialize, Serialize)]
+    struct S {
+        tag: String,
+        #[serde_as(as = "MapSkipError<DisplayFromStr, _>")]
+        values: HashMap<u8, u8>,
+    }
+
+    check_deserialization(
+        S {
+            tag: "type".into(),
+            values: [(0, 1)].into_iter().collect(),
+        },
+        r#"
+        {
+          "tag":"type",
+          "values": {
+            "0": 1,
+            "str": 2,
+            "3": "str",
+            "4": [10, 11],
+            "5": {}
+          }
+        }"#,
+    );
+    check_error_deserialization::<S>(
+        r#"{"tag":"type", "values":{"0": 1,}}"#,
+        expect!["trailing comma at line 1 column 33"],
+    );
+    is_equal(
+        S {
+            tag: "round-trip".into(),
+            values: [(255, 0)].into_iter().collect(),
+        },
+        expect![[r#"
+        {
+          "tag": "round-trip",
+          "values": {
+            "255": 0
+          }
+        }"#]],
+    );
+}
+
+#[test]
+fn test_map_skip_error_hashmap_flatten() {
+    use serde_with::MapSkipError;
+
+    #[serde_as]
+    #[derive(Debug, PartialEq, Deserialize, Serialize)]
+    struct S {
+        tag: String,
+        #[serde_as(as = "MapSkipError<DisplayFromStr, _>")]
+        #[serde(flatten)]
+        values: HashMap<u8, u8>,
+    }
+
+    check_deserialization(
+        S {
+            tag: "type".into(),
+            values: [(0, 1)].into_iter().collect(),
+        },
+        r#"
+        {
+          "tag":"type",
+          "0": 1,
+          "str": 2,
+          "3": "str",
+          "4": [10, 11],
+          "5": {}
+        }"#,
+    );
+    is_equal(
+        S {
+            tag: "round-trip".into(),
+            values: [(255, 0)].into_iter().collect(),
+        },
+        expect![[r#"
+        {
+          "tag": "round-trip",
+          "255": 0
         }"#]],
     );
 }
@@ -532,7 +879,7 @@ fn test_serialize_reference() {
     #[derive(Debug, Serialize)]
     struct S1a<'a>(#[serde_as(as = "&Vec<DisplayFromStr>")] &'a Vec<u32>);
     check_serialization(
-        S1(&vec![1, 2]),
+        S1a(&vec![1, 2]),
         expect![[r#"
         [
           "1",
@@ -544,7 +891,7 @@ fn test_serialize_reference() {
     #[derive(Debug, Serialize)]
     struct S1Mut<'a>(#[serde_as(as = "Vec<DisplayFromStr>")] &'a mut Vec<u32>);
     check_serialization(
-        S1(&vec![1, 2]),
+        S1Mut(&mut vec![1, 2]),
         expect![[r#"
         [
           "1",
@@ -556,7 +903,7 @@ fn test_serialize_reference() {
     #[derive(Debug, Serialize)]
     struct S1aMut<'a>(#[serde_as(as = "&mut Vec<DisplayFromStr>")] &'a mut Vec<u32>);
     check_serialization(
-        S1(&vec![1, 2]),
+        S1aMut(&mut vec![1, 2]),
         expect![[r#"
         [
           "1",
@@ -976,10 +1323,130 @@ fn test_one_or_many_prefer_many() {
     );
 }
 
+#[test]
+fn test_one_or_many_hashset_prefer_one() {
+    #[serde_as]
+    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    struct S1(#[serde_as(as = "OneOrMany<_>")] HashSet<u32>);
+
+    is_equal(S1(HashSet::new()), expect![[r#"[]"#]]);
+    is_equal(S1(HashSet::from([1])), expect![[r#"1"#]]);
+    check_deserialization(S1(HashSet::from([1])), r#"1"#);
+    check_deserialization(S1(HashSet::from([1])), r#"[1]"#);
+    check_deserialization(S1(HashSet::from([1, 2, 3])), r#"[1, 2, 3]"#);
+    check_deserialization(S1(HashSet::from([1, 2, 3])), r#"[3, 2, 1]"#);
+    check_error_deserialization::<S1>(
+        r#""xx""#,
+        expect![[r#"
+        OneOrMany could not deserialize any variant:
+          One: invalid type: string "xx", expected u32
+          Many: invalid type: string "xx", expected a sequence"#]],
+    );
+
+    #[serde_as]
+    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    struct S2(#[serde_as(as = "OneOrMany<DisplayFromStr>")] HashSet<u32>);
+
+    is_equal(S2(HashSet::from([1])), expect![[r#""1""#]]);
+    check_deserialization(S2(HashSet::from([1])), r#""1""#);
+    check_deserialization(S2(HashSet::from([1])), r#"["1"]"#);
+    check_deserialization(S2(HashSet::from([1, 2, 3])), r#"["1", "2", "3"]"#);
+    check_error_deserialization::<S2>(
+        r#"{}"#,
+        expect![[r#"
+        OneOrMany could not deserialize any variant:
+          One: invalid type: map, expected a string
+          Many: invalid type: map, expected a sequence"#]],
+    );
+}
+
+#[test]
+fn test_one_or_many_hashset_prefer_many() {
+    use serde_with::formats::PreferMany;
+
+    #[serde_as]
+    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    struct S1(#[serde_as(as = "OneOrMany<_, PreferMany>")] HashSet<u32>);
+
+    is_equal(S1(HashSet::new()), expect![[r#"[]"#]]);
+    is_equal(
+        S1(HashSet::from([1])),
+        expect![[r#"
+            [
+              1
+            ]"#]],
+    );
+    check_deserialization(S1(HashSet::from([1])), r#"1"#);
+    check_deserialization(S1(HashSet::from([1])), r#"[1]"#);
+    check_deserialization(S1(HashSet::from([1, 2, 3])), r#"[1, 2, 3]"#);
+}
+
+#[test]
+fn test_one_or_many_btreeset_prefer_one() {
+    #[serde_as]
+    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    struct S1(#[serde_as(as = "OneOrMany<_>")] BTreeSet<u32>);
+
+    is_equal(S1(BTreeSet::new()), expect![[r#"[]"#]]);
+    is_equal(S1(BTreeSet::from([1])), expect![[r#"1"#]]);
+    check_deserialization(S1(BTreeSet::from([1])), r#"1"#);
+    check_deserialization(S1(BTreeSet::from([1])), r#"[1]"#);
+    check_deserialization(S1(BTreeSet::from([1, 2, 3])), r#"[1, 2, 3]"#);
+    check_deserialization(S1(BTreeSet::from([1, 2, 3])), r#"[3, 2, 1]"#);
+    check_error_deserialization::<S1>(
+        r#""xx""#,
+        expect![[r#"
+        OneOrMany could not deserialize any variant:
+          One: invalid type: string "xx", expected u32
+          Many: invalid type: string "xx", expected a sequence"#]],
+    );
+
+    #[serde_as]
+    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    struct S2(#[serde_as(as = "OneOrMany<DisplayFromStr>")] BTreeSet<u32>);
+
+    is_equal(S2(BTreeSet::from([1])), expect![[r#""1""#]]);
+    check_deserialization(S2(BTreeSet::from([1])), r#""1""#);
+    check_deserialization(S2(BTreeSet::from([1])), r#"["1"]"#);
+    check_deserialization(S2(BTreeSet::from([1, 2, 3])), r#"["1", "2", "3"]"#);
+    check_error_deserialization::<S2>(
+        r#"{}"#,
+        expect![[r#"
+        OneOrMany could not deserialize any variant:
+          One: invalid type: map, expected a string
+          Many: invalid type: map, expected a sequence"#]],
+    );
+}
+
+#[test]
+fn test_one_or_many_btreeset_prefer_many() {
+    use serde_with::formats::PreferMany;
+
+    #[serde_as]
+    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    struct S1(#[serde_as(as = "OneOrMany<_, PreferMany>")] BTreeSet<u32>);
+
+    is_equal(S1(BTreeSet::new()), expect![[r#"[]"#]]);
+    is_equal(
+        S1(BTreeSet::from([1])),
+        expect![[r#"
+            [
+              1
+            ]"#]],
+    );
+    check_deserialization(S1(BTreeSet::from([1])), r#"1"#);
+    check_deserialization(S1(BTreeSet::from([1])), r#"[1]"#);
+    check_deserialization(S1(BTreeSet::from([1, 2, 3])), r#"[1, 2, 3]"#);
+}
+
 /// Test that Cow borrows from the input
 #[test]
 fn test_borrow_cow_str() {
     use alloc::borrow::Cow;
+    use serde::de::{
+        value::{BorrowedStrDeserializer, MapDeserializer},
+        IntoDeserializer,
+    };
     use serde_test::{assert_ser_tokens, Token};
     use serde_with::BorrowCow;
 
@@ -1078,39 +1545,35 @@ fn test_borrow_cow_str() {
             Token::StructEnd,
         ],
     );
-    let tokens = &[
-        Token::Struct { name: "S2", len: 2 },
-        Token::Str("cow"),
-        Token::BorrowedBytes(b"abc"),
-        Token::Str("opt"),
-        Token::Some,
-        Token::BorrowedBytes(b"foo"),
-        Token::StructEnd,
-    ];
-    let mut deser = serde_test::Deserializer::new(tokens);
-    let s2 = S2::deserialize(&mut deser).unwrap();
-    assert!(matches!(s2.cow, Cow::Borrowed(_)));
-    assert!(matches!(s2.opt, Some(Cow::Borrowed(_))));
 
     // Check that a manual borrow works too
     #[serde_as]
     #[derive(Debug, Serialize, Deserialize, PartialEq)]
-    struct S3<'a>(
+    struct S3<'a> {
         #[serde(borrow = "'a")]
         #[serde_as(as = "BorrowCow")]
-        Cow<'a, [u8]>,
+        borrowed: Cow<'a, [u8]>,
         // TODO add a test for Cow<'b, [u8; N]>
         // #[serde_as(as = "BorrowCow")]
         // Cow<'b, [u8; N]>,
-    );
-    let tokens = &[
-        Token::NewtypeStruct { name: "S3" },
-        Token::BorrowedBytes(b"abc"),
-    ];
+    }
 
-    let mut deser = serde_test::Deserializer::new(tokens);
-    let s3 = S3::deserialize(&mut deser).unwrap();
-    assert!(matches!(s3.0, Cow::Borrowed(_)));
+    struct BorrowedStr(&'static str);
+
+    impl<'de> IntoDeserializer<'de> for BorrowedStr {
+        type Deserializer = BorrowedStrDeserializer<'de, serde::de::value::Error>;
+
+        fn into_deserializer(self) -> Self::Deserializer {
+            BorrowedStrDeserializer::new(self.0)
+        }
+    }
+
+    let deser = MapDeserializer::new(IntoIterator::into_iter([
+        ("copied", BorrowedStr("copied")),
+        ("borrowed", BorrowedStr("borrowed")),
+    ]));
+    let s3 = S3::deserialize(deser).unwrap();
+    assert!(matches!(s3.borrowed, Cow::Borrowed(_)));
 }
 
 #[test]
@@ -1178,4 +1641,49 @@ fn test_boolfromint() {
         r#""""#,
         expect![[r#"invalid type: string "", expected an integer at line 1 column 2"#]],
     );
+}
+
+#[test]
+fn test_none_as_zero() {
+    use core::num::{NonZeroI16, NonZeroI64, NonZeroU32, NonZeroU8, NonZeroUsize};
+
+    #[serde_as]
+    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    struct SU8(#[serde_as(as = "NoneAsZero")] Option<NonZeroU8>);
+
+    is_equal(SU8(None), expect![[r#"0"#]]);
+    is_equal(SU8(NonZeroU8::new(1)), expect![[r#"1"#]]);
+    is_equal(SU8(NonZeroU8::new(255)), expect![[r#"255"#]]);
+
+    #[serde_as]
+    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    struct SU32(#[serde_as(as = "NoneAsZero")] Option<NonZeroU32>);
+
+    is_equal(SU32(None), expect![[r#"0"#]]);
+    is_equal(SU32(NonZeroU32::new(42)), expect![[r#"42"#]]);
+
+    #[serde_as]
+    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    struct SI16(#[serde_as(as = "NoneAsZero")] Option<NonZeroI16>);
+
+    is_equal(SI16(None), expect![[r#"0"#]]);
+    is_equal(SI16(NonZeroI16::new(-7)), expect![[r#"-7"#]]);
+    is_equal(SI16(NonZeroI16::new(7)), expect![[r#"7"#]]);
+
+    #[serde_as]
+    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    struct SI64(#[serde_as(as = "NoneAsZero")] Option<NonZeroI64>);
+
+    is_equal(SI64(None), expect![[r#"0"#]]);
+    is_equal(
+        SI64(NonZeroI64::new(-9_000_000_000)),
+        expect![[r#"-9000000000"#]],
+    );
+
+    #[serde_as]
+    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    struct SUsize(#[serde_as(as = "NoneAsZero")] Option<NonZeroUsize>);
+
+    is_equal(SUsize(None), expect![[r#"0"#]]);
+    is_equal(SUsize(NonZeroUsize::new(3)), expect![[r#"3"#]]);
 }

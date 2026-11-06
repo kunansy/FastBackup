@@ -5,6 +5,22 @@ use tokio::signal::unix::Signal;
 
 /// A wrapper around [`Signal`] that implements [`Stream`].
 ///
+/// # Example
+///
+/// ```no_run
+/// use tokio::signal::unix::{signal, SignalKind};
+/// use tokio_stream::{StreamExt, wrappers::SignalStream};
+///
+/// # #[tokio::main(flavor = "current_thread")]
+/// # async fn main() -> std::io::Result<()> {
+/// let signals = signal(SignalKind::hangup())?;
+/// let mut stream = SignalStream::new(signals);
+/// while stream.next().await.is_some() {
+///     println!("hangup signal received");
+/// }
+/// # Ok(())
+/// # }
+/// ```
 /// [`Signal`]: struct@tokio::signal::unix::Signal
 /// [`Stream`]: trait@crate::Stream
 #[derive(Debug)]
@@ -15,8 +31,8 @@ pub struct SignalStream {
 
 impl SignalStream {
     /// Create a new `SignalStream`.
-    pub fn new(interval: Signal) -> Self {
-        Self { inner: interval }
+    pub fn new(signal: Signal) -> Self {
+        Self { inner: signal }
     }
 
     /// Get back the inner `Signal`.

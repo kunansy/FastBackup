@@ -1,4 +1,5 @@
 use proc_macro2::Span;
+use quote::{quote_spanned, ToTokens, TokenStreamExt};
 use std::ops::{Deref, DerefMut};
 use syn::spanned::Spanned;
 
@@ -38,6 +39,11 @@ impl<T> SpannedValue<T> {
     /// Apply a mapping function to a reference to the spanned value.
     pub fn map_ref<U>(&self, map_fn: impl FnOnce(&T) -> U) -> SpannedValue<U> {
         SpannedValue::new(map_fn(&self.value), self.span)
+    }
+
+    /// Gets the inner value, consuming `self` in the process.
+    pub fn into_inner(self) -> T {
+        self.value
     }
 }
 
@@ -97,6 +103,24 @@ impl<T: FromMeta> FromMeta for SpannedValue<T> {
 
         Ok(Self::new(value, span))
     }
+
+    fn from_nested_meta(item: &crate::ast::NestedMeta) -> Result<Self> {
+        T::from_nested_meta(item)
+            .map(|value| Self::new(value, item.span()))
+            .map_err(|e| e.with_span(item))
+    }
+
+    fn from_value(literal: &syn::Lit) -> Result<Self> {
+        T::from_value(literal)
+            .map(|value| Self::new(value, literal.span()))
+            .map_err(|e| e.with_span(literal))
+    }
+
+    fn from_expr(expr: &syn::Expr) -> Result<Self> {
+        T::from_expr(expr)
+            .map(|value| Self::new(value, expr.span()))
+            .map_err(|e| e.with_span(expr))
+    }
 }
 
 spanned!(FromGenericParam, from_generic_param, syn::GenericParam);
@@ -110,6 +134,13 @@ impl<T: Spanned> From<T> for SpannedValue<T> {
     fn from(value: T) -> Self {
         let span = value.span();
         SpannedValue::new(value, span)
+    }
+}
+
+impl<T: ToTokens> ToTokens for SpannedValue<T> {
+    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+        let value = &self.value;
+        tokens.append_all(quote_spanned!(self.span()=> #value));
     }
 }
 

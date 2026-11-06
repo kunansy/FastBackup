@@ -1,3 +1,27 @@
+/*
+ *
+ * Copyright 2025 gRPC authors.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to
+ * deal in the Software without restriction, including without limitation the
+ * rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+ * sell copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+ * IN THE SOFTWARE.
+ *
+ */
+
 use bytes::Bytes;
 use http::header::HeaderName;
 use std::borrow::Borrow;
@@ -24,7 +48,7 @@ pub struct MetadataKey<VE: ValueEncoding> {
 }
 
 /// A possible error when converting a `MetadataKey` from another type.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct InvalidMetadataKey {
     _priv: (),
 }
@@ -180,7 +204,7 @@ impl<VE: ValueEncoding> fmt::Display for MetadataKey<VE> {
 impl InvalidMetadataKey {
     #[doc(hidden)]
     pub fn new() -> InvalidMetadataKey {
-        InvalidMetadataKey { _priv: () }
+        Self::default()
     }
 }
 
@@ -204,7 +228,7 @@ impl<'a, VE: ValueEncoding> PartialEq<&'a MetadataKey<VE>> for MetadataKey<VE> {
     }
 }
 
-impl<'a, VE: ValueEncoding> PartialEq<MetadataKey<VE>> for &'a MetadataKey<VE> {
+impl<VE: ValueEncoding> PartialEq<MetadataKey<VE>> for &MetadataKey<VE> {
     #[inline]
     fn eq(&self, other: &MetadataKey<VE>) -> bool {
         *other == *self
@@ -260,7 +284,7 @@ impl<'a, VE: ValueEncoding> PartialEq<&'a str> for MetadataKey<VE> {
     }
 }
 
-impl<'a, VE: ValueEncoding> PartialEq<MetadataKey<VE>> for &'a str {
+impl<VE: ValueEncoding> PartialEq<MetadataKey<VE>> for &str {
     /// Performs a case-insensitive comparison of the string against the header
     /// name
     #[inline]
@@ -272,12 +296,6 @@ impl<'a, VE: ValueEncoding> PartialEq<MetadataKey<VE>> for &'a str {
 impl fmt::Display for InvalidMetadataKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("invalid gRPC metadata key name")
-    }
-}
-
-impl Default for InvalidMetadataKey {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

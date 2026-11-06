@@ -9,27 +9,27 @@
 /// ```rust
 /// # use time::{Date, Weekday::*, Month, macros::date};
 /// assert_eq!(
-///     date!(2020 - W 01 - 3),
+///     date!(2020-W01-3),
 ///     Date::from_iso_week_date(2020, 1, Wednesday)?
 /// );
-/// assert_eq!(date!(2020 - 001), Date::from_ordinal_date(2020, 1)?);
+/// assert_eq!(date!(2020-001), Date::from_ordinal_date(2020, 1)?);
 /// assert_eq!(
-///     date!(2020 - 01 - 01),
+///     date!(2020-01-01),
 ///     Date::from_calendar_date(2020, Month::January, 1)?
 /// );
 /// # Ok::<_, time::Error>(())
 /// ```
 pub use time_macros::date;
-/// Construct a [`PrimitiveDateTime`] or [`OffsetDateTime`] with a statically known value.
+/// Construct a [`PlainDateTime`] or [`OffsetDateTime`] with a statically known value.
 ///
 /// The resulting expression can be used in `const` or `static` declarations.
 ///
 /// The syntax accepted by this macro is the same as [`date!`] and [`time!`], with an optional
 /// [`offset!`], all space-separated. If an [`offset!`] is provided, the resulting value will
-/// be an [`OffsetDateTime`]; otherwise it will be a [`PrimitiveDateTime`].
+/// be an [`OffsetDateTime`]; otherwise it will be a [`PlainDateTime`].
 ///
 /// [`OffsetDateTime`]: crate::OffsetDateTime
-/// [`PrimitiveDateTime`]: crate::PrimitiveDateTime
+/// [`PlainDateTime`]: crate::PlainDateTime
 ///
 /// ```rust
 /// # use time::{Date, Month, macros::datetime, UtcOffset};
@@ -51,8 +51,11 @@ pub use time_macros::date;
 pub use time_macros::datetime;
 /// Equivalent of performing [`format_description::parse()`] at compile time.
 ///
-/// Using the macro instead of the function results in a static slice rather than a [`Vec`],
-/// such that it can be used in `#![no_alloc]` situations.
+/// Using the macro instead of the function results in a static slice rather than a
+/// [`Vec`](alloc::vec::Vec), such that it can be used in `#![no_alloc]` situations. For
+/// readability, you can use [`StaticFormatDescription`] as the type.
+///
+/// [`StaticFormatDescription`]: crate::format_description::StaticFormatDescription
 ///
 /// The resulting expression can be used in `const` or `static` declarations, and implements
 /// the sealed traits required for both formatting and parsing.
@@ -61,7 +64,7 @@ pub use time_macros::datetime;
 /// # use time::{format_description, macros::format_description};
 /// assert_eq!(
 ///     format_description!("[hour]:[minute]:[second]"),
-///     format_description::parse("[hour]:[minute]:[second]")?
+///     format_description::parse_borrowed::<2>("[hour]:[minute]:[second]")?
 /// );
 /// # Ok::<_, time::Error>(())
 /// ```
@@ -130,3 +133,36 @@ pub use time_macros::offset;
 /// # Ok::<_, time::Error>(())
 /// ```
 pub use time_macros::time;
+/// Construct a [`Timestamp`](crate::Timestamp) with a statically known value.
+///
+/// The resulting expression can be used in `const` or `static` declarations.
+///
+/// The syntax accepted by this macro is a timestamp (as an integer or float) _or_ the same as
+/// [`utc_datetime!`].
+///
+/// ```rust
+/// # use time::Timestamp;
+/// # use time::macros::timestamp;
+/// assert_eq!(timestamp!(0), Timestamp::UNIX_EPOCH);
+/// assert_eq!(timestamp!(1970-01-01 0:00), Timestamp::UNIX_EPOCH);
+/// assert_eq!(timestamp!(1_234_567_890), Timestamp::new(1_234_567_890, 0)?);
+/// # Ok::<_, time::Error>(())
+/// ```
+pub use time_macros::timestamp;
+/// Construct a [`UtcDateTime`] with a statically known value.
+///
+/// The resulting expression can be used in `const` or `static` declarations.
+///
+/// The syntax accepted by this macro is the same as a space-separated [`date!`] and [`time!`].
+///
+/// [`UtcDateTime`]: crate::UtcDateTime
+///
+/// ```rust
+/// # use time::{Date, Month, macros::utc_datetime};
+/// assert_eq!(
+///     utc_datetime!(2020-01-01 0:00),
+///     Date::from_calendar_date(2020, Month::January, 1)?.midnight().as_utc()
+/// );
+/// # Ok::<_, time::Error>(())
+/// ```
+pub use time_macros::utc_datetime;

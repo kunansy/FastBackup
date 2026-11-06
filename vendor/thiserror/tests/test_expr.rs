@@ -1,6 +1,8 @@
 #![allow(clippy::iter_cloned_collect, clippy::uninlined_format_args)]
 
-use std::fmt::Display;
+use core::fmt::Display;
+#[cfg(feature = "std")]
+use std::path::PathBuf;
 use thiserror::Error;
 
 // Some of the elaborate cases from the rcc codebase, which is a C compiler in
@@ -50,6 +52,7 @@ pub enum RustupError {
     },
 }
 
+#[track_caller]
 fn assert<T: Display>(expected: &str, value: T) {
     assert_eq!(expected, value.to_string());
 }
@@ -85,4 +88,46 @@ fn test_rustup() {
             suggestion: Some("clippy".to_owned()),
         },
     );
+}
+
+// Regression test for https://github.com/dtolnay/thiserror/issues/335
+#[cfg(feature = "std")]
+#[test]
+#[allow(non_snake_case)]
+fn test_assoc_type_equality_constraint() {
+    pub trait Trait<T>: Display {
+        type A;
+    }
+
+    impl<T> Trait<T> for i32 {
+        type A = i32;
+    }
+
+    #[derive(Error, Debug)]
+    #[error("{A} {b}", b = &0 as &dyn Trait<i32, A = i32>)]
+    pub struct Error {
+        pub A: PathBuf,
+    }
+
+    assert(
+        "... 0",
+        Error {
+            A: PathBuf::from("..."),
+        },
+    );
+}
+
+// Regression test for https://github.com/dtolnay/thiserror/issues/332
+#[test]
+fn test_turbofish() {
+    #[derive(Error, Debug)]
+    #[error(
+        "{} {} {}",
+        None::<i32>.is_some(),
+        Vec::<Vec<u8>>::new().len(),
+        (0..3).filter(|_| Option::<Box<dyn Fn(u8) -> u8>>::None.is_none()).count(),
+    )]
+    pub struct Error;
+
+    assert("false 0 3", Error);
 }

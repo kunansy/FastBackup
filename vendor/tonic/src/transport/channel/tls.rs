@@ -1,37 +1,58 @@
+/*
+ *
+ * Copyright 2025 gRPC authors.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to
+ * deal in the Software without restriction, including without limitation the
+ * rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+ * sell copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+ * IN THE SOFTWARE.
+ *
+ */
+
+use super::service::TlsConnector;
 use crate::transport::{
-    service::TlsConnector,
-    tls::{Certificate, Identity},
     Error,
+    tls::{Certificate, Identity},
 };
 use http::Uri;
-use std::fmt;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio_rustls::rustls::client::danger::ServerCertVerifier;
+use tokio_rustls::rustls::pki_types::TrustAnchor;
 
 /// Configures TLS settings for endpoints.
-#[derive(Clone, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct ClientTlsConfig {
     domain: Option<String>,
-    cert: Option<Certificate>,
+    certs: Vec<Certificate>,
+    trust_anchors: Vec<TrustAnchor<'static>>,
     identity: Option<Identity>,
-}
-
-impl fmt::Debug for ClientTlsConfig {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ClientTlsConfig")
-            .field("domain", &self.domain)
-            .field("cert", &self.cert)
-            .field("identity", &self.identity)
-            .finish()
-    }
+    assume_http2: bool,
+    #[cfg(feature = "tls-native-roots")]
+    with_native_roots: bool,
+    #[cfg(feature = "tls-webpki-roots")]
+    with_webpki_roots: bool,
+    use_key_log: bool,
+    timeout: Option<Duration>,
 }
 
 impl ClientTlsConfig {
     /// Creates a new `ClientTlsConfig` using Rustls.
     pub fn new() -> Self {
-        ClientTlsConfig {
-            domain: None,
-            cert: None,
-            identity: None,
-        }
+        Self::default()
     }
 
     /// Sets the domain name against which to verify the server's TLS certificate.
@@ -42,12 +63,37 @@ impl ClientTlsConfig {
         }
     }
 
-    /// Sets the CA Certificate against which to verify the server's TLS certificate.
+    /// Adds the CA Certificate against which to verify the server's TLS certificate.
     pub fn ca_certificate(self, ca_certificate: Certificate) -> Self {
+        let mut certs = self.certs;
+        certs.push(ca_certificate);
+        ClientTlsConfig { certs, ..self }
+    }
+
+    /// Adds the multiple CA Certificates against which to verify the server's TLS certificate.
+    pub fn ca_certificates(self, ca_certificates: impl IntoIterator<Item = Certificate>) -> Self {
+        let mut certs = self.certs;
+        certs.extend(ca_certificates);
+        ClientTlsConfig { certs, ..self }
+    }
+
+    /// Adds the trust anchor which to verify the server's TLS certificate.
+    pub fn trust_anchor(self, trust_anchor: TrustAnchor<'static>) -> Self {
+        let mut trust_anchors = self.trust_anchors;
+        trust_anchors.push(trust_anchor);
         ClientTlsConfig {
-            cert: Some(ca_certificate),
+            trust_anchors,
             ..self
         }
+    }
+
+    /// Adds the multiple trust anchors which to verify the server's TLS certificate.
+    pub fn trust_anchors(
+        mut self,
+        trust_anchors: impl IntoIterator<Item = TrustAnchor<'static>>,
+    ) -> Self {
+        self.trust_anchors.extend(trust_anchors);
+        self
     }
 
     /// Sets the client identity to present to the server.
@@ -58,11 +104,193 @@ impl ClientTlsConfig {
         }
     }
 
-    pub(crate) fn tls_connector(&self, uri: Uri) -> Result<TlsConnector, crate::Error> {
-        let domain = match &self.domain {
-            None => uri.host().ok_or_else(Error::new_invalid_uri)?.to_string(),
-            Some(domain) => domain.clone(),
+    /// If true, the connector should assume that the server supports HTTP/2,
+    /// even if it doesn't provide protocol negotiation via ALPN.
+    pub fn assume_http2(self, assume_http2: bool) -> Self {
+        ClientTlsConfig {
+            assume_http2,
+            ..self
+        }
+    }
+
+    /// Use key log as specified by the `SSLKEYLOGFILE` environment variable.
+    pub fn use_key_log(self) -> Self {
+        ClientTlsConfig {
+            use_key_log: true,
+            ..self
+        }
+    }
+
+    /// Enables the platform's trusted certs.
+    #[cfg(feature = "tls-native-roots")]
+    pub fn with_native_roots(self) -> Self {
+        ClientTlsConfig {
+            with_native_roots: true,
+            ..self
+        }
+    }
+
+    /// Enables the webpki roots.
+    #[cfg(feature = "tls-webpki-roots")]
+    pub fn with_webpki_roots(self) -> Self {
+        ClientTlsConfig {
+            with_webpki_roots: true,
+            ..self
+        }
+    }
+
+    /// Activates all TLS roots enabled through `tls-*-roots` feature flags
+    pub fn with_enabled_roots(self) -> Self {
+        let config = self;
+
+        #[cfg(feature = "tls-native-roots")]
+        let config = config.with_native_roots();
+        #[cfg(feature = "tls-webpki-roots")]
+        let config = config.with_webpki_roots();
+
+        config
+    }
+
+    /// Sets the timeout for the TLS handshake.
+    pub fn timeout(self, timeout: Duration) -> Self {
+        ClientTlsConfig {
+            timeout: Some(timeout),
+            ..self
+        }
+    }
+
+    pub(crate) fn into_tls_connector(self, uri: &Uri) -> Result<TlsConnector, crate::BoxError> {
+        self.build_tls_connector(uri, None)
+    }
+
+    pub(crate) fn into_tls_connector_with_verifier(
+        self,
+        uri: &Uri,
+        verifier: Arc<dyn ServerCertVerifier>,
+    ) -> Result<TlsConnector, crate::BoxError> {
+        self.build_tls_connector(uri, Some(verifier))
+    }
+
+    fn build_tls_connector(
+        self,
+        uri: &Uri,
+        server_cert_verifier: Option<Arc<dyn ServerCertVerifier>>,
+    ) -> Result<TlsConnector, crate::BoxError> {
+        let domain = if let Some(domain) = &self.domain {
+            domain
+        } else {
+            let host = uri.host().ok_or_else(Error::new_invalid_uri)?;
+            // host() returns the host including brackets if it's an IPv6 address
+            if host.starts_with('[') && host.ends_with(']') {
+                &host[1..host.len() - 1]
+            } else {
+                host
+            }
         };
-        TlsConnector::new(self.cert.clone(), self.identity.clone(), domain)
+        TlsConnector::new(
+            self.certs,
+            self.trust_anchors,
+            self.identity,
+            server_cert_verifier,
+            domain,
+            self.assume_http2,
+            self.use_key_log,
+            self.timeout,
+            #[cfg(feature = "tls-native-roots")]
+            self.with_native_roots,
+            #[cfg(feature = "tls-webpki-roots")]
+            self.with_webpki_roots,
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_into_tls_connector_with_ipv4() {
+        let config = ClientTlsConfig::new();
+        let uri = "https://192.168.1.1:443".parse::<Uri>().unwrap();
+        config.into_tls_connector(&uri).unwrap();
+    }
+
+    #[test]
+    fn test_into_tls_connector_with_ipv6_() {
+        let config = ClientTlsConfig::new();
+        let uri = "https://[::1]:443".parse::<Uri>().unwrap();
+
+        config.into_tls_connector(&uri).unwrap();
+    }
+
+    #[test]
+    fn test_into_tls_connector_with_domain_name() {
+        let config = ClientTlsConfig::new();
+        let uri = "https://example.com:443".parse::<Uri>().unwrap();
+
+        config.into_tls_connector(&uri).unwrap();
+    }
+
+    #[test]
+    fn test_into_tls_connector_with_explicit_domain() {
+        let config = ClientTlsConfig::new().domain_name("example.com");
+        let uri = "https://[2001:db8::1]:443".parse::<Uri>().unwrap();
+
+        config.into_tls_connector(&uri).unwrap();
+    }
+
+    #[test]
+    fn test_into_tls_connector_with_verifier_with_ipv6() {
+        use tokio_rustls::rustls::DigitallySignedStruct;
+        use tokio_rustls::rustls::client::danger::{
+            HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier,
+        };
+        use tokio_rustls::rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+
+        #[derive(Debug)]
+        struct DummyVerifier;
+
+        impl ServerCertVerifier for DummyVerifier {
+            fn verify_server_cert(
+                &self,
+                _end_entity: &CertificateDer<'_>,
+                _intermediates: &[CertificateDer<'_>],
+                _server_name: &ServerName<'_>,
+                _ocsp_response: &[u8],
+                _now: UnixTime,
+            ) -> Result<ServerCertVerified, tokio_rustls::rustls::Error> {
+                Ok(ServerCertVerified::assertion())
+            }
+
+            fn verify_tls12_signature(
+                &self,
+                _message: &[u8],
+                _cert: &CertificateDer<'_>,
+                _dss: &DigitallySignedStruct,
+            ) -> Result<HandshakeSignatureValid, tokio_rustls::rustls::Error> {
+                Ok(HandshakeSignatureValid::assertion())
+            }
+
+            fn verify_tls13_signature(
+                &self,
+                _message: &[u8],
+                _cert: &CertificateDer<'_>,
+                _dss: &DigitallySignedStruct,
+            ) -> Result<HandshakeSignatureValid, tokio_rustls::rustls::Error> {
+                Ok(HandshakeSignatureValid::assertion())
+            }
+
+            fn supported_verify_schemes(&self) -> Vec<tokio_rustls::rustls::SignatureScheme> {
+                tokio_rustls::rustls::crypto::ring::default_provider()
+                    .signature_verification_algorithms
+                    .supported_schemes()
+            }
+        }
+
+        let config = ClientTlsConfig::new();
+        let uri = "https://[::1]:443".parse::<Uri>().unwrap();
+        config
+            .into_tls_connector_with_verifier(&uri, Arc::new(DummyVerifier))
+            .unwrap();
     }
 }

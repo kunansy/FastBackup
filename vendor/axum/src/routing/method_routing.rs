@@ -8,18 +8,19 @@ use crate::{
     boxed::BoxedIntoRoute,
     error_handling::{HandleError, HandleErrorLayer},
     handler::Handler,
-    http::{Method, Request, StatusCode},
+    http::{Method, StatusCode},
     response::Response,
     routing::{future::RouteFuture, Fallback, MethodFilter, Route},
 };
-use axum_core::response::IntoResponse;
+use axum_core::{extract::Request, response::IntoResponse, BoxError};
 use bytes::BytesMut;
 use std::{
+    borrow::Cow,
     convert::Infallible,
     fmt,
     task::{Context, Poll},
 };
-use tower::{service_fn, util::MapResponseLayer};
+use tower::service_fn;
 use tower_layer::Layer;
 use tower_service::Service;
 
@@ -34,23 +35,21 @@ macro_rules! top_level_service_fn {
             ///
             /// ```rust
             /// use axum::{
-            ///     http::Request,
+            ///     extract::Request,
             ///     Router,
             ///     routing::get_service,
+            ///     body::Body,
             /// };
             /// use http::Response;
             /// use std::convert::Infallible;
-            /// use hyper::Body;
             ///
-            /// let service = tower::service_fn(|request: Request<Body>| async {
+            /// let service = tower::service_fn(|request: Request| async {
             ///     Ok::<_, Infallible>(Response::new(Body::empty()))
             /// });
             ///
             /// // Requests to `GET /` will go to `service`.
             /// let app = Router::new().route("/", get_service(service));
-            /// # async {
-            /// # axum::Server::bind(&"".parse().unwrap()).serve(app.into_make_service()).await.unwrap();
-            /// # };
+            /// # let _: Router = app;
             /// ```
             ///
             /// Note that `get` routes will also be called for `HEAD` requests but will have
@@ -58,6 +57,19 @@ macro_rules! top_level_service_fn {
             /// afterwards.
             $name,
             GET
+        );
+    };
+
+    (
+        $name:ident, CONNECT
+    ) => {
+        top_level_service_fn!(
+            /// Route `CONNECT` requests to the given service.
+            ///
+            /// See [`MethodFilter::CONNECT`] for when you'd want to use this,
+            /// and [`get_service`] for an example.
+            $name,
+            CONNECT
         );
     };
 
@@ -78,12 +90,11 @@ macro_rules! top_level_service_fn {
         $name:ident, $method:ident
     ) => {
         $(#[$m])+
-        pub fn $name<T, S, B>(svc: T) -> MethodRouter<S, B, T::Error>
+        pub fn $name<T, S>(svc: T) -> MethodRouter<S, T::Error>
         where
-            T: Service<Request<B>> + Clone + Send + 'static,
+            T: Service<Request> + Clone + Send + Sync + 'static,
             T::Response: IntoResponse + 'static,
             T::Future: Send + 'static,
-            B: HttpBody + Send + 'static,
             S: Clone,
         {
             on_service(MethodFilter::$method, svc)
@@ -110,9 +121,7 @@ macro_rules! top_level_handler_fn {
             ///
             /// // Requests to `GET /` will go to `handler`.
             /// let app = Router::new().route("/", get(handler));
-            /// # async {
-            /// # axum::Server::bind(&"".parse().unwrap()).serve(app.into_make_service()).await.unwrap();
-            /// # };
+            /// # let _: Router = app;
             /// ```
             ///
             /// Note that `get` routes will also be called for `HEAD` requests but will have
@@ -120,6 +129,19 @@ macro_rules! top_level_handler_fn {
             /// afterwards.
             $name,
             GET
+        );
+    };
+
+    (
+        $name:ident, CONNECT
+    ) => {
+        top_level_handler_fn!(
+            /// Route `CONNECT` requests to the given handler.
+            ///
+            /// See [`MethodFilter::CONNECT`] for when you'd want to use this,
+            /// and [`get`] for an example.
+            $name,
+            CONNECT
         );
     };
 
@@ -140,10 +162,9 @@ macro_rules! top_level_handler_fn {
         $name:ident, $method:ident
     ) => {
         $(#[$m])+
-        pub fn $name<H, T, S, B>(handler: H) -> MethodRouter<S, B, Infallible>
+        pub fn $name<H, T, S>(handler: H) -> MethodRouter<S, Infallible>
         where
-            H: Handler<T, S, B>,
-            B: HttpBody + Send + 'static,
+            H: Handler<T, S>,
             T: 'static,
             S: Clone + Send + Sync + 'static,
         {
@@ -163,28 +184,26 @@ macro_rules! chained_service_fn {
             ///
             /// ```rust
             /// use axum::{
-            ///     http::Request,
+            ///     extract::Request,
             ///     Router,
             ///     routing::post_service,
+            ///     body::Body,
             /// };
             /// use http::Response;
             /// use std::convert::Infallible;
-            /// use hyper::Body;
             ///
-            /// let service = tower::service_fn(|request: Request<Body>| async {
+            /// let service = tower::service_fn(|request: Request| async {
             ///     Ok::<_, Infallible>(Response::new(Body::empty()))
             /// });
             ///
-            /// let other_service = tower::service_fn(|request: Request<Body>| async {
+            /// let other_service = tower::service_fn(|request: Request| async {
             ///     Ok::<_, Infallible>(Response::new(Body::empty()))
             /// });
             ///
             /// // Requests to `POST /` will go to `service` and `GET /` will go to
             /// // `other_service`.
             /// let app = Router::new().route("/", post_service(service).get_service(other_service));
-            /// # async {
-            /// # axum::Server::bind(&"".parse().unwrap()).serve(app.into_make_service()).await.unwrap();
-            /// # };
+            /// # let _: Router = app;
             /// ```
             ///
             /// Note that `get` routes will also be called for `HEAD` requests but will have
@@ -192,6 +211,19 @@ macro_rules! chained_service_fn {
             /// afterwards.
             $name,
             GET
+        );
+    };
+
+    (
+        $name:ident, CONNECT
+    ) => {
+        chained_service_fn!(
+            /// Chain an additional service that will only accept `CONNECT` requests.
+            ///
+            /// See [`MethodFilter::CONNECT`] for when you'd want to use this,
+            /// and [`MethodRouter::get_service`] for an example.
+            $name,
+            CONNECT
         );
     };
 
@@ -215,9 +247,10 @@ macro_rules! chained_service_fn {
         #[track_caller]
         pub fn $name<T>(self, svc: T) -> Self
         where
-            T: Service<Request<B>, Error = E>
+            T: Service<Request, Error = E>
                 + Clone
                 + Send
+                + Sync
                 + 'static,
             T::Response: IntoResponse + 'static,
             T::Future: Send + 'static,
@@ -246,9 +279,7 @@ macro_rules! chained_handler_fn {
             /// // Requests to `POST /` will go to `handler` and `GET /` will go to
             /// // `other_handler`.
             /// let app = Router::new().route("/", post(handler).get(other_handler));
-            /// # async {
-            /// # axum::Server::bind(&"".parse().unwrap()).serve(app.into_make_service()).await.unwrap();
-            /// # };
+            /// # let _: Router = app;
             /// ```
             ///
             /// Note that `get` routes will also be called for `HEAD` requests but will have
@@ -256,6 +287,19 @@ macro_rules! chained_handler_fn {
             /// afterwards.
             $name,
             GET
+        );
+    };
+
+    (
+        $name:ident, CONNECT
+    ) => {
+        chained_handler_fn!(
+            /// Chain an additional handler that will only accept `CONNECT` requests.
+            ///
+            /// See [`MethodFilter::CONNECT`] for when you'd want to use this,
+            /// and [`MethodRouter::get`] for an example.
+            $name,
+            CONNECT
         );
     };
 
@@ -279,7 +323,7 @@ macro_rules! chained_handler_fn {
         #[track_caller]
         pub fn $name<H, T>(self, handler: H) -> Self
         where
-            H: Handler<T, S, B>,
+            H: Handler<T, S>,
             T: 'static,
             S: Send + Sync + 'static,
         {
@@ -288,6 +332,7 @@ macro_rules! chained_handler_fn {
     };
 }
 
+top_level_service_fn!(connect_service, CONNECT);
 top_level_service_fn!(delete_service, DELETE);
 top_level_service_fn!(get_service, GET);
 top_level_service_fn!(head_service, HEAD);
@@ -303,31 +348,28 @@ top_level_service_fn!(trace_service, TRACE);
 ///
 /// ```rust
 /// use axum::{
-///     http::Request,
+///     extract::Request,
 ///     routing::on,
 ///     Router,
+///     body::Body,
 ///     routing::{MethodFilter, on_service},
 /// };
 /// use http::Response;
 /// use std::convert::Infallible;
-/// use hyper::Body;
 ///
-/// let service = tower::service_fn(|request: Request<Body>| async {
+/// let service = tower::service_fn(|request: Request| async {
 ///     Ok::<_, Infallible>(Response::new(Body::empty()))
 /// });
 ///
 /// // Requests to `POST /` will go to `service`.
 /// let app = Router::new().route("/", on_service(MethodFilter::POST, service));
-/// # async {
-/// # axum::Server::bind(&"".parse().unwrap()).serve(app.into_make_service()).await.unwrap();
-/// # };
+/// # let _: Router = app;
 /// ```
-pub fn on_service<T, S, B>(filter: MethodFilter, svc: T) -> MethodRouter<S, B, T::Error>
+pub fn on_service<T, S>(filter: MethodFilter, svc: T) -> MethodRouter<S, T::Error>
 where
-    T: Service<Request<B>> + Clone + Send + 'static,
+    T: Service<Request> + Clone + Send + Sync + 'static,
     T::Response: IntoResponse + 'static,
     T::Future: Send + 'static,
-    B: HttpBody + Send + 'static,
     S: Clone,
 {
     MethodRouter::new().on_service(filter, svc)
@@ -339,59 +381,54 @@ where
 ///
 /// ```rust
 /// use axum::{
-///     http::Request,
+///     extract::Request,
 ///     Router,
 ///     routing::any_service,
+///     body::Body,
 /// };
 /// use http::Response;
 /// use std::convert::Infallible;
-/// use hyper::Body;
 ///
-/// let service = tower::service_fn(|request: Request<Body>| async {
+/// let service = tower::service_fn(|request: Request| async {
 ///     Ok::<_, Infallible>(Response::new(Body::empty()))
 /// });
 ///
 /// // All requests to `/` will go to `service`.
 /// let app = Router::new().route("/", any_service(service));
-/// # async {
-/// # axum::Server::bind(&"".parse().unwrap()).serve(app.into_make_service()).await.unwrap();
-/// # };
+/// # let _: Router = app;
 /// ```
 ///
 /// Additional methods can still be chained:
 ///
 /// ```rust
 /// use axum::{
-///     http::Request,
+///     extract::Request,
 ///     Router,
 ///     routing::any_service,
+///     body::Body,
 /// };
 /// use http::Response;
 /// use std::convert::Infallible;
-/// use hyper::Body;
 ///
-/// let service = tower::service_fn(|request: Request<Body>| async {
+/// let service = tower::service_fn(|request: Request| async {
 ///     # Ok::<_, Infallible>(Response::new(Body::empty()))
 ///     // ...
 /// });
 ///
-/// let other_service = tower::service_fn(|request: Request<Body>| async {
+/// let other_service = tower::service_fn(|request: Request| async {
 ///     # Ok::<_, Infallible>(Response::new(Body::empty()))
 ///     // ...
 /// });
 ///
 /// // `POST /` goes to `other_service`. All other requests go to `service`
 /// let app = Router::new().route("/", any_service(service).post_service(other_service));
-/// # async {
-/// # axum::Server::bind(&"".parse().unwrap()).serve(app.into_make_service()).await.unwrap();
-/// # };
+/// # let _: Router = app;
 /// ```
-pub fn any_service<T, S, B>(svc: T) -> MethodRouter<S, B, T::Error>
+pub fn any_service<T, S>(svc: T) -> MethodRouter<S, T::Error>
 where
-    T: Service<Request<B>> + Clone + Send + 'static,
+    T: Service<Request> + Clone + Send + Sync + 'static,
     T::Response: IntoResponse + 'static,
     T::Future: Send + 'static,
-    B: HttpBody + Send + 'static,
     S: Clone,
 {
     MethodRouter::new()
@@ -399,6 +436,7 @@ where
         .skip_allow_header()
 }
 
+top_level_handler_fn!(connect, CONNECT);
 top_level_handler_fn!(delete, DELETE);
 top_level_handler_fn!(get, GET);
 top_level_handler_fn!(head, HEAD);
@@ -423,14 +461,11 @@ top_level_handler_fn!(trace, TRACE);
 ///
 /// // Requests to `POST /` will go to `handler`.
 /// let app = Router::new().route("/", on(MethodFilter::POST, handler));
-/// # async {
-/// # axum::Server::bind(&"".parse().unwrap()).serve(app.into_make_service()).await.unwrap();
-/// # };
+/// # let _: Router = app;
 /// ```
-pub fn on<H, T, S, B>(filter: MethodFilter, handler: H) -> MethodRouter<S, B, Infallible>
+pub fn on<H, T, S>(filter: MethodFilter, handler: H) -> MethodRouter<S, Infallible>
 where
-    H: Handler<T, S, B>,
-    B: HttpBody + Send + 'static,
+    H: Handler<T, S>,
     T: 'static,
     S: Clone + Send + Sync + 'static,
 {
@@ -451,9 +486,7 @@ where
 ///
 /// // All requests to `/` will go to `handler`.
 /// let app = Router::new().route("/", any(handler));
-/// # async {
-/// # axum::Server::bind(&"".parse().unwrap()).serve(app.into_make_service()).await.unwrap();
-/// # };
+/// # let _: Router = app;
 /// ```
 ///
 /// Additional methods can still be chained:
@@ -470,14 +503,11 @@ where
 ///
 /// // `POST /` goes to `other_handler`. All other requests go to `handler`
 /// let app = Router::new().route("/", any(handler).post(other_handler));
-/// # async {
-/// # axum::Server::bind(&"".parse().unwrap()).serve(app.into_make_service()).await.unwrap();
-/// # };
+/// # let _: Router = app;
 /// ```
-pub fn any<H, T, S, B>(handler: H) -> MethodRouter<S, B, Infallible>
+pub fn any<H, T, S>(handler: H) -> MethodRouter<S, Infallible>
 where
-    H: Handler<T, S, B>,
-    B: HttpBody + Send + 'static,
+    H: Handler<T, S>,
     T: 'static,
     S: Clone + Send + Sync + 'static,
 {
@@ -493,7 +523,7 @@ where
 ///
 /// ```
 /// use tower::Service;
-/// use axum::{routing::get, extract::State, body::Body, http::Request};
+/// use axum::{routing::get, extract::{State, Request}, body::Body};
 ///
 /// // this `MethodRouter` doesn't require any state, i.e. the state is `()`,
 /// let method_router = get(|| async {});
@@ -510,20 +540,21 @@ where
 /// // helper to check that a value implements `Service`
 /// fn assert_service<S>(service: S)
 /// where
-///     S: Service<Request<Body>>,
+///     S: Service<Request>,
 /// {}
 /// ```
 #[must_use]
-pub struct MethodRouter<S = (), B = Body, E = Infallible> {
-    get: MethodEndpoint<S, B, E>,
-    head: MethodEndpoint<S, B, E>,
-    delete: MethodEndpoint<S, B, E>,
-    options: MethodEndpoint<S, B, E>,
-    patch: MethodEndpoint<S, B, E>,
-    post: MethodEndpoint<S, B, E>,
-    put: MethodEndpoint<S, B, E>,
-    trace: MethodEndpoint<S, B, E>,
-    fallback: Fallback<S, B, E>,
+pub struct MethodRouter<S = (), E = Infallible> {
+    get: MethodEndpoint<S, E>,
+    head: MethodEndpoint<S, E>,
+    delete: MethodEndpoint<S, E>,
+    options: MethodEndpoint<S, E>,
+    patch: MethodEndpoint<S, E>,
+    post: MethodEndpoint<S, E>,
+    put: MethodEndpoint<S, E>,
+    trace: MethodEndpoint<S, E>,
+    connect: MethodEndpoint<S, E>,
+    fallback: Fallback<S, E>,
     allow_header: AllowHeader,
 }
 
@@ -553,7 +584,7 @@ impl AllowHeader {
     }
 }
 
-impl<S, B, E> fmt::Debug for MethodRouter<S, B, E> {
+impl<S, E> fmt::Debug for MethodRouter<S, E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MethodRouter")
             .field("get", &self.get)
@@ -564,15 +595,15 @@ impl<S, B, E> fmt::Debug for MethodRouter<S, B, E> {
             .field("post", &self.post)
             .field("put", &self.put)
             .field("trace", &self.trace)
+            .field("connect", &self.connect)
             .field("fallback", &self.fallback)
             .field("allow_header", &self.allow_header)
             .finish()
     }
 }
 
-impl<S, B> MethodRouter<S, B, Infallible>
+impl<S> MethodRouter<S, Infallible>
 where
-    B: HttpBody + Send + 'static,
     S: Clone,
 {
     /// Chain an additional handler that will accept requests matching the given
@@ -594,14 +625,12 @@ where
     /// // Requests to `GET /` will go to `handler` and `DELETE /` will go to
     /// // `other_handler`
     /// let app = Router::new().route("/", get(handler).on(MethodFilter::DELETE, other_handler));
-    /// # async {
-    /// # axum::Server::bind(&"".parse().unwrap()).serve(app.into_make_service()).await.unwrap();
-    /// # };
+    /// # let _: Router = app;
     /// ```
     #[track_caller]
     pub fn on<H, T>(self, filter: MethodFilter, handler: H) -> Self
     where
-        H: Handler<T, S, B>,
+        H: Handler<T, S>,
         T: 'static,
         S: Send + Sync + 'static,
     {
@@ -611,6 +640,7 @@ where
         )
     }
 
+    chained_handler_fn!(connect, CONNECT);
     chained_handler_fn!(delete, DELETE);
     chained_handler_fn!(get, GET);
     chained_handler_fn!(head, HEAD);
@@ -623,26 +653,36 @@ where
     /// Add a fallback [`Handler`] to the router.
     pub fn fallback<H, T>(mut self, handler: H) -> Self
     where
-        H: Handler<T, S, B>,
+        H: Handler<T, S>,
         T: 'static,
         S: Send + Sync + 'static,
     {
         self.fallback = Fallback::BoxedHandler(BoxedIntoRoute::from_handler(handler));
         self
     }
+
+    /// Add a fallback [`Handler`] if no custom one has been provided.
+    pub(crate) fn default_fallback<H, T>(self, handler: H) -> Self
+    where
+        H: Handler<T, S>,
+        T: 'static,
+        S: Send + Sync + 'static,
+    {
+        match self.fallback {
+            Fallback::Default(_) => self.fallback(handler),
+            _ => self,
+        }
+    }
 }
 
-impl<B> MethodRouter<(), B, Infallible>
-where
-    B: HttpBody + Send + 'static,
-{
-    /// Convert the handler into a [`MakeService`].
+impl MethodRouter<(), Infallible> {
+    /// Convert the router into a [`MakeService`].
     ///
-    /// This allows you to serve a single handler if you don't need any routing:
+    /// This allows you to serve a single `MethodRouter` if you don't need any
+    /// routing based on the path:
     ///
     /// ```rust
     /// use axum::{
-    ///     Server,
     ///     handler::Handler,
     ///     http::{Uri, Method},
     ///     response::IntoResponse,
@@ -651,20 +691,19 @@ where
     /// use std::net::SocketAddr;
     ///
     /// async fn handler(method: Method, uri: Uri, body: String) -> String {
-    ///     format!("received `{} {}` with body `{:?}`", method, uri, body)
+    ///     format!("received `{method} {uri}` with body `{body:?}`")
     /// }
     ///
     /// let router = get(handler).post(handler);
     ///
     /// # async {
-    /// Server::bind(&SocketAddr::from(([127, 0, 0, 1], 3000)))
-    ///     .serve(router.into_make_service())
-    ///     .await?;
-    /// # Ok::<_, hyper::Error>(())
+    /// let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    /// axum::serve(listener, router.into_make_service()).await.unwrap();
     /// # };
     /// ```
     ///
     /// [`MakeService`]: tower::make::MakeService
+    #[must_use]
     pub fn into_make_service(self) -> IntoMakeService<Self> {
         IntoMakeService::new(self.with_state(()))
     }
@@ -676,7 +715,6 @@ where
     ///
     /// ```rust
     /// use axum::{
-    ///     Server,
     ///     handler::Handler,
     ///     response::IntoResponse,
     ///     extract::ConnectInfo,
@@ -685,37 +723,35 @@ where
     /// use std::net::SocketAddr;
     ///
     /// async fn handler(ConnectInfo(addr): ConnectInfo<SocketAddr>) -> String {
-    ///     format!("Hello {}", addr)
+    ///     format!("Hello {addr}")
     /// }
     ///
     /// let router = get(handler).post(handler);
     ///
     /// # async {
-    /// Server::bind(&SocketAddr::from(([127, 0, 0, 1], 3000)))
-    ///     .serve(router.into_make_service_with_connect_info::<SocketAddr>())
-    ///     .await?;
-    /// # Ok::<_, hyper::Error>(())
+    /// let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    /// axum::serve(listener, router.into_make_service()).await.unwrap();
     /// # };
     /// ```
     ///
     /// [`MakeService`]: tower::make::MakeService
     /// [`Router::into_make_service_with_connect_info`]: crate::routing::Router::into_make_service_with_connect_info
     #[cfg(feature = "tokio")]
+    #[must_use]
     pub fn into_make_service_with_connect_info<C>(self) -> IntoMakeServiceWithConnectInfo<Self, C> {
         IntoMakeServiceWithConnectInfo::new(self.with_state(()))
     }
 }
 
-impl<S, B, E> MethodRouter<S, B, E>
+impl<S, E> MethodRouter<S, E>
 where
-    B: HttpBody + Send + 'static,
     S: Clone,
 {
     /// Create a default `MethodRouter` that will respond with `405 Method Not Allowed` to all
     /// requests.
     pub fn new() -> Self {
-        let fallback = Route::new(service_fn(|_: Request<B>| async {
-            Ok(StatusCode::METHOD_NOT_ALLOWED.into_response())
+        let fallback = Route::new(service_fn(|_: Request| async {
+            Ok(StatusCode::METHOD_NOT_ALLOWED)
         }));
 
         Self {
@@ -727,13 +763,14 @@ where
             post: MethodEndpoint::None,
             put: MethodEndpoint::None,
             trace: MethodEndpoint::None,
+            connect: MethodEndpoint::None,
             allow_header: AllowHeader::None,
             fallback: Fallback::Default(fallback),
         }
     }
 
     /// Provide the state for the router.
-    pub fn with_state<S2>(self, state: S) -> MethodRouter<S2, B, E> {
+    pub fn with_state<S2>(self, state: S) -> MethodRouter<S2, E> {
         MethodRouter {
             get: self.get.with_state(&state),
             head: self.head.with_state(&state),
@@ -743,6 +780,7 @@ where
             post: self.post.with_state(&state),
             put: self.put.with_state(&state),
             trace: self.trace.with_state(&state),
+            connect: self.connect.with_state(&state),
             allow_header: self.allow_header,
             fallback: self.fallback.with_state(state),
         }
@@ -755,28 +793,26 @@ where
     ///
     /// ```rust
     /// use axum::{
-    ///     http::Request,
+    ///     extract::Request,
     ///     Router,
     ///     routing::{MethodFilter, on_service},
+    ///     body::Body,
     /// };
     /// use http::Response;
     /// use std::convert::Infallible;
-    /// use hyper::Body;
     ///
-    /// let service = tower::service_fn(|request: Request<Body>| async {
+    /// let service = tower::service_fn(|request: Request| async {
     ///     Ok::<_, Infallible>(Response::new(Body::empty()))
     /// });
     ///
     /// // Requests to `DELETE /` will go to `service`
     /// let app = Router::new().route("/", on_service(MethodFilter::DELETE, service));
-    /// # async {
-    /// # axum::Server::bind(&"".parse().unwrap()).serve(app.into_make_service()).await.unwrap();
-    /// # };
+    /// # let _: Router = app;
     /// ```
     #[track_caller]
     pub fn on_service<T>(self, filter: MethodFilter, svc: T) -> Self
     where
-        T: Service<Request<B>, Error = E> + Clone + Send + 'static,
+        T: Service<Request, Error = E> + Clone + Send + Sync + 'static,
         T::Response: IntoResponse + 'static,
         T::Future: Send + 'static,
     {
@@ -784,19 +820,19 @@ where
     }
 
     #[track_caller]
-    fn on_endpoint(mut self, filter: MethodFilter, endpoint: MethodEndpoint<S, B, E>) -> Self {
+    fn on_endpoint(mut self, filter: MethodFilter, endpoint: MethodEndpoint<S, E>) -> Self {
         // written as a separate function to generate less IR
         #[track_caller]
-        fn set_endpoint<S, B, E>(
+        fn set_endpoint<S, E>(
             method_name: &str,
-            out: &mut MethodEndpoint<S, B, E>,
-            endpoint: &MethodEndpoint<S, B, E>,
+            out: &mut MethodEndpoint<S, E>,
+            endpoint: &MethodEndpoint<S, E>,
             endpoint_filter: MethodFilter,
             filter: MethodFilter,
             allow_header: &mut AllowHeader,
             methods: &[&'static str],
         ) where
-            MethodEndpoint<S, B, E>: Clone,
+            MethodEndpoint<S, E>: Clone,
             S: Clone,
         {
             if endpoint_filter.contains(filter) {
@@ -893,9 +929,20 @@ where
             &["DELETE"],
         );
 
+        set_endpoint(
+            "CONNECT",
+            &mut self.connect,
+            &endpoint,
+            filter,
+            MethodFilter::CONNECT,
+            &mut self.allow_header,
+            &["CONNECT"],
+        );
+
         self
     }
 
+    chained_service_fn!(connect_service, CONNECT);
     chained_service_fn!(delete_service, DELETE);
     chained_service_fn!(get_service, GET);
     chained_service_fn!(head_service, HEAD);
@@ -908,7 +955,7 @@ where
     #[doc = include_str!("../docs/method_routing/fallback.md")]
     pub fn fallback_service<T>(mut self, svc: T) -> Self
     where
-        T: Service<Request<B>, Error = E> + Clone + Send + 'static,
+        T: Service<Request, Error = E> + Clone + Send + Sync + 'static,
         T::Response: IntoResponse + 'static,
         T::Future: Send + 'static,
     {
@@ -917,19 +964,18 @@ where
     }
 
     #[doc = include_str!("../docs/method_routing/layer.md")]
-    pub fn layer<L, NewReqBody, NewError>(self, layer: L) -> MethodRouter<S, NewReqBody, NewError>
+    pub fn layer<L, NewError>(self, layer: L) -> MethodRouter<S, NewError>
     where
-        L: Layer<Route<B, E>> + Clone + Send + 'static,
-        L::Service: Service<Request<NewReqBody>> + Clone + Send + 'static,
-        <L::Service as Service<Request<NewReqBody>>>::Response: IntoResponse + 'static,
-        <L::Service as Service<Request<NewReqBody>>>::Error: Into<NewError> + 'static,
-        <L::Service as Service<Request<NewReqBody>>>::Future: Send + 'static,
+        L: Layer<Route<E>> + Clone + Send + Sync + 'static,
+        L::Service: Service<Request> + Clone + Send + Sync + 'static,
+        <L::Service as Service<Request>>::Response: IntoResponse + 'static,
+        <L::Service as Service<Request>>::Error: Into<NewError> + 'static,
+        <L::Service as Service<Request>>::Future: Send + 'static,
         E: 'static,
         S: 'static,
-        NewReqBody: HttpBody + 'static,
         NewError: 'static,
     {
-        let layer_fn = move |route: Route<B, E>| route.layer(layer.clone());
+        let layer_fn = move |route: Route<E>| route.layer(layer.clone());
 
         MethodRouter {
             get: self.get.map(layer_fn.clone()),
@@ -940,6 +986,7 @@ where
             post: self.post.map(layer_fn.clone()),
             put: self.put.map(layer_fn.clone()),
             trace: self.trace.map(layer_fn.clone()),
+            connect: self.connect.map(layer_fn.clone()),
             fallback: self.fallback.map(layer_fn),
             allow_header: self.allow_header,
         }
@@ -947,12 +994,12 @@ where
 
     #[doc = include_str!("../docs/method_routing/route_layer.md")]
     #[track_caller]
-    pub fn route_layer<L>(mut self, layer: L) -> MethodRouter<S, B, E>
+    pub fn route_layer<L>(mut self, layer: L) -> MethodRouter<S, E>
     where
-        L: Layer<Route<B, E>> + Clone + Send + 'static,
-        L::Service: Service<Request<B>, Error = E> + Clone + Send + 'static,
-        <L::Service as Service<Request<B>>>::Response: IntoResponse + 'static,
-        <L::Service as Service<Request<B>>>::Future: Send + 'static,
+        L: Layer<Route<E>> + Clone + Send + Sync + 'static,
+        L::Service: Service<Request, Error = E> + Clone + Send + Sync + 'static,
+        <L::Service as Service<Request>>::Response: IntoResponse + 'static,
+        <L::Service as Service<Request>>::Future: Send + 'static,
         E: 'static,
         S: 'static,
     {
@@ -964,6 +1011,7 @@ where
             && self.post.is_none()
             && self.put.is_none()
             && self.trace.is_none()
+            && self.connect.is_none()
         {
             panic!(
                 "Adding a route_layer before any routes is a no-op. \
@@ -971,11 +1019,7 @@ where
             );
         }
 
-        let layer_fn = move |svc| {
-            let svc = layer.layer(svc);
-            let svc = MapResponseLayer::new(IntoResponse::into_response).layer(svc);
-            Route::new(svc)
-        };
+        let layer_fn = move |svc| Route::new(layer.layer(svc));
 
         self.get = self.get.map(layer_fn.clone());
         self.head = self.head.map(layer_fn.clone());
@@ -984,80 +1028,85 @@ where
         self.patch = self.patch.map(layer_fn.clone());
         self.post = self.post.map(layer_fn.clone());
         self.put = self.put.map(layer_fn.clone());
-        self.trace = self.trace.map(layer_fn);
+        self.trace = self.trace.map(layer_fn.clone());
+        self.connect = self.connect.map(layer_fn);
 
         self
     }
 
-    #[track_caller]
     pub(crate) fn merge_for_path(
         mut self,
         path: Option<&str>,
-        other: MethodRouter<S, B, E>,
-    ) -> Self {
+        other: MethodRouter<S, E>,
+    ) -> Result<Self, Cow<'static, str>> {
         // written using inner functions to generate less IR
-        #[track_caller]
-        fn merge_inner<S, B, E>(
+        fn merge_inner<S, E>(
             path: Option<&str>,
             name: &str,
-            first: MethodEndpoint<S, B, E>,
-            second: MethodEndpoint<S, B, E>,
-        ) -> MethodEndpoint<S, B, E> {
+            first: MethodEndpoint<S, E>,
+            second: MethodEndpoint<S, E>,
+        ) -> Result<MethodEndpoint<S, E>, Cow<'static, str>> {
             match (first, second) {
-                (MethodEndpoint::None, MethodEndpoint::None) => MethodEndpoint::None,
-                (pick, MethodEndpoint::None) | (MethodEndpoint::None, pick) => pick,
+                (MethodEndpoint::None, MethodEndpoint::None) => Ok(MethodEndpoint::None),
+                (pick, MethodEndpoint::None) | (MethodEndpoint::None, pick) => Ok(pick),
                 _ => {
                     if let Some(path) = path {
-                        panic!(
+                        Err(format!(
                             "Overlapping method route. Handler for `{name} {path}` already exists"
-                        );
+                        )
+                        .into())
                     } else {
-                        panic!(
+                        Err(format!(
                             "Overlapping method route. Cannot merge two method routes that both \
                              define `{name}`"
-                        );
+                        )
+                        .into())
                     }
                 }
             }
         }
 
-        self.get = merge_inner(path, "GET", self.get, other.get);
-        self.head = merge_inner(path, "HEAD", self.head, other.head);
-        self.delete = merge_inner(path, "DELETE", self.delete, other.delete);
-        self.options = merge_inner(path, "OPTIONS", self.options, other.options);
-        self.patch = merge_inner(path, "PATCH", self.patch, other.patch);
-        self.post = merge_inner(path, "POST", self.post, other.post);
-        self.put = merge_inner(path, "PUT", self.put, other.put);
-        self.trace = merge_inner(path, "TRACE", self.trace, other.trace);
+        self.get = merge_inner(path, "GET", self.get, other.get)?;
+        self.head = merge_inner(path, "HEAD", self.head, other.head)?;
+        self.delete = merge_inner(path, "DELETE", self.delete, other.delete)?;
+        self.options = merge_inner(path, "OPTIONS", self.options, other.options)?;
+        self.patch = merge_inner(path, "PATCH", self.patch, other.patch)?;
+        self.post = merge_inner(path, "POST", self.post, other.post)?;
+        self.put = merge_inner(path, "PUT", self.put, other.put)?;
+        self.trace = merge_inner(path, "TRACE", self.trace, other.trace)?;
+        self.connect = merge_inner(path, "CONNECT", self.connect, other.connect)?;
 
         self.fallback = self
             .fallback
             .merge(other.fallback)
-            .expect("Cannot merge two `MethodRouter`s that both have a fallback");
+            .ok_or("Cannot merge two `MethodRouter`s that both have a fallback")?;
 
         self.allow_header = self.allow_header.merge(other.allow_header);
 
-        self
+        Ok(self)
     }
 
     #[doc = include_str!("../docs/method_routing/merge.md")]
     #[track_caller]
-    pub fn merge(self, other: MethodRouter<S, B, E>) -> Self {
-        self.merge_for_path(None, other)
+    pub fn merge(self, other: MethodRouter<S, E>) -> Self {
+        match self.merge_for_path(None, other) {
+            Ok(t) => t,
+            // not using unwrap or unwrap_or_else to get a clean panic message + the right location
+            Err(e) => panic!("{e}"),
+        }
     }
 
     /// Apply a [`HandleErrorLayer`].
     ///
     /// This is a convenience method for doing `self.layer(HandleErrorLayer::new(f))`.
-    pub fn handle_error<F, T>(self, f: F) -> MethodRouter<S, B, Infallible>
+    pub fn handle_error<F, T>(self, f: F) -> MethodRouter<S, Infallible>
     where
         F: Clone + Send + Sync + 'static,
-        HandleError<Route<B, E>, F, T>: Service<Request<B>, Error = Infallible>,
-        <HandleError<Route<B, E>, F, T> as Service<Request<B>>>::Future: Send,
-        <HandleError<Route<B, E>, F, T> as Service<Request<B>>>::Response: IntoResponse + Send,
+        HandleError<Route<E>, F, T>: Service<Request, Error = Infallible>,
+        <HandleError<Route<E>, F, T> as Service<Request>>::Future: Send,
+        <HandleError<Route<E>, F, T> as Service<Request>>::Response: IntoResponse + Send,
         T: 'static,
         E: 'static,
-        B: 'static,
         S: 'static,
     {
         self.layer(HandleErrorLayer::new(f))
@@ -1068,32 +1117,27 @@ where
         self
     }
 
-    pub(crate) fn call_with_state(&mut self, req: Request<B>, state: S) -> RouteFuture<B, E> {
+    pub(crate) fn call_with_state(&self, req: Request, state: S) -> RouteFuture<E> {
         macro_rules! call {
             (
                 $req:expr,
-                $method:expr,
                 $method_variant:ident,
                 $svc:expr
             ) => {
-                if $method == Method::$method_variant {
+                if *req.method() == Method::$method_variant {
                     match $svc {
                         MethodEndpoint::None => {}
                         MethodEndpoint::Route(route) => {
-                            return RouteFuture::from_future(route.oneshot_inner($req))
-                                .strip_body($method == Method::HEAD);
+                            return route.clone().oneshot_inner_owned($req);
                         }
                         MethodEndpoint::BoxedHandler(handler) => {
-                            let mut route = handler.clone().into_route(state);
-                            return RouteFuture::from_future(route.oneshot_inner($req))
-                                .strip_body($method == Method::HEAD);
+                            let route = handler.clone().into_route(state);
+                            return route.oneshot_inner_owned($req);
                         }
                     }
                 }
             };
         }
-
-        let method = req.method().clone();
 
         // written with a pattern match like this to ensure we call all routes
         let Self {
@@ -1105,21 +1149,23 @@ where
             post,
             put,
             trace,
+            connect,
             fallback,
             allow_header,
         } = self;
 
-        call!(req, method, HEAD, head);
-        call!(req, method, HEAD, get);
-        call!(req, method, GET, get);
-        call!(req, method, POST, post);
-        call!(req, method, OPTIONS, options);
-        call!(req, method, PATCH, patch);
-        call!(req, method, PUT, put);
-        call!(req, method, DELETE, delete);
-        call!(req, method, TRACE, trace);
+        call!(req, HEAD, head);
+        call!(req, HEAD, get);
+        call!(req, GET, get);
+        call!(req, POST, post);
+        call!(req, OPTIONS, options);
+        call!(req, PATCH, patch);
+        call!(req, PUT, put);
+        call!(req, DELETE, delete);
+        call!(req, TRACE, trace);
+        call!(req, CONNECT, connect);
 
-        let future = fallback.call_with_state(req, state);
+        let future = fallback.clone().call_with_state(req, state);
 
         match allow_header {
             AllowHeader::None => future.allow_header(Bytes::new()),
@@ -1149,7 +1195,7 @@ fn append_allow_header(allow_header: &mut AllowHeader, method: &'static str) {
     }
 }
 
-impl<S, B, E> Clone for MethodRouter<S, B, E> {
+impl<S, E> Clone for MethodRouter<S, E> {
     fn clone(&self) -> Self {
         Self {
             get: self.get.clone(),
@@ -1160,15 +1206,15 @@ impl<S, B, E> Clone for MethodRouter<S, B, E> {
             post: self.post.clone(),
             put: self.put.clone(),
             trace: self.trace.clone(),
+            connect: self.connect.clone(),
             fallback: self.fallback.clone(),
             allow_header: self.allow_header.clone(),
         }
     }
 }
 
-impl<S, B, E> Default for MethodRouter<S, B, E>
+impl<S, E> Default for MethodRouter<S, E>
 where
-    B: HttpBody + Send + 'static,
     S: Clone,
 {
     fn default() -> Self {
@@ -1176,13 +1222,13 @@ where
     }
 }
 
-enum MethodEndpoint<S, B, E> {
+enum MethodEndpoint<S, E> {
     None,
-    Route(Route<B, E>),
-    BoxedHandler(BoxedIntoRoute<S, B, E>),
+    Route(Route<E>),
+    BoxedHandler(BoxedIntoRoute<S, E>),
 }
 
-impl<S, B, E> MethodEndpoint<S, B, E>
+impl<S, E> MethodEndpoint<S, E>
 where
     S: Clone,
 {
@@ -1194,13 +1240,11 @@ where
         matches!(self, Self::None)
     }
 
-    fn map<F, B2, E2>(self, f: F) -> MethodEndpoint<S, B2, E2>
+    fn map<F, E2>(self, f: F) -> MethodEndpoint<S, E2>
     where
         S: 'static,
-        B: 'static,
         E: 'static,
-        F: FnOnce(Route<B, E>) -> Route<B2, E2> + Clone + Send + 'static,
-        B2: HttpBody + 'static,
+        F: FnOnce(Route<E>) -> Route<E2> + Clone + Send + Sync + 'static,
         E2: 'static,
     {
         match self {
@@ -1210,7 +1254,7 @@ where
         }
     }
 
-    fn with_state<S2>(self, state: &S) -> MethodEndpoint<S2, B, E> {
+    fn with_state<S2>(self, state: &S) -> MethodEndpoint<S2, E> {
         match self {
             MethodEndpoint::None => MethodEndpoint::None,
             MethodEndpoint::Route(route) => MethodEndpoint::Route(route),
@@ -1221,7 +1265,7 @@ where
     }
 }
 
-impl<S, B, E> Clone for MethodEndpoint<S, B, E> {
+impl<S, E> Clone for MethodEndpoint<S, E> {
     fn clone(&self) -> Self {
         match self {
             Self::None => Self::None,
@@ -1231,7 +1275,7 @@ impl<S, B, E> Clone for MethodEndpoint<S, B, E> {
     }
 }
 
-impl<S, B, E> fmt::Debug for MethodEndpoint<S, B, E> {
+impl<S, E> fmt::Debug for MethodEndpoint<S, E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::None => f.debug_tuple("None").finish(),
@@ -1241,13 +1285,14 @@ impl<S, B, E> fmt::Debug for MethodEndpoint<S, B, E> {
     }
 }
 
-impl<B, E> Service<Request<B>> for MethodRouter<(), B, E>
+impl<B, E> Service<Request<B>> for MethodRouter<(), E>
 where
-    B: HttpBody + Send + 'static,
+    B: HttpBody<Data = Bytes> + Send + 'static,
+    B::Error: Into<BoxError>,
 {
     type Response = Response;
     type Error = E;
-    type Future = RouteFuture<B, E>;
+    type Future = RouteFuture<E>;
 
     #[inline]
     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -1256,34 +1301,57 @@ where
 
     #[inline]
     fn call(&mut self, req: Request<B>) -> Self::Future {
+        let req = req.map(Body::new);
         self.call_with_state(req, ())
     }
 }
 
-impl<S, B> Handler<(), S, B> for MethodRouter<S, B>
+#[diagnostic::do_not_recommend]
+impl<S> Handler<(), S> for MethodRouter<S>
 where
     S: Clone + 'static,
-    B: HttpBody + Send + 'static,
 {
-    type Future = InfallibleRouteFuture<B>;
+    type Future = InfallibleRouteFuture;
 
-    fn call(mut self, req: Request<B>, state: S) -> Self::Future {
+    fn call(self, req: Request, state: S) -> Self::Future {
         InfallibleRouteFuture::new(self.call_with_state(req, state))
     }
 }
 
+// for `axum::serve(listener, router)`
+#[cfg(all(feature = "tokio", any(feature = "http1", feature = "http2")))]
+const _: () = {
+    use crate::serve;
+
+    impl<L> Service<serve::IncomingStream<'_, L>> for MethodRouter<()>
+    where
+        L: serve::Listener,
+    {
+        type Response = Self;
+        type Error = Infallible;
+        type Future = std::future::Ready<Result<Self::Response, Self::Error>>;
+
+        fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn call(&mut self, _req: serve::IncomingStream<'_, L>) -> Self::Future {
+            std::future::ready(Ok(self.clone().with_state(())))
+        }
+    }
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        body::Body, error_handling::HandleErrorLayer, extract::State,
-        handler::HandlerWithoutStateExt,
-    };
-    use axum_core::response::IntoResponse;
+    use crate::{extract::State, handler::HandlerWithoutStateExt};
     use http::{header::ALLOW, HeaderMap};
+    use http_body_util::BodyExt;
     use std::time::Duration;
-    use tower::{timeout::TimeoutLayer, Service, ServiceBuilder, ServiceExt};
-    use tower_http::{services::fs::ServeDir, validate_request::ValidateRequestHeaderLayer};
+    use tower::ServiceExt;
+    use tower_http::{
+        services::fs::ServeDir, timeout::TimeoutLayer, validate_request::ValidateRequestHeaderLayer,
+    };
 
     #[crate::test]
     async fn method_not_allowed_by_default() {
@@ -1295,7 +1363,7 @@ mod tests {
 
     #[crate::test]
     async fn get_service_fn() {
-        async fn handle(_req: Request<Body>) -> Result<Response<Body>, Infallible> {
+        async fn handle(_req: Request) -> Result<Response<Body>, Infallible> {
             Ok(Response::new(Body::from("ok")))
         }
 
@@ -1332,15 +1400,19 @@ mod tests {
 
     #[crate::test]
     async fn merge() {
-        let mut svc = get(ok).merge(post(ok));
+        let mut svc = get(ok).merge(post(ok)).merge(connect(ok));
 
         let (status, _, _) = call(Method::GET, &mut svc).await;
         assert_eq!(status, StatusCode::OK);
 
         let (status, _, _) = call(Method::POST, &mut svc).await;
         assert_eq!(status, StatusCode::OK);
+
+        let (status, _, _) = call(Method::CONNECT, &mut svc).await;
+        assert_eq!(status, StatusCode::OK);
     }
 
+    #[allow(deprecated)]
     #[crate::test]
     async fn layer() {
         let mut svc = MethodRouter::new()
@@ -1356,6 +1428,7 @@ mod tests {
         assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 
+    #[allow(deprecated)]
     #[crate::test]
     async fn route_layer() {
         let mut svc = MethodRouter::new()
@@ -1371,8 +1444,8 @@ mod tests {
         assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
     }
 
-    #[allow(dead_code)]
-    fn buiding_complex_router() {
+    #[allow(dead_code, deprecated)]
+    async fn building_complex_router() {
         let app = crate::Router::new().route(
             "/",
             // use the all the things 💣️
@@ -1382,16 +1455,14 @@ mod tests {
                 .merge(delete_service(ServeDir::new(".")))
                 .fallback(|| async { StatusCode::NOT_FOUND })
                 .put(ok)
-                .layer(
-                    ServiceBuilder::new()
-                        .layer(HandleErrorLayer::new(|_| async {
-                            StatusCode::REQUEST_TIMEOUT
-                        }))
-                        .layer(TimeoutLayer::new(Duration::from_secs(10))),
-                ),
+                .layer(TimeoutLayer::with_status_code(
+                    StatusCode::REQUEST_TIMEOUT,
+                    Duration::from_secs(10),
+                )),
         );
 
-        crate::Server::bind(&"0.0.0.0:0".parse().unwrap()).serve(app.into_make_service());
+        let listener = tokio::net::TcpListener::bind("0.0.0.0:0").await.unwrap();
+        crate::serve(listener, app).await.unwrap();
     }
 
     #[crate::test]
@@ -1556,7 +1627,7 @@ mod tests {
 
     async fn call<S>(method: Method, svc: &mut S) -> (StatusCode, HeaderMap, String)
     where
-        S: Service<Request<Body>, Error = Infallible>,
+        S: Service<Request, Error = Infallible>,
         S::Response: IntoResponse,
     {
         let request = Request::builder()
@@ -1573,7 +1644,8 @@ mod tests {
             .unwrap()
             .into_response();
         let (parts, body) = response.into_parts();
-        let body = String::from_utf8(hyper::body::to_bytes(body).await.unwrap().to_vec()).unwrap();
+        let body =
+            String::from_utf8(BodyExt::collect(body).await.unwrap().to_bytes().to_vec()).unwrap();
         (parts.status, parts.headers, body)
     }
 

@@ -1,0 +1,94 @@
+syntax = "proto3";
+
+package backup;
+
+import "google/protobuf/timestamp.proto";
+
+// Backups of one PostgreSQL database stored in one Google Drive folder.
+service Backup {
+    // Dump the database and upload it.
+    rpc CreateBackup (CreateBackupRequest) returns (BackupInfo);
+    // Newest first.
+    rpc ListBackups (ListBackupsRequest) returns (ListBackupsReply);
+    // Metadata of one backup, e.g. to choose how to restore it.
+    rpc GetBackup (BackupRef) returns (BackupInfo);
+    // The first message carries `info`, the rest carry `data`.
+    // Legacy backups are streamed as decompressed JSON.
+    rpc DownloadBackup (BackupRef) returns (stream DownloadChunk);
+    // Overwrite the database with a pg_dump backup.
+    // A pre-restore copy of the current database is uploaded first.
+    rpc Restore (RestoreRequest) returns (RestoreReply);
+    // Whether the database accepts connections.
+    rpc Healthcheck (HealthcheckRequest) returns (HealthcheckReply);
+}
+
+enum BackupFormat {
+    BACKUP_FORMAT_UNSPECIFIED = 0;
+    // pg_dump custom format.
+    BACKUP_FORMAT_PG_CUSTOM = 1;
+    // zstd-compressed JSON written by FastBackup <= 0.5.
+    BACKUP_FORMAT_LEGACY_JSON_ZSTD = 2;
+}
+
+enum BackupKind {
+    BACKUP_KIND_UNSPECIFIED = 0;
+    BACKUP_KIND_REGULAR = 1;
+    BACKUP_KIND_PRE_RESTORE = 2;
+}
+
+message BackupInfo {
+    string id = 1;
+    string name = 2;
+    google.protobuf.Timestamp created_at = 3;
+    optional uint64 size_bytes = 4;
+    BackupFormat format = 5;
+    BackupKind kind = 6;
+}
+
+message CreateBackupRequest {
+}
+
+message ListBackupsRequest {
+    // Defaults to 20, capped at 100.
+    uint32 page_size = 1;
+    string page_token = 2;
+}
+
+message ListBackupsReply {
+    repeated BackupInfo backups = 1;
+    // Empty on the last page.
+    string next_page_token = 2;
+}
+
+message BackupRef {
+    oneof target {
+        string id = 1;
+        // Newest backup that is not a pre-restore copy.
+        bool latest = 2;
+    }
+}
+
+message DownloadChunk {
+    oneof payload {
+        BackupInfo info = 1;
+        bytes data = 2;
+    }
+}
+
+message RestoreRequest {
+    BackupRef backup = 1;
+    // Must equal the configured database name.
+    string confirm_db_name = 2;
+}
+
+message RestoreReply {
+    BackupInfo restored = 1;
+    BackupInfo pre_restore_backup = 2;
+}
+
+message HealthcheckRequest {
+}
+
+message HealthcheckReply {
+    bool is_ok = 1;
+}

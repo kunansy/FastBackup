@@ -5,19 +5,19 @@ use futures_core::Stream;
 use tokio_util::sync::ReusableBoxFuture;
 
 use std::fmt;
-use std::task::{Context, Poll};
+use std::task::{ready, Context, Poll};
 use tokio::sync::watch::error::RecvError;
 
 /// A wrapper around [`tokio::sync::watch::Receiver`] that implements [`Stream`].
 ///
-/// This stream will start by yielding the current value when the WatchStream is polled,
+/// This stream will start by yielding the current value when the `WatchStream` is polled,
 /// regardless of whether it was the initial value or sent afterwards,
 /// unless you use [`WatchStream<T>::from_changes`].
 ///
 /// # Examples
 ///
 /// ```
-/// # #[tokio::main]
+/// # #[tokio::main(flavor = "current_thread")]
 /// # async fn main() {
 /// use tokio_stream::{StreamExt, wrappers::WatchStream};
 /// use tokio::sync::watch;
@@ -33,7 +33,7 @@ use tokio::sync::watch::error::RecvError;
 /// ```
 ///
 /// ```
-/// # #[tokio::main]
+/// # #[tokio::main(flavor = "current_thread")]
 /// # async fn main() {
 /// use tokio_stream::{StreamExt, wrappers::WatchStream};
 /// use tokio::sync::watch;
@@ -51,7 +51,7 @@ use tokio::sync::watch::error::RecvError;
 /// Example with [`WatchStream<T>::from_changes`]:
 ///
 /// ```
-/// # #[tokio::main]
+/// # #[tokio::main(flavor = "current_thread")]
 /// # async fn main() {
 /// use futures::future::FutureExt;
 /// use tokio::sync::watch;

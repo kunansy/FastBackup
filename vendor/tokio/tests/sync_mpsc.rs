@@ -2,15 +2,16 @@
 #![warn(rust_2018_idioms)]
 #![cfg(feature = "sync")]
 
-#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+#[cfg(all(target_family = "wasm", target_os = "unknown"))]
 use wasm_bindgen_test::wasm_bindgen_test as test;
-#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
+#[cfg(all(target_family = "wasm", target_os = "unknown"))]
 use wasm_bindgen_test::wasm_bindgen_test as maybe_tokio_test;
 
-#[cfg(not(all(target_family = "wasm", not(target_os = "wasi"))))]
+#[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
 use tokio::test as maybe_tokio_test;
 
 use std::fmt;
+use std::panic;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::{TryRecvError, TrySendError};
@@ -21,9 +22,29 @@ mod support {
     pub(crate) mod mpsc_stream;
 }
 
-trait AssertSend: Send {}
-impl AssertSend for mpsc::Sender<i32> {}
-impl AssertSend for mpsc::Receiver<i32> {}
+#[allow(unused)]
+trait AssertRefUnwindSafe: panic::RefUnwindSafe {}
+impl<T> AssertRefUnwindSafe for mpsc::OwnedPermit<T> {}
+impl<'a, T> AssertRefUnwindSafe for mpsc::Permit<'a, T> {}
+impl<'a, T> AssertRefUnwindSafe for mpsc::PermitIterator<'a, T> {}
+impl<T> AssertRefUnwindSafe for mpsc::Receiver<T> {}
+impl<T> AssertRefUnwindSafe for mpsc::Sender<T> {}
+impl<T> AssertRefUnwindSafe for mpsc::UnboundedReceiver<T> {}
+impl<T> AssertRefUnwindSafe for mpsc::UnboundedSender<T> {}
+impl<T> AssertRefUnwindSafe for mpsc::WeakSender<T> {}
+impl<T> AssertRefUnwindSafe for mpsc::WeakUnboundedSender<T> {}
+
+#[allow(unused)]
+trait AssertUnwindSafe: panic::UnwindSafe {}
+impl<T> AssertUnwindSafe for mpsc::OwnedPermit<T> {}
+impl<'a, T> AssertUnwindSafe for mpsc::Permit<'a, T> {}
+impl<'a, T> AssertUnwindSafe for mpsc::PermitIterator<'a, T> {}
+impl<T> AssertUnwindSafe for mpsc::Receiver<T> {}
+impl<T> AssertUnwindSafe for mpsc::Sender<T> {}
+impl<T> AssertUnwindSafe for mpsc::UnboundedReceiver<T> {}
+impl<T> AssertUnwindSafe for mpsc::UnboundedSender<T> {}
+impl<T> AssertUnwindSafe for mpsc::WeakSender<T> {}
+impl<T> AssertUnwindSafe for mpsc::WeakUnboundedSender<T> {}
 
 #[maybe_tokio_test]
 async fn send_recv_with_buffer() {
@@ -337,6 +358,30 @@ async fn send_recv_many_unbounded_capacity() {
     assert_eq!(expected, buffer);
 }
 
+#[maybe_tokio_test]
+async fn recv_many_with_non_empty_buffer_bounded_rx_closed_and_idle() {
+    let (_tx, mut rx) = mpsc::channel::<i32>(1);
+
+    let mut buffer: Vec<i32> = vec![1];
+
+    rx.close();
+
+    assert_eq!(0, rx.recv_many(&mut buffer, 1).await);
+    assert_eq!(vec![1], buffer);
+}
+
+#[maybe_tokio_test]
+async fn recv_many_with_non_empty_buffer_unbounded_rx_closed_and_idle() {
+    let (_tx, mut rx) = mpsc::unbounded_channel::<i32>();
+
+    let mut buffer: Vec<i32> = vec![1];
+
+    rx.close();
+
+    assert_eq!(0, rx.recv_many(&mut buffer, 1).await);
+    assert_eq!(vec![1], buffer);
+}
+
 #[tokio::test]
 #[cfg(feature = "full")]
 async fn async_send_recv_unbounded() {
@@ -472,6 +517,110 @@ async fn recv_close_gets_none_reserved() {
     }
 
     assert!(rx.recv().await.is_none());
+}
+
+#[test]
+fn failed_reserve_many_wakes_closed_receiver() {
+    let (tx, mut rx) = mpsc::channel::<()>(2);
+
+    // Hold one of the two slots so the reservation can only take the other one
+    // and has to queue for the second.
+    let permit = tx.try_reserve().unwrap();
+
+    let mut reserve = tokio_test::task::spawn(tx.reserve_many(2));
+    assert_pending!(reserve.poll());
+
+    rx.close();
+
+    let mut recv = tokio_test::task::spawn(rx.recv());
+    assert_pending!(recv.poll());
+
+    // One slot is still outstanding, so the channel is not idle and the
+    // receiver must not be woken yet.
+    drop(permit);
+    assert!(!recv.is_woken());
+
+    // The reservation fails on the closed channel and returns the slot it had
+    // already acquired, leaving the channel idle. The receiver must be woken.
+    assert_ready_err!(reserve.poll());
+    assert!(recv.is_woken());
+    assert_ready!(recv.poll());
+}
+
+#[test]
+fn cancelled_reserve_many_wakes_closed_receiver() {
+    let (tx, mut rx) = mpsc::channel::<()>(2);
+
+    let permit = tx.try_reserve().unwrap();
+
+    let mut reserve = tokio_test::task::spawn(tx.reserve_many(2));
+    assert_pending!(reserve.poll());
+
+    rx.close();
+
+    let mut recv = tokio_test::task::spawn(rx.recv());
+    assert_pending!(recv.poll());
+
+    drop(permit);
+    assert!(!recv.is_woken());
+
+    // Cancelling the reservation returns the slot it had already acquired,
+    // leaving the channel idle. The receiver must be woken.
+    drop(reserve);
+    assert!(recv.is_woken());
+    assert_ready!(recv.poll());
+}
+
+#[test]
+fn failed_reserve_wakes_closed_receiver() {
+    let (tx, mut rx) = mpsc::channel::<()>(1);
+
+    // Hold the only slot so the reservation below has to queue.
+    let permit = tx.try_reserve().unwrap();
+
+    let mut reserve = tokio_test::task::spawn(tx.reserve());
+    assert_pending!(reserve.poll());
+
+    // Returning the slot assigns it to the queued reservation, which is woken
+    // but not yet polled, so the channel stays non-idle.
+    drop(permit);
+    assert!(reserve.is_woken());
+
+    rx.close();
+
+    let mut recv = tokio_test::task::spawn(rx.recv());
+    assert_pending!(recv.poll());
+
+    // The reservation fails on the closed channel despite holding the
+    // assigned slot; returning it leaves the channel idle. The receiver must
+    // be woken.
+    assert_ready_err!(reserve.poll());
+    assert!(recv.is_woken());
+    assert_ready!(recv.poll());
+}
+
+#[test]
+fn cancelled_reserve_wakes_closed_receiver() {
+    let (tx, mut rx) = mpsc::channel::<()>(1);
+
+    let permit = tx.try_reserve().unwrap();
+
+    let mut reserve = tokio_test::task::spawn(tx.reserve());
+    assert_pending!(reserve.poll());
+
+    drop(permit);
+    assert!(reserve.is_woken());
+
+    rx.close();
+
+    let mut recv = tokio_test::task::spawn(rx.recv());
+    assert_pending!(recv.poll());
+
+    // Cancelling the reservation returns the slot it was assigned, leaving
+    // the channel idle. The receiver must be woken.
+    drop(reserve);
+    assert!(recv.is_woken());
+    assert_ready!(recv.poll());
 }
 
 #[maybe_tokio_test]
@@ -659,6 +808,7 @@ async fn try_reserve_many_on_closed_channel() {
 }
 
 #[maybe_tokio_test]
+#[cfg_attr(miri, ignore)] // Too slow on miri.
 async fn try_reserve_many_full() {
     // Reserve n capacity and send k messages
     for n in 1..100 {
@@ -742,6 +892,91 @@ async fn drop_permit_iterator_releases_permits() {
     }
 }
 
+#[test]
+fn dropping_last_permit_wakes_closed_receiver() {
+    let (tx, mut rx) = mpsc::channel::<()>(100);
+
+    let permit = tx.try_reserve().unwrap();
+    rx.close();
+
+    let mut recv = tokio_test::task::spawn(rx.recv());
+    assert_pending!(recv.poll());
+    drop(permit);
+    assert!(recv.is_woken());
+    assert_ready!(recv.poll());
+}
+
+#[test]
+fn dropping_last_owned_permit_wakes_closed_receiver() {
+    let (tx, mut rx) = mpsc::channel::<()>(100);
+
+    let permit = tx.try_reserve_owned().unwrap();
+    rx.close();
+
+    let mut recv = tokio_test::task::spawn(rx.recv());
+    assert_pending!(recv.poll());
+    drop(permit);
+    assert!(recv.is_woken());
+    assert_ready!(recv.poll());
+}
+
+#[test]
+fn dropping_last_permit_iterator_wakes_closed_receiver() {
+    let (tx, mut rx) = mpsc::channel::<()>(100);
+
+    let permits = tx.try_reserve_many(1).unwrap();
+    rx.close();
+
+    let mut recv = tokio_test::task::spawn(rx.recv());
+    assert_pending!(recv.poll());
+    drop(permits);
+    assert!(recv.is_woken());
+    assert_ready!(recv.poll());
+}
+
+#[test]
+fn sending_last_permit_wakes_closed_receiver() {
+    let (tx, mut rx) = mpsc::channel::<()>(100);
+
+    let permit = tx.try_reserve().unwrap();
+    rx.close();
+
+    let mut recv = tokio_test::task::spawn(rx.recv());
+    assert_pending!(recv.poll());
+    permit.send(());
+    assert!(recv.is_woken());
+    assert_ready!(recv.poll());
+}
+
+#[test]
+fn sending_last_owned_permit_wakes_closed_receiver() {
+    let (tx, mut rx) = mpsc::channel::<()>(100);
+
+    let permit = tx.try_reserve_owned().unwrap();
+    rx.close();
+
+    let mut recv = tokio_test::task::spawn(rx.recv());
+    assert_pending!(recv.poll());
+    permit.send(());
+    assert!(recv.is_woken());
+    assert_ready!(recv.poll());
+}
+
+#[test]
+fn releasing_last_owned_permit_wakes_closed_receiver() {
+    let (tx, mut rx) = mpsc::channel::<()>(100);
+
+    let permit = tx.try_reserve_owned().unwrap();
+    rx.close();
+
+    let mut recv = tokio_test::task::spawn(rx.recv());
+    assert_pending!(recv.poll());
+    let inert_sender = permit.release();
+    assert!(recv.is_woken());
+    assert_ready!(recv.poll());
+    drop(inert_sender);
+}
+
 #[maybe_tokio_test]
 async fn dropping_rx_closes_channel() {
     let (tx, rx) = mpsc::channel(100);
@@ -775,6 +1010,44 @@ fn dropping_rx_closes_channel_for_try() {
     ));
 
     assert_eq!(1, Arc::strong_count(&msg));
+}
+
+#[test]
+fn dropping_rx_drops_sender_wakers_outside_lock() {
+    use futures::task::{noop_waker_ref, waker, ArcWake};
+    use std::future::Future;
+    use std::task::{Context, Poll};
+
+    struct PermitInWaker {
+        _permit: mpsc::OwnedPermit<i32>,
+    }
+
+    impl ArcWake for PermitInWaker {
+        fn wake_by_ref(_arc_self: &Arc<Self>) {}
+    }
+
+    let (tx, rx) = mpsc::channel(2);
+    let permit = tx.clone().try_reserve_owned().unwrap();
+    tx.try_send(1).unwrap();
+
+    // The channel is full, so `reserve` waits for capacity.
+    let mut reserve = Box::pin(tx.reserve());
+    let waker = waker(Arc::new(PermitInWaker { _permit: permit }));
+    assert!(reserve
+        .as_mut()
+        .poll(&mut Context::from_waker(&waker))
+        .is_pending());
+    drop(waker);
+
+    // Closing the channel wakes `reserve`, which drops the last reference to
+    // the waker and releases the permit inside it. This shouldn't deadlock.
+    drop(rx);
+
+    let mut cx = Context::from_waker(noop_waker_ref());
+    assert!(matches!(
+        reserve.as_mut().poll(&mut cx),
+        Poll::Ready(Err(_))
+    ));
 }
 
 #[test]
@@ -945,6 +1218,28 @@ fn try_recv_unbounded() {
 }
 
 #[test]
+fn try_recv_after_receiver_close() {
+    let (_tx, mut rx) = mpsc::channel::<()>(5);
+
+    assert_eq!(Err(TryRecvError::Empty), rx.try_recv());
+    rx.close();
+    assert_eq!(Err(TryRecvError::Disconnected), rx.try_recv());
+}
+
+#[test]
+fn try_recv_after_receiver_close_with_permit() {
+    let (tx, mut rx) = mpsc::channel::<()>(5);
+
+    let permit = tx.try_reserve().unwrap();
+
+    assert_eq!(Err(TryRecvError::Empty), rx.try_recv());
+    rx.close();
+    assert_eq!(Err(TryRecvError::Empty), rx.try_recv());
+    drop(permit);
+    assert_eq!(Err(TryRecvError::Disconnected), rx.try_recv());
+}
+
+#[test]
 fn try_recv_close_while_empty_bounded() {
     let (tx, mut rx) = mpsc::channel::<()>(5);
 
@@ -1015,6 +1310,533 @@ async fn test_tx_capacity() {
     // after send, capacity should drop by one again
     assert_eq!(tx.capacity(), 8);
     assert_eq!(tx.max_capacity(), 10);
+}
+
+#[tokio::test]
+async fn test_rx_is_closed_when_calling_close_with_sender() {
+    // is_closed should return true after calling close but still has a sender
+    let (_tx, mut rx) = mpsc::channel::<()>(10);
+    rx.close();
+
+    assert!(rx.is_closed());
+}
+
+#[tokio::test]
+async fn test_rx_is_closed_when_dropping_all_senders() {
+    // is_closed should return true after dropping all senders
+    let (tx, rx) = mpsc::channel::<()>(10);
+    let another_tx = tx.clone();
+    let task = tokio::spawn(async move {
+        drop(another_tx);
+    });
+
+    drop(tx);
+    let _ = task.await;
+
+    assert!(rx.is_closed());
+}
+
+#[tokio::test]
+async fn test_rx_is_not_closed_when_there_are_senders() {
+    // is_closed should return false when there is a sender
+    let (_tx, rx) = mpsc::channel::<()>(10);
+    assert!(!rx.is_closed());
+}
+
+#[tokio::test]
+async fn test_rx_is_not_closed_when_there_are_senders_and_buffer_filled() {
+    // is_closed should return false when there is a sender, even if enough messages have been sent to fill the channel
+    let (tx, rx) = mpsc::channel(10);
+    for i in 0..10 {
+        assert!(tx.send(i).await.is_ok());
+    }
+    assert!(!rx.is_closed());
+}
+
+#[tokio::test]
+async fn test_rx_is_closed_when_there_are_no_senders_and_there_are_messages() {
+    // is_closed should return true when there are messages in the buffer, but no senders
+    let (tx, rx) = mpsc::channel(10);
+    for i in 0..10 {
+        assert!(tx.send(i).await.is_ok());
+    }
+    drop(tx);
+    assert!(rx.is_closed());
+}
+
+#[tokio::test]
+async fn test_rx_is_closed_when_there_are_messages_and_close_is_called() {
+    // is_closed should return true when there are messages in the buffer, and close is called
+    let (tx, mut rx) = mpsc::channel(10);
+    for i in 0..10 {
+        assert!(tx.send(i).await.is_ok());
+    }
+    rx.close();
+    assert!(rx.is_closed());
+}
+
+#[tokio::test]
+async fn test_rx_is_not_closed_when_there_are_permits_but_not_senders() {
+    // is_closed should return false when there is a permit (but no senders)
+    let (tx, rx) = mpsc::channel::<()>(10);
+    let _permit = tx.reserve_owned().await.expect("Failed to reserve permit");
+    assert!(!rx.is_closed());
+}
+
+#[tokio::test]
+async fn test_rx_is_empty_when_no_messages_were_sent() {
+    let (_tx, rx) = mpsc::channel::<()>(10);
+    assert!(rx.is_empty())
+}
+
+#[tokio::test]
+async fn test_rx_is_not_empty_when_there_are_messages_in_the_buffer() {
+    let (tx, rx) = mpsc::channel::<()>(10);
+    assert!(tx.send(()).await.is_ok());
+    assert!(!rx.is_empty())
+}
+
+#[tokio::test]
+async fn test_rx_is_not_empty_when_the_buffer_is_full() {
+    let (tx, rx) = mpsc::channel(10);
+    for i in 0..10 {
+        assert!(tx.send(i).await.is_ok());
+    }
+    assert!(!rx.is_empty())
+}
+
+#[tokio::test]
+async fn test_rx_is_not_empty_when_all_but_one_messages_are_consumed() {
+    let (tx, mut rx) = mpsc::channel(10);
+    for i in 0..10 {
+        assert!(tx.send(i).await.is_ok());
+    }
+
+    for _ in 0..9 {
+        assert!(rx.recv().await.is_some());
+    }
+
+    assert!(!rx.is_empty())
+}
+
+#[tokio::test]
+async fn test_rx_is_empty_when_all_messages_are_consumed() {
+    let (tx, mut rx) = mpsc::channel(10);
+    for i in 0..10 {
+        assert!(tx.send(i).await.is_ok());
+    }
+    while rx.try_recv().is_ok() {}
+    assert!(rx.is_empty())
+}
+
+#[tokio::test]
+async fn test_rx_is_empty_all_senders_are_dropped_and_messages_consumed() {
+    let (tx, mut rx) = mpsc::channel(10);
+    for i in 0..10 {
+        assert!(tx.send(i).await.is_ok());
+    }
+    drop(tx);
+
+    for _ in 0..10 {
+        assert!(rx.recv().await.is_some());
+    }
+
+    assert!(rx.is_empty())
+}
+
+#[tokio::test]
+async fn test_rx_len_on_empty_channel() {
+    let (_tx, rx) = mpsc::channel::<()>(100);
+    assert_eq!(rx.len(), 0);
+}
+
+#[tokio::test]
+async fn test_rx_len_on_empty_channel_without_senders() {
+    // when all senders are dropped, a "closed" value is added to the end of the linked list.
+    // here we test that the "closed" value does not change the len of the channel.
+
+    let (tx, rx) = mpsc::channel::<()>(100);
+    drop(tx);
+    assert_eq!(rx.len(), 0);
+}
+
+#[tokio::test]
+async fn test_rx_len_on_filled_channel() {
+    let (tx, rx) = mpsc::channel(100);
+
+    for i in 0..100 {
+        assert!(tx.send(i).await.is_ok());
+    }
+    assert_eq!(rx.len(), 100);
+}
+
+#[tokio::test]
+async fn test_rx_len_on_filled_channel_without_senders() {
+    let (tx, rx) = mpsc::channel(100);
+
+    for i in 0..100 {
+        assert!(tx.send(i).await.is_ok());
+    }
+    drop(tx);
+    assert_eq!(rx.len(), 100);
+}
+
+#[tokio::test]
+async fn test_rx_len_when_consuming_all_messages() {
+    let (tx, mut rx) = mpsc::channel(100);
+
+    for i in 0..100 {
+        assert!(tx.send(i).await.is_ok());
+        assert_eq!(rx.len(), i + 1);
+    }
+
+    drop(tx);
+
+    for i in (0..100).rev() {
+        assert!(rx.recv().await.is_some());
+        assert_eq!(rx.len(), i);
+    }
+}
+
+#[tokio::test]
+async fn test_rx_len_when_close_is_called() {
+    let (tx, mut rx) = mpsc::channel(100);
+    tx.send(()).await.unwrap();
+    rx.close();
+
+    assert_eq!(rx.len(), 1);
+}
+
+#[tokio::test]
+async fn test_rx_len_when_close_is_called_before_dropping_sender() {
+    let (tx, mut rx) = mpsc::channel(100);
+    tx.send(()).await.unwrap();
+    rx.close();
+    drop(tx);
+
+    assert_eq!(rx.len(), 1);
+}
+
+#[tokio::test]
+async fn test_rx_len_when_close_is_called_after_dropping_sender() {
+    let (tx, mut rx) = mpsc::channel(100);
+    tx.send(()).await.unwrap();
+    drop(tx);
+    rx.close();
+
+    assert_eq!(rx.len(), 1);
+}
+
+#[tokio::test]
+async fn test_rx_unbounded_is_closed_when_calling_close_with_sender() {
+    // is_closed should return true after calling close but still has a sender
+    let (_tx, mut rx) = mpsc::unbounded_channel::<()>();
+    rx.close();
+
+    assert!(rx.is_closed());
+}
+
+#[tokio::test]
+async fn test_rx_unbounded_is_closed_when_dropping_all_senders() {
+    // is_closed should return true after dropping all senders
+    let (tx, rx) = mpsc::unbounded_channel::<()>();
+    let another_tx = tx.clone();
+    let task = tokio::spawn(async move {
+        drop(another_tx);
+    });
+
+    drop(tx);
+    let _ = task.await;
+
+    assert!(rx.is_closed());
+}
+
+#[tokio::test]
+async fn test_rx_unbounded_is_not_closed_when_there_are_senders() {
+    // is_closed should return false when there is a sender
+    let (_tx, rx) = mpsc::unbounded_channel::<()>();
+    assert!(!rx.is_closed());
+}
+
+#[tokio::test]
+async fn test_rx_unbounded_is_closed_when_there_are_no_senders_and_there_are_messages() {
+    // is_closed should return true when there are messages in the buffer, but no senders
+    let (tx, rx) = mpsc::unbounded_channel();
+    for i in 0..10 {
+        assert!(tx.send(i).is_ok());
+    }
+    drop(tx);
+    assert!(rx.is_closed());
+}
+
+#[tokio::test]
+async fn test_rx_unbounded_is_closed_when_there_are_messages_and_close_is_called() {
+    // is_closed should return true when there are messages in the buffer, and close is called
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    for i in 0..10 {
+        assert!(tx.send(i).is_ok());
+    }
+    rx.close();
+    assert!(rx.is_closed());
+}
+
+#[tokio::test]
+async fn test_rx_unbounded_is_empty_when_no_messages_were_sent() {
+    let (_tx, rx) = mpsc::unbounded_channel::<()>();
+    assert!(rx.is_empty())
+}
+
+#[tokio::test]
+async fn test_rx_unbounded_is_not_empty_when_there_are_messages_in_the_buffer() {
+    let (tx, rx) = mpsc::unbounded_channel();
+    assert!(tx.send(()).is_ok());
+    assert!(!rx.is_empty())
+}
+
+#[tokio::test]
+async fn test_rx_unbounded_is_not_empty_when_all_but_one_messages_are_consumed() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    for i in 0..10 {
+        assert!(tx.send(i).is_ok());
+    }
+
+    for _ in 0..9 {
+        assert!(rx.recv().await.is_some());
+    }
+
+    assert!(!rx.is_empty())
+}
+
+#[tokio::test]
+async fn test_rx_unbounded_is_empty_when_all_messages_are_consumed() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    for i in 0..10 {
+        assert!(tx.send(i).is_ok());
+    }
+    while rx.try_recv().is_ok() {}
+    assert!(rx.is_empty())
+}
+
+#[tokio::test]
+async fn test_rx_unbounded_is_empty_all_senders_are_dropped_and_messages_consumed() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    for i in 0..10 {
+        assert!(tx.send(i).is_ok());
+    }
+    drop(tx);
+
+    for _ in 0..10 {
+        assert!(rx.recv().await.is_some());
+    }
+
+    assert!(rx.is_empty())
+}
+
+#[tokio::test]
+async fn test_rx_unbounded_len_on_empty_channel() {
+    let (_tx, rx) = mpsc::unbounded_channel::<()>();
+    assert_eq!(rx.len(), 0);
+}
+
+#[tokio::test]
+async fn test_rx_unbounded_len_on_empty_channel_without_senders() {
+    // when all senders are dropped, a "closed" value is added to the end of the linked list.
+    // here we test that the "closed" value does not change the len of the channel.
+
+    let (tx, rx) = mpsc::unbounded_channel::<()>();
+    drop(tx);
+    assert_eq!(rx.len(), 0);
+}
+
+#[tokio::test]
+async fn test_rx_unbounded_len_with_multiple_messages() {
+    let (tx, rx) = mpsc::unbounded_channel();
+
+    for i in 0..100 {
+        assert!(tx.send(i).is_ok());
+    }
+    assert_eq!(rx.len(), 100);
+}
+
+#[tokio::test]
+async fn test_rx_unbounded_len_with_multiple_messages_and_dropped_senders() {
+    let (tx, rx) = mpsc::unbounded_channel();
+
+    for i in 0..100 {
+        assert!(tx.send(i).is_ok());
+    }
+    drop(tx);
+    assert_eq!(rx.len(), 100);
+}
+
+#[tokio::test]
+async fn test_rx_unbounded_len_when_consuming_all_messages() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+
+    for i in 0..100 {
+        assert!(tx.send(i).is_ok());
+        assert_eq!(rx.len(), i + 1);
+    }
+
+    drop(tx);
+
+    for i in (0..100).rev() {
+        assert!(rx.recv().await.is_some());
+        assert_eq!(rx.len(), i);
+    }
+}
+
+#[tokio::test]
+async fn test_rx_unbounded_len_when_close_is_called() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    tx.send(()).unwrap();
+    rx.close();
+
+    assert_eq!(rx.len(), 1);
+}
+
+#[tokio::test]
+async fn test_rx_unbounded_len_when_close_is_called_before_dropping_sender() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    tx.send(()).unwrap();
+    rx.close();
+    drop(tx);
+
+    assert_eq!(rx.len(), 1);
+}
+
+#[tokio::test]
+async fn test_rx_unbounded_len_when_close_is_called_after_dropping_sender() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    tx.send(()).unwrap();
+    drop(tx);
+    rx.close();
+
+    assert_eq!(rx.len(), 1);
+}
+
+// Regression test for https://github.com/tokio-rs/tokio/issues/6602
+#[tokio::test]
+async fn test_is_empty_32_msgs() {
+    let (sender, mut receiver) = mpsc::channel(33);
+
+    for value in 1..257 {
+        sender.send(value).await.unwrap();
+        receiver.recv().await.unwrap();
+        assert!(receiver.is_empty(), "{value}. len: {}", receiver.len());
+    }
+}
+
+#[test]
+#[cfg(panic = "unwind")]
+fn permit_send_panicking_rx_waker() {
+    use std::task::{Context, Wake, Waker};
+
+    struct PanickingWaker;
+
+    impl Wake for PanickingWaker {
+        fn wake(self: Arc<Self>) {
+            panic!("waker panicked");
+        }
+    }
+
+    let (tx, mut rx) = mpsc::channel(1);
+    let waker = Waker::from(Arc::new(PanickingWaker));
+    let mut cx = Context::from_waker(&waker);
+    assert_pending!(rx.poll_recv(&mut cx));
+
+    let permit = tx.try_reserve().unwrap();
+    assert!(panic::catch_unwind(|| permit.send(7)).is_err());
+
+    assert_eq!(tx.capacity(), 0);
+    assert_eq!(rx.len(), 1);
+
+    assert_eq!(rx.try_recv(), Ok(7));
+    assert_eq!(tx.capacity(), 1);
+    assert_eq!(tx.max_capacity(), 1);
+
+    rx.close();
+    assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
+}
+
+#[test]
+#[cfg(not(panic = "abort"))]
+fn drop_all_elements_during_panic() {
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering::Relaxed;
+    use tokio::sync::mpsc::UnboundedReceiver;
+    use tokio::sync::mpsc::UnboundedSender;
+
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    struct A(bool);
+    impl Drop for A {
+        // cause a panic when inner value is `true`.
+        fn drop(&mut self) {
+            COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if self.0 {
+                panic!("panic!")
+            }
+        }
+    }
+
+    fn func(tx: UnboundedSender<A>, rx: UnboundedReceiver<A>) {
+        tx.send(A(true)).unwrap();
+        tx.send(A(false)).unwrap();
+        tx.send(A(false)).unwrap();
+
+        drop(rx);
+
+        // `mpsc::Rx`'s drop is called and gets panicked while dropping the first value,
+        // but will keep dropping following elements.
+    }
+
+    let (tx, rx) = mpsc::unbounded_channel();
+
+    let _ = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        func(tx.clone(), rx);
+    }));
+
+    // all A's destructor should be called at this point, even before `mpsc::Chan`'s
+    // drop gets called.
+    assert_eq!(COUNTER.load(Relaxed), 3);
+
+    drop(tx);
+    // `mpsc::Chan`'s drop is called, freeing the `Block` memory allocation.
+}
+
+/// A task's wakers keep its memory allocation alive. This test ensures
+/// `mpsc::channel` releases the rx waker immediately upon drop to potentially
+/// free up resources.
+#[test]
+fn release_waker_on_rx_drop() {
+    use std::task::{Context, Wake, Waker};
+
+    struct DummyWaker;
+    impl Wake for DummyWaker {
+        fn wake(self: Arc<Self>) {}
+    }
+
+    // Create a dummy Arc<impl Wake> to count waker references
+    let dummy = Arc::new(DummyWaker);
+    let waker = Waker::from(dummy.clone());
+    let mut cx = Context::from_waker(&waker);
+
+    // Baseline: 2 references (`dummy` and `waker`)
+    assert_eq!(Arc::strong_count(&dummy), 2);
+
+    // Register `waker` in rx
+    let (_tx, mut rx) = mpsc::channel::<()>(1);
+    assert_pending!(rx.poll_recv(&mut cx));
+    assert_eq!(Arc::strong_count(&dummy), 3);
+
+    // Drop rx, releasing the stored waker
+    drop(rx);
+    assert_eq!(
+        Arc::strong_count(&dummy),
+        2,
+        "dropping rx did not drop its waker",
+    );
 }
 
 fn is_debug<T: fmt::Debug>(_: &T) {}

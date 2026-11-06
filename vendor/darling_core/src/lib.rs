@@ -1,5 +1,6 @@
 #![recursion_limit = "256"]
 #![cfg_attr(feature = "diagnostics", feature(proc_macro_diagnostic))]
+#![warn(rust_2018_idioms)]
 
 #[cfg(feature = "diagnostics")]
 extern crate proc_macro;
@@ -34,6 +35,9 @@ pub use self::from_generics::FromGenerics;
 pub use self::from_meta::FromMeta;
 pub use self::from_type_param::FromTypeParam;
 pub use self::from_variant::FromVariant;
+
+#[doc(hidden)]
+pub use self::from_meta::autoref_specialization;
 
 // Re-exports
 #[doc(hidden)]

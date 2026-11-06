@@ -135,11 +135,10 @@ fn ty_pattern_matches_ty(ty_pattern: &Type, ty: &Type) -> bool {
             Type::Array(TypeArray { elem: ty, len, .. }),
         ) => {
             let ty_match = ty_pattern_matches_ty(ty_pattern, ty);
-            dbg!(len_pattern);
             let len_match = len_pattern == len || len_pattern.to_token_stream().to_string() == "_";
             ty_match && len_match
         }
-        (Type::BareFn(ty_pattern), Type::BareFn(ty)) => ty_pattern == ty,
+        (Type::FnPtr(ty_pattern), Type::FnPtr(ty)) => ty_pattern == ty,
         (Type::ImplTrait(ty_pattern), Type::ImplTrait(ty)) => ty_pattern == ty,
         (Type::Infer(_), _) => true,
         (Type::Macro(ty_pattern), Type::Macro(ty)) => ty_pattern == ty,
@@ -154,14 +153,19 @@ fn ty_pattern_matches_ty(ty_pattern: &Type, ty: &Type) -> bool {
             Type::Path(TypePath {
                 qself: qself_pattern,
                 path: path_pattern,
+                attrs: _,
             }),
-            Type::Path(TypePath { qself, path }),
+            Type::Path(TypePath {
+                qself,
+                path,
+                attrs: _,
+            }),
         ) => {
             /// Compare two paths for relaxed equality.
             ///
             /// Two paths match if they are equal except for the path arguments.
             /// Path arguments are generics on types or functions.
-            /// If the pattern has no argument, it can match with everthing.
+            /// If the pattern has no argument, it can match with everything.
             /// If the pattern does have an argument, the other side must be equal.
             fn path_pattern_matches_path(path_pattern: &Path, path: &Path) -> bool {
                 if path_pattern.leading_colon != path.leading_colon
@@ -169,7 +173,7 @@ fn ty_pattern_matches_ty(ty_pattern: &Type, ty: &Type) -> bool {
                 {
                     return false;
                 }
-                // Boths parts are equal length
+                // Both parts are equal length
                 std::iter::zip(&path_pattern.segments, &path.segments).all(
                     |(path_pattern_segment, path_segment)| {
                         let ident_equal = path_pattern_segment.ident == path_segment.ident;
@@ -208,22 +212,16 @@ fn ty_pattern_matches_ty(ty_pattern: &Type, ty: &Type) -> bool {
         }
         (
             Type::Ptr(TypePtr {
-                const_token: const_token_pattern,
                 mutability: mutability_pattern,
                 elem: ty_pattern,
                 ..
             }),
             Type::Ptr(TypePtr {
-                const_token,
                 mutability,
                 elem: ty,
                 ..
             }),
-        ) => {
-            const_token_pattern == const_token
-                && mutability_pattern == mutability
-                && ty_pattern_matches_ty(ty_pattern, ty)
-        }
+        ) => mutability_pattern == mutability && ty_pattern_matches_ty(ty_pattern, ty),
         (
             Type::Reference(TypeReference {
                 lifetime: lifetime_pattern,

@@ -7,26 +7,28 @@ use powerfmt::smart_display::{FormatterOptions, Metadata, SmartDisplay};
 
 use self::Weekday::*;
 use crate::error;
+use crate::iter::WeekdayIter;
 
 /// Days of the week.
 ///
 /// As order is dependent on context (Sunday could be either two days after or five days before
 /// Friday), this type does not implement `PartialOrd` or `Ord`.
+#[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Weekday {
-    #[allow(missing_docs)]
+    #[expect(missing_docs)]
     Monday,
-    #[allow(missing_docs)]
+    #[expect(missing_docs)]
     Tuesday,
-    #[allow(missing_docs)]
+    #[expect(missing_docs)]
     Wednesday,
-    #[allow(missing_docs)]
+    #[expect(missing_docs)]
     Thursday,
-    #[allow(missing_docs)]
+    #[expect(missing_docs)]
     Friday,
-    #[allow(missing_docs)]
+    #[expect(missing_docs)]
     Saturday,
-    #[allow(missing_docs)]
+    #[expect(missing_docs)]
     Sunday,
 }
 
@@ -37,6 +39,7 @@ impl Weekday {
     /// # use time::Weekday;
     /// assert_eq!(Weekday::Tuesday.previous(), Weekday::Monday);
     /// ```
+    #[inline]
     pub const fn previous(self) -> Self {
         match self {
             Monday => Sunday,
@@ -55,6 +58,7 @@ impl Weekday {
     /// # use time::Weekday;
     /// assert_eq!(Weekday::Monday.next(), Weekday::Tuesday);
     /// ```
+    #[inline]
     pub const fn next(self) -> Self {
         match self {
             Monday => Tuesday,
@@ -74,6 +78,7 @@ impl Weekday {
     /// assert_eq!(Weekday::Monday.nth_next(1), Weekday::Tuesday);
     /// assert_eq!(Weekday::Sunday.nth_next(10), Weekday::Wednesday);
     /// ```
+    #[inline]
     pub const fn nth_next(self, n: u8) -> Self {
         match (self.number_days_from_monday() + n % 7) % 7 {
             0 => Monday,
@@ -96,8 +101,9 @@ impl Weekday {
     /// assert_eq!(Weekday::Monday.nth_prev(1), Weekday::Sunday);
     /// assert_eq!(Weekday::Sunday.nth_prev(10), Weekday::Thursday);
     /// ```
+    #[inline]
     pub const fn nth_prev(self, n: u8) -> Self {
-        match self.number_days_from_monday() as i8 - (n % 7) as i8 {
+        match self.number_days_from_monday().cast_signed() - (n % 7).cast_signed() {
             1 | -6 => Tuesday,
             2 | -5 => Wednesday,
             3 | -4 => Thursday,
@@ -118,6 +124,7 @@ impl Weekday {
     /// assert_eq!(Weekday::Monday.number_from_monday(), 1);
     /// ```
     #[doc(alias = "iso_weekday_number")]
+    #[inline]
     pub const fn number_from_monday(self) -> u8 {
         self.number_days_from_monday() + 1
     }
@@ -128,6 +135,7 @@ impl Weekday {
     /// # use time::Weekday;
     /// assert_eq!(Weekday::Monday.number_from_sunday(), 2);
     /// ```
+    #[inline]
     pub const fn number_from_sunday(self) -> u8 {
         self.number_days_from_sunday() + 1
     }
@@ -138,8 +146,9 @@ impl Weekday {
     /// # use time::Weekday;
     /// assert_eq!(Weekday::Monday.number_days_from_monday(), 0);
     /// ```
+    #[inline]
     pub const fn number_days_from_monday(self) -> u8 {
-        self as _
+        self as u8
     }
 
     /// Get the zero-indexed number of days from Sunday.
@@ -148,6 +157,7 @@ impl Weekday {
     /// # use time::Weekday;
     /// assert_eq!(Weekday::Monday.number_days_from_sunday(), 1);
     /// ```
+    #[inline]
     pub const fn number_days_from_sunday(self) -> u8 {
         match self {
             Monday => 1,
@@ -159,30 +169,45 @@ impl Weekday {
             Sunday => 0,
         }
     }
-}
 
-mod private {
-    #[non_exhaustive]
-    #[derive(Debug, Clone, Copy)]
-    pub struct WeekdayMetadata;
+    /// Create an infinite iterator starting at this weekday.
+    ///
+    /// ```rust
+    /// # use time::Weekday;
+    /// let mut iter = Weekday::iter_from(Weekday::Monday);
+    /// assert_eq!(iter.next(), Some(Weekday::Monday));
+    /// assert_eq!(iter.next(), Some(Weekday::Tuesday));
+    /// assert_eq!(iter.next(), Some(Weekday::Wednesday));
+    /// assert_eq!(iter.next(), Some(Weekday::Thursday));
+    /// assert_eq!(iter.next(), Some(Weekday::Friday));
+    /// assert_eq!(iter.next(), Some(Weekday::Saturday));
+    /// assert_eq!(iter.next(), Some(Weekday::Sunday));
+    /// assert_eq!(iter.next(), Some(Weekday::Monday));
+    /// // … continuing forever
+    /// ```
+    #[inline]
+    pub const fn iter_from(start: Self) -> WeekdayIter {
+        WeekdayIter::new(start)
+    }
 }
-use private::WeekdayMetadata;
 
 impl SmartDisplay for Weekday {
-    type Metadata = WeekdayMetadata;
+    type Metadata = ();
 
+    #[inline]
     fn metadata(&self, _: FormatterOptions) -> Metadata<'_, Self> {
         match self {
-            Monday => Metadata::new(6, self, WeekdayMetadata),
-            Tuesday => Metadata::new(7, self, WeekdayMetadata),
-            Wednesday => Metadata::new(9, self, WeekdayMetadata),
-            Thursday => Metadata::new(8, self, WeekdayMetadata),
-            Friday => Metadata::new(6, self, WeekdayMetadata),
-            Saturday => Metadata::new(8, self, WeekdayMetadata),
-            Sunday => Metadata::new(6, self, WeekdayMetadata),
+            Monday => Metadata::new(6, self, ()),
+            Tuesday => Metadata::new(7, self, ()),
+            Wednesday => Metadata::new(9, self, ()),
+            Thursday => Metadata::new(8, self, ()),
+            Friday => Metadata::new(6, self, ()),
+            Saturday => Metadata::new(8, self, ()),
+            Sunday => Metadata::new(6, self, ()),
         }
     }
 
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.pad(match self {
             Monday => "Monday",
@@ -197,6 +222,7 @@ impl SmartDisplay for Weekday {
 }
 
 impl fmt::Display for Weekday {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         SmartDisplay::fmt(self, f)
     }
@@ -205,6 +231,7 @@ impl fmt::Display for Weekday {
 impl FromStr for Weekday {
     type Err = error::InvalidVariant;
 
+    #[inline]
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "Monday" => Ok(Monday),

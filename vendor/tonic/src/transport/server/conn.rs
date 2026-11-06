@@ -1,12 +1,35 @@
-use hyper::server::conn::AddrStream;
+/*
+ *
+ * Copyright 2025 gRPC authors.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to
+ * deal in the Software without restriction, including without limitation the
+ * rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+ * sell copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+ * IN THE SOFTWARE.
+ *
+ */
+
 use std::net::SocketAddr;
 use tokio::net::TcpStream;
 
-#[cfg(feature = "tls")]
-use crate::transport::Certificate;
-#[cfg(feature = "tls")]
+#[cfg(feature = "tls-connect-info")]
 use std::sync::Arc;
-#[cfg(feature = "tls")]
+#[cfg(feature = "tls-connect-info")]
+use tokio_rustls::rustls::pki_types::CertificateDer;
+#[cfg(feature = "tls-connect-info")]
 use tokio_rustls::server::TlsStream;
 
 /// Trait that connected IO resources implement and use to produce info about the connection.
@@ -86,17 +109,6 @@ impl TcpConnectInfo {
     }
 }
 
-impl Connected for AddrStream {
-    type ConnectInfo = TcpConnectInfo;
-
-    fn connect_info(&self) -> Self::ConnectInfo {
-        TcpConnectInfo {
-            local_addr: Some(self.local_addr()),
-            remote_addr: Some(self.remote_addr()),
-        }
-    }
-}
-
 impl Connected for TcpStream {
     type ConnectInfo = TcpConnectInfo;
 
@@ -114,7 +126,7 @@ impl Connected for tokio::io::DuplexStream {
     fn connect_info(&self) -> Self::ConnectInfo {}
 }
 
-#[cfg(feature = "tls")]
+#[cfg(feature = "tls-connect-info")]
 impl<T> Connected for TlsStream<T>
 where
     T: Connected,
@@ -125,12 +137,9 @@ where
         let (inner, session) = self.get_ref();
         let inner = inner.connect_info();
 
-        let certs = if let Some(certs) = session.peer_certificates() {
-            let certs = certs.iter().map(Certificate::from_pem).collect();
-            Some(Arc::new(certs))
-        } else {
-            None
-        };
+        let certs = session
+            .peer_certificates()
+            .map(|certs| certs.to_owned().into());
 
         TlsConnectInfo { inner, certs }
     }
@@ -143,16 +152,14 @@ where
 /// See [`Connected`] for more details.
 ///
 /// [ext]: crate::Request::extensions
-#[cfg(feature = "tls")]
-#[cfg_attr(docsrs, doc(cfg(feature = "tls")))]
+#[cfg(feature = "tls-connect-info")]
 #[derive(Debug, Clone)]
 pub struct TlsConnectInfo<T> {
     inner: T,
-    certs: Option<Arc<Vec<Certificate>>>,
+    certs: Option<Arc<Vec<CertificateDer<'static>>>>,
 }
 
-#[cfg(feature = "tls")]
-#[cfg_attr(docsrs, doc(cfg(feature = "tls")))]
+#[cfg(feature = "tls-connect-info")]
 impl<T> TlsConnectInfo<T> {
     /// Get a reference to the underlying connection info.
     pub fn get_ref(&self) -> &T {
@@ -165,7 +172,7 @@ impl<T> TlsConnectInfo<T> {
     }
 
     /// Return the set of connected peer TLS certificates.
-    pub fn peer_certs(&self) -> Option<Arc<Vec<Certificate>>> {
+    pub fn peer_certs(&self) -> Option<Arc<Vec<CertificateDer<'static>>>> {
         self.certs.clone()
     }
 }

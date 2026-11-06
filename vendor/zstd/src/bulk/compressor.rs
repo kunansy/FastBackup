@@ -114,6 +114,10 @@ impl<'a> Compressor<'a> {
     /// (for instance if the destination buffer was too small).
     ///
     /// A level of `0` uses zstd's default (currently `3`).
+    /// [`crate::compress_bound()`] says how large `destination` might need to
+    /// be. For a `Vec` it is the *capacity* that bounds the output, so
+    /// `reserve` what you need rather than `resize` - the bytes do not have to
+    /// be initialized first.
     pub fn compress_to_buffer<C: zstd_safe::WriteBuf + ?Sized>(
         &mut self,
         source: &[u8],
@@ -150,6 +154,24 @@ impl<'a> Compressor<'a> {
     ) -> io::Result<()> {
         self.context
             .set_parameter(parameter)
+            .map_err(map_error_code)?;
+        Ok(())
+    }
+
+    /// Sets the expected size of the input.
+    ///
+    /// This affects the compression effectiveness.
+    ///
+    /// It is an error to give an incorrect size (an error will be returned when closing the
+    /// stream if the size does not match what was pledged).
+    ///
+    /// Giving a `None` size means the size is unknown (this is the default).
+    pub fn set_pledged_src_size(
+        &mut self,
+        size: Option<u64>,
+    ) -> io::Result<()> {
+        self.context
+            .set_pledged_src_size(size)
             .map_err(map_error_code)?;
         Ok(())
     }

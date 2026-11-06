@@ -5,17 +5,17 @@
 //!
 //! **Crate features:**
 //!
-//! * `"use_std"`
-//! Enabled by default. Disable to make the library `#![no_std]`.
+//! * `"std"`
+//!   Enabled by default. Disable to make the library `#![no_std]`.
 //!
 //! * `"serde"`
-//! Disabled by default. Enable to `#[derive(Serialize, Deserialize)]` for `Either`
+//!   Disabled by default. Enable to `#[derive(Serialize, Deserialize)]` for `Either`
 //!
 
 #![doc(html_root_url = "https://docs.rs/either/1/")]
 #![no_std]
 
-#[cfg(any(test, feature = "use_std"))]
+#[cfg(any(test, feature = "std"))]
 extern crate std;
 
 #[cfg(feature = "serde")]
@@ -27,14 +27,13 @@ pub mod serde_untagged_optional;
 use core::convert::{AsMut, AsRef};
 use core::fmt;
 use core::future::Future;
-use core::iter;
 use core::ops::Deref;
 use core::ops::DerefMut;
 use core::pin::Pin;
 
-#[cfg(any(test, feature = "use_std"))]
+#[cfg(any(test, feature = "std"))]
 use std::error::Error;
-#[cfg(any(test, feature = "use_std"))]
+#[cfg(any(test, feature = "std"))]
 use std::io::{self, BufRead, Read, Seek, SeekFrom, Write};
 
 pub use crate::Either::{Left, Right};
@@ -59,7 +58,12 @@ pub enum Either<L, R> {
 /// This macro is useful in cases where both sides of [`Either`] can be interacted with
 /// in the same way even though the don't share the same type.
 ///
-/// Syntax: `either::for_both!(` *expression* `,` *pattern* `=>` *expression* `)`
+/// Syntax:
+///
+/// - `either::for_both!(` *expression* `,` *pattern* `=>` *expression* `)`
+/// - `either::for_both!(` *ident* `=>` *expression* `)`
+///
+/// Unlike [`map_both!`], this macro converges both variants to the type returned by the expression.
 ///
 /// # Example
 ///
@@ -78,6 +82,22 @@ pub enum Either<L, R> {
 ///     assert_eq!(length(owned), 12);
 /// }
 /// ```
+///
+/// ```
+/// use either::Either;
+///
+/// fn length(s: Either<String, Vec<u8>>) -> usize {
+///     either::for_both!(s => s.len())
+/// }
+///
+/// fn main() {
+///     let string = Either::Left("Hello world!".to_owned());
+///     let bytes = Either::Right(b"Hello world!".to_vec());
+///
+///     assert_eq!(length(string), 12);
+///     assert_eq!(length(bytes), 12);
+/// }
+/// ```
 #[macro_export]
 macro_rules! for_both {
     ($value:expr, $pattern:pat => $result:expr) => {
@@ -86,13 +106,66 @@ macro_rules! for_both {
             $crate::Either::Right($pattern) => $result,
         }
     };
+    ($name:ident => $result:expr) => {
+        match $name {
+            $crate::Either::Left($name) => $result,
+            $crate::Either::Right($name) => $result,
+        }
+    };
 }
 
-/// Macro for unwrapping the left side of an `Either`, which fails early
+/// Evaluate the provided expression for both [`Either::Left`] and [`Either::Right`],
+/// returning an [`Either`] with the results.
+///
+/// This macro is useful in cases where both sides of [`Either`] can be interacted with
+/// in the same way even though the don't share the same type.
+///
+/// Syntax: `either::map_both!(` *expression* `,` *pattern* `=>` *expression* `)`
+///
+/// Unlike [`for_both!`], this macro returns an [`Either`] with the results of the expressions.
+///
+/// # Example
+///
+/// ```
+/// use either::Either;
+///
+/// struct Wrapper<T>(T);
+///
+/// fn wrap(
+///     owned_or_borrowed: Either<String, &'static str>,
+/// ) -> Either<Wrapper<String>, Wrapper<&'static str>> {
+///     either::map_both!(owned_or_borrowed, s => Wrapper(s))
+/// }
+/// ```
+///
+/// ```
+/// use either::Either;
+///
+/// fn widen(x: Either<i32, u32>) -> Either<i64, u64> {
+///     either::map_both!(x => x.into())
+/// }
+/// ```
+#[macro_export]
+macro_rules! map_both {
+    ($value:expr, $pattern:pat => $result:expr) => {
+        match $value {
+            $crate::Either::Left($pattern) => $crate::Either::Left($result),
+            $crate::Either::Right($pattern) => $crate::Either::Right($result),
+        }
+    };
+    ($name:ident => $result:expr) => {
+        match $name {
+            $crate::Either::Left($name) => $crate::Either::Left($result),
+            $crate::Either::Right($name) => $crate::Either::Right($result),
+        }
+    };
+}
+
+/// Macro for unwrapping the left side of an [`Either`], which fails early
 /// with the opposite side. Can only be used in functions that return
 /// `Either` because of the early return of `Right` that it provides.
 ///
-/// See also `try_right!` for its dual, which applies the same just to the
+/// See also [`try_right!`] for its dual, which applies the same just to the
 /// right side.
 ///
 /// # Example
@@ -120,7 +193,7 @@ macro_rules! try_left {
     };
 }
 
-/// Dual to `try_left!`, see its documentation for more information.
+/// Dual to [`try_left!`], see its documentation for more information.
 #[macro_export]
 macro_rules! try_right {
     ($expr:expr) => {
@@ -130,6 +203,12 @@ macro_rules! try_right {
         }
     };
 }
+
+mod iterator;
+pub use self::iterator::IterEither;
+
+mod into_either;
+pub use self::into_either::IntoEither;
 
 impl<L: Clone, R: Clone> Clone for Either<L, R> {
     fn clone(&self) -> Self {
@@ -159,9 +238,109 @@ impl<L, R> Either<L, R> {
     /// assert_eq!(values[1].is_left(), false);
     /// ```
     pub fn is_left(&self) -> bool {
-        match *self {
+        match self {
             Left(_) => true,
             Right(_) => false,
+        }
+    }
+
+    /// Returns `true` if the value is [`Left`] and the value inside of it matches a predicate.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use either::*;
+    ///
+    /// let left0: Either<i32, i32> = Left(0);
+    /// let left2: Either<i32, i32> = Left(2);
+    /// let right: Either<i32, i32> = Right(2);
+    ///
+    /// assert_eq!(left2.is_left_and(|n| n > 1), true);
+    /// assert_eq!(left0.is_left_and(|n| n > 1), false);
+    /// assert_eq!(right.is_left_and(|n| n > 1), false);
+    /// ```
+    pub fn is_left_and<F>(self, f: F) -> bool
+    where
+        F: FnOnce(L) -> bool,
+    {
+        match self {
+            Left(left) => f(left),
+            Right(_) => false,
+        }
+    }
+
+    /// Returns `true` if the value is [`Right`] and the value inside of it matches a predicate.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use either::*;
+    ///
+    /// let right0: Either<i32, i32> = Right(0);
+    /// let right2: Either<i32, i32> = Right(2);
+    /// let left: Either<i32, i32> = Left(2);
+    ///
+    /// assert_eq!(right2.is_right_and(|n| n > 1), true);
+    /// assert_eq!(right0.is_right_and(|n| n > 1), false);
+    /// assert_eq!(left.is_right_and(|n| n > 1), false);
+    /// ```
+    pub fn is_right_and<F>(self, f: F) -> bool
+    where
+        F: FnOnce(R) -> bool,
+    {
+        match self {
+            Left(_) => false,
+            Right(right) => f(right),
+        }
+    }
+
+    /// Returns `true` if the value is [`Left`], or value is [`Right`] and the value inside of it matches a predicate.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use either::*;
+    ///
+    /// let left: Either<i32, i32> = Left(0);
+    /// let right2: Either<i32, i32> = Right(2);
+    /// let right0: Either<i32, i32> = Right(0);
+    ///
+    /// assert_eq!(left.is_left_or(|n| n > 1),   true);
+    /// assert_eq!(right2.is_left_or(|n| n > 1), true);
+    /// assert_eq!(right0.is_left_or(|n| n > 1), false);
+    /// ```
+    pub fn is_left_or<F>(self, f: F) -> bool
+    where
+        F: FnOnce(R) -> bool,
+    {
+        match self {
+            Left(_) => true,
+            Right(right) => f(right),
+        }
+    }
+
+    /// Returns `true` if the value is [`Right`], or value is [`Left`] and the value inside of it matches a predicate.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use either::*;
+    ///
+    /// let right: Either<i32, i32> = Right(0);
+    /// let left2: Either<i32, i32> = Left(2);
+    /// let left0: Either<i32, i32> = Left(0);
+    ///
+    /// assert_eq!(right.is_right_or(|n| n > 1), true);
+    /// assert_eq!(left2.is_right_or(|n| n > 1), true);
+    /// assert_eq!(left0.is_right_or(|n| n > 1), false);
+    /// ```
+    pub fn is_right_or<F>(self, f: F) -> bool
+    where
+        F: FnOnce(L) -> bool,
+    {
+        match self {
+            Left(left) => f(left),
+            Right(_) => true,
         }
     }
 
@@ -226,10 +405,7 @@ impl<L, R> Either<L, R> {
     /// assert_eq!(right.as_ref(), Right(&"some value"));
     /// ```
     pub fn as_ref(&self) -> Either<&L, &R> {
-        match *self {
-            Left(ref inner) => Left(inner),
-            Right(ref inner) => Right(inner),
-        }
+        map_both!(self, inner => inner)
     }
 
     /// Convert `&mut Either<L, R>` to `Either<&mut L, &mut R>`.
@@ -251,10 +427,7 @@ impl<L, R> Either<L, R> {
     /// assert_eq!(right, Right(123));
     /// ```
     pub fn as_mut(&mut self) -> Either<&mut L, &mut R> {
-        match *self {
-            Left(ref mut inner) => Left(inner),
-            Right(ref mut inner) => Right(inner),
-        }
+        map_both!(self, inner => inner)
     }
 
     /// Convert `Pin<&Either<L, R>>` to `Either<Pin<&L>, Pin<&R>>`,
@@ -262,12 +435,7 @@ impl<L, R> Either<L, R> {
     pub fn as_pin_ref(self: Pin<&Self>) -> Either<Pin<&L>, Pin<&R>> {
         // SAFETY: We can use `new_unchecked` because the `inner` parts are
         // guaranteed to be pinned, as they come from `self` which is pinned.
-        unsafe {
-            match *Pin::get_ref(self) {
-                Left(ref inner) => Left(Pin::new_unchecked(inner)),
-                Right(ref inner) => Right(Pin::new_unchecked(inner)),
-            }
-        }
+        unsafe { map_both!(Pin::get_ref(self), inner => Pin::new_unchecked(inner)) }
     }
 
     /// Convert `Pin<&mut Either<L, R>>` to `Either<Pin<&mut L>, Pin<&mut R>>`,
@@ -278,12 +446,7 @@ impl<L, R> Either<L, R> {
         // to be pinned, as they come from `self` which is pinned, and we never
         // offer an unpinned `&mut L` or `&mut R` through `Pin<&mut Self>`. We
         // also don't have an implementation of `Drop`, nor manual `Unpin`.
-        unsafe {
-            match *Pin::get_unchecked_mut(self) {
-                Left(ref mut inner) => Left(Pin::new_unchecked(inner)),
-                Right(ref mut inner) => Right(Pin::new_unchecked(inner)),
-            }
-        }
+        unsafe { map_both!(Pin::get_unchecked_mut(self), inner => Pin::new_unchecked(inner)) }
     }
 
     /// Convert `Either<L, R>` to `Either<R, L>`.
@@ -348,6 +511,54 @@ impl<L, R> Either<L, R> {
         }
     }
 
+    /// Returns the provided default (if [`Right`]), or
+    /// applies a function to the contained value (if [`Left`]).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use either::*;
+    ///
+    /// let x: Either<_, i32> = Left(123);
+    /// assert_eq!(x.map_left_or(0, |n| n * 2), 246);
+    ///
+    /// let x: Either<i32, _> = Right(123);
+    /// assert_eq!(x.map_left_or(0, |n| n * 2), 0);
+    /// ```
+    pub fn map_left_or<F, S>(self, default: S, f: F) -> S
+    where
+        F: FnOnce(L) -> S,
+    {
+        match self {
+            Left(left) => f(left),
+            Right(_) => default,
+        }
+    }
+
+    /// Returns the provided default (if [`Left`]), or
+    /// applies a function to the contained value (if [`Right`]).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use either::*;
+    ///
+    /// let x: Either<_, i32> = Left(123);
+    /// assert_eq!(x.map_right_or(0, |n| n * 2), 0);
+    ///
+    /// let x: Either<i32, _> = Right(123);
+    /// assert_eq!(x.map_right_or(0, |n| n * 2), 246);
+    /// ```
+    pub fn map_right_or<F, S>(self, default: S, f: F) -> S
+    where
+        F: FnOnce(R) -> S,
+    {
+        match self {
+            Left(_) => default,
+            Right(right) => f(right),
+        }
+    }
+
     /// Apply the functions `f` and `g` to the `Left` and `Right` variants
     /// respectively. This is equivalent to
     /// [bimap](https://hackage.haskell.org/package/bifunctors-5/docs/Data-Bifunctor.html)
@@ -376,7 +587,7 @@ impl<L, R> Either<L, R> {
         }
     }
 
-    /// Similar to [`map_either`], with an added context `ctx` accessible to
+    /// Similar to [`map_either`][Self::map_either], with an added context `ctx` accessible to
     /// both functions.
     ///
     /// ```
@@ -434,7 +645,7 @@ impl<L, R> Either<L, R> {
         }
     }
 
-    /// Like `either`, but provide some context to whichever of the
+    /// Like [`either`][Self::either], but provide some context to whichever of the
     /// functions ends up being called.
     ///
     /// ```
@@ -461,6 +672,62 @@ impl<L, R> Either<L, R> {
         match self {
             Left(l) => f(ctx, l),
             Right(r) => g(ctx, r),
+        }
+    }
+
+    /// Returns `other` if the value is [`Left`], otherwise returns the [`Right`] value of `self`.
+    ///
+    /// Arguments passed to `left_and` are eagerly evaluated; if you are passing the
+    /// result of a function call, it is recommended to use [`left_and_then`], which is
+    /// lazily evaluated.
+    ///
+    /// [`left_and_then`]: Either::left_and_then
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use either::*;
+    ///
+    /// let left: Either<_, u32> = Left(123);
+    /// assert_eq!(left.left_and::<()>(Right(246)), Right(246));
+    /// assert_eq!(left.left_and(Left(246)), Left(246));
+    ///
+    /// let right: Either<u32, _> = Right(123);
+    /// assert_eq!(right.left_and::<()>(Right(246)), Right(123));
+    /// assert_eq!(right.left_and(Left(246)), Right(123));
+    /// ```
+    pub fn left_and<S>(self, other: Either<S, R>) -> Either<S, R> {
+        match self {
+            Left(_) => other,
+            Right(r) => Right(r),
+        }
+    }
+
+    /// Returns `other` if the value is [`Right`], otherwise returns the [`Left`] value of `self`.
+    ///
+    /// Arguments passed to `right_and` are eagerly evaluated; if you are passing the
+    /// result of a function call, it is recommended to use [`right_and_then`], which is
+    /// lazily evaluated.
+    ///
+    /// [`right_and_then`]: Either::right_and_then
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use either::*;
+    ///
+    /// let left: Either<_, u32> = Left(123);
+    /// assert_eq!(left.right_and(Right(246)), Left(123));
+    /// assert_eq!(left.right_and::<()>(Left(246)), Left(123));
+    ///
+    /// let right: Either<u32, _> = Right(123);
+    /// assert_eq!(right.right_and(Right(246)), Right(246));
+    /// assert_eq!(right.right_and::<()>(Left(246)), Left(246));
+    /// ```
+    pub fn right_and<S>(self, other: Either<L, S>) -> Either<L, S> {
+        match self {
+            Left(l) => Left(l),
+            Right(_) => other,
         }
     }
 
@@ -508,6 +775,9 @@ impl<L, R> Either<L, R> {
 
     /// Convert the inner value to an iterator.
     ///
+    /// This requires the `Left` and `Right` iterators to have the same item type.
+    /// See [`factor_into_iter`][Either::factor_into_iter] to iterate different types.
+    ///
     /// ```
     /// use either::*;
     ///
@@ -522,19 +792,140 @@ impl<L, R> Either<L, R> {
         L: IntoIterator,
         R: IntoIterator<Item = L::Item>,
     {
-        match self {
-            Left(l) => Left(l.into_iter()),
-            Right(r) => Right(r.into_iter()),
-        }
+        map_both!(self, inner => inner.into_iter())
+    }
+
+    /// Borrow the inner value as an iterator.
+    ///
+    /// This requires the `Left` and `Right` iterators to have the same item type.
+    /// See [`factor_iter`][Either::factor_iter] to iterate different types.
+    ///
+    /// ```
+    /// use either::*;
+    ///
+    /// let left: Either<_, &[u32]> = Left(vec![2, 3]);
+    /// let mut right: Either<Vec<u32>, _> = Right(&[4, 5][..]);
+    /// let mut all = vec![1];
+    /// all.extend(left.iter());
+    /// all.extend(right.iter());
+    /// assert_eq!(all, vec![1, 2, 3, 4, 5]);
+    /// ```
+    pub fn iter(&self) -> Either<<&L as IntoIterator>::IntoIter, <&R as IntoIterator>::IntoIter>
+    where
+        for<'a> &'a L: IntoIterator,
+        for<'a> &'a R: IntoIterator<Item = <&'a L as IntoIterator>::Item>,
+    {
+        map_both!(self, inner => inner.into_iter())
+    }
+
+    /// Mutably borrow the inner value as an iterator.
+    ///
+    /// This requires the `Left` and `Right` iterators to have the same item type.
+    /// See [`factor_iter_mut`][Either::factor_iter_mut] to iterate different types.
+    ///
+    /// ```
+    /// use either::*;
+    ///
+    /// let mut left: Either<_, &mut [u32]> = Left(vec![2, 3]);
+    /// for l in left.iter_mut() {
+    ///     *l *= *l
+    /// }
+    /// assert_eq!(left, Left(vec![4, 9]));
+    ///
+    /// let mut inner = [4, 5];
+    /// let mut right: Either<Vec<u32>, _> = Right(&mut inner[..]);
+    /// for r in right.iter_mut() {
+    ///     *r *= *r
+    /// }
+    /// assert_eq!(inner, [16, 25]);
+    /// ```
+    pub fn iter_mut(
+        &mut self,
+    ) -> Either<<&mut L as IntoIterator>::IntoIter, <&mut R as IntoIterator>::IntoIter>
+    where
+        for<'a> &'a mut L: IntoIterator,
+        for<'a> &'a mut R: IntoIterator<Item = <&'a mut L as IntoIterator>::Item>,
+    {
+        map_both!(self, inner => inner.into_iter())
+    }
+
+    /// Converts an `Either` of `Iterator`s to be an `Iterator` of `Either`s
+    ///
+    /// Unlike [`into_iter`][Either::into_iter], this does not require the
+    /// `Left` and `Right` iterators to have the same item type.
+    ///
+    /// ```
+    /// use either::*;
+    /// let left: Either<_, Vec<u8>> = Left(&["hello"]);
+    /// assert_eq!(left.factor_into_iter().next(), Some(Left(&"hello")));
+    ///
+    /// let right: Either<&[&str], _> = Right(vec![0, 1]);
+    /// assert_eq!(right.factor_into_iter().collect::<Vec<_>>(), vec![Right(0), Right(1)]);
+    ///
+    /// ```
+    pub fn factor_into_iter(self) -> IterEither<L::IntoIter, R::IntoIter>
+    where
+        L: IntoIterator,
+        R: IntoIterator,
+    {
+        IterEither::new(map_both!(self, inner => inner.into_iter()))
+    }
+
+    /// Borrows an `Either` of `Iterator`s to be an `Iterator` of `Either`s
+    ///
+    /// Unlike [`iter`][Either::iter], this does not require the
+    /// `Left` and `Right` iterators to have the same item type.
+    ///
+    /// ```
+    /// use either::*;
+    /// let left: Either<_, Vec<u8>> = Left(["hello"]);
+    /// assert_eq!(left.factor_iter().next(), Some(Left(&"hello")));
+    ///
+    /// let right: Either<[&str; 2], _> = Right(vec![0, 1]);
+    /// assert_eq!(right.factor_iter().collect::<Vec<_>>(), vec![Right(&0), Right(&1)]);
+    ///
+    /// ```
+    pub fn factor_iter(
+        &self,
+    ) -> IterEither<<&L as IntoIterator>::IntoIter, <&R as IntoIterator>::IntoIter>
+    where
+        for<'a> &'a L: IntoIterator,
+        for<'a> &'a R: IntoIterator,
+    {
+        IterEither::new(map_both!(self, inner => inner.into_iter()))
+    }
+
+    /// Mutably borrows an `Either` of `Iterator`s to be an `Iterator` of `Either`s
+    ///
+    /// Unlike [`iter_mut`][Either::iter_mut], this does not require the
+    /// `Left` and `Right` iterators to have the same item type.
+    ///
+    /// ```
+    /// use either::*;
+    /// let mut left: Either<_, Vec<u8>> = Left(["hello"]);
+    /// left.factor_iter_mut().for_each(|x| *x.unwrap_left() = "goodbye");
+    /// assert_eq!(left, Left(["goodbye"]));
+    ///
+    /// let mut right: Either<[&str; 2], _> = Right(vec![0, 1, 2]);
+    /// right.factor_iter_mut().for_each(|x| if let Right(r) = x { *r = -*r; });
+    /// assert_eq!(right, Right(vec![0, -1, -2]));
+    ///
+    /// ```
+    pub fn factor_iter_mut(
+        &mut self,
+    ) -> IterEither<<&mut L as IntoIterator>::IntoIter, <&mut R as IntoIterator>::IntoIter>
+    where
+        for<'a> &'a mut L: IntoIterator,
+        for<'a> &'a mut R: IntoIterator,
+    {
+        IterEither::new(map_both!(self, inner => inner.into_iter()))
     }
 
     /// Return left value or given value
     ///
     /// Arguments passed to `left_or` are eagerly evaluated; if you are passing
-    /// the result of a function call, it is recommended to use [`left_or_else`],
-    /// which is lazily evaluated.
-    ///
-    /// [`left_or_else`]: #method.left_or_else
+    /// the result of a function call, it is recommended to use
+    /// [`left_or_else`][Self::left_or_else], which is lazily evaluated.
     ///
     /// # Examples
     ///
@@ -600,10 +991,8 @@ impl<L, R> Either<L, R> {
     /// Return right value or given value
     ///
     /// Arguments passed to `right_or` are eagerly evaluated; if you are passing
-    /// the result of a function call, it is recommended to use [`right_or_else`],
-    /// which is lazily evaluated.
-    ///
-    /// [`right_or_else`]: #method.right_or_else
+    /// the result of a function call, it is recommended to use
+    /// [`right_or_else`][Self::right_or_else], which is lazily evaluated.
     ///
     /// # Examples
     ///
@@ -685,6 +1074,7 @@ impl<L, R> Either<L, R> {
     /// let right: Either<(), _> = Right(3);
     /// right.unwrap_left();
     /// ```
+    #[track_caller]
     pub fn unwrap_left(self) -> L
     where
         R: core::fmt::Debug,
@@ -716,6 +1106,7 @@ impl<L, R> Either<L, R> {
     /// let left: Either<_, ()> = Left(3);
     /// left.unwrap_right();
     /// ```
+    #[track_caller]
     pub fn unwrap_right(self) -> R
     where
         L: core::fmt::Debug,
@@ -745,6 +1136,7 @@ impl<L, R> Either<L, R> {
     /// let right: Either<(), _> = Right(3);
     /// right.expect_left("value was Right");
     /// ```
+    #[track_caller]
     pub fn expect_left(self, msg: &str) -> L
     where
         R: core::fmt::Debug,
@@ -774,6 +1166,7 @@ impl<L, R> Either<L, R> {
     /// let left: Either<_, ()> = Left(3);
     /// left.expect_right("value was Right");
     /// ```
+    #[track_caller]
     pub fn expect_right(self, msg: &str) -> R
     where
         L: core::fmt::Debug,
@@ -782,6 +1175,56 @@ impl<L, R> Either<L, R> {
             Either::Right(r) => r,
             Either::Left(l) => panic!("{}: {:?}", msg, l),
         }
+    }
+
+    /// Calls a function with a reference to the contained value if [`Left`].
+    ///
+    /// Returns the original self.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use either::*;
+    ///
+    /// # fn foo() -> Either<u32, u32> { Right(2) }
+    /// let x = foo()
+    ///     .inspect_left(|n| println!("left: {n}"))
+    ///     .left_or(0);
+    /// ```
+    pub fn inspect_left<F>(self, f: F) -> Self
+    where
+        F: FnOnce(&L),
+    {
+        if let Left(ref left) = self {
+            f(left);
+        }
+
+        self
+    }
+
+    /// Calls a function with a reference to the contained value if [`Right`].
+    ///
+    /// Returns the original self.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use either::*;
+    ///
+    /// # fn foo() -> Either<u32, u32> { Right(2) }
+    /// let x = foo()
+    ///     .inspect_right(|n| println!("right: {n}"))
+    ///     .left_or(0);
+    /// ```
+    pub fn inspect_right<F>(self, f: F) -> Self
+    where
+        F: FnOnce(&R),
+    {
+        if let Right(ref right) = self {
+            f(right);
+        }
+
+        self
     }
 
     /// Convert the contained value into `T`
@@ -801,10 +1244,7 @@ impl<L, R> Either<L, R> {
         L: Into<T>,
         R: Into<T>,
     {
-        match self {
-            Either::Left(l) => l.into(),
-            Either::Right(r) => r.into(),
-        }
+        for_both!(self, inner => inner.into())
     }
 }
 
@@ -819,8 +1259,7 @@ impl<L, R> Either<Option<L>, Option<R>> {
     /// let right: Either<Option<Vec<u8>>, _> = Right(Some(String::new()));
     /// assert_eq!(right.factor_none(), Some(Right(String::new())));
     /// ```
-    // TODO(MSRV): doc(alias) was stabilized in Rust 1.48
-    // #[doc(alias = "transpose")]
+    #[doc(alias = "transpose")]
     pub fn factor_none(self) -> Option<Either<L, R>> {
         match self {
             Left(l) => l.map(Either::Left),
@@ -830,7 +1269,7 @@ impl<L, R> Either<Option<L>, Option<R>> {
 }
 
 impl<L, R, E> Either<Result<L, E>, Result<R, E>> {
-    /// Factors out a homogenous type from an `Either` of [`Result`].
+    /// Factors out a homogeneous type from an `Either` of [`Result`].
     ///
     /// Here, the homogeneous type is the `Err` type of the [`Result`].
     ///
@@ -842,8 +1281,7 @@ impl<L, R, E> Either<Result<L, E>, Result<R, E>> {
     /// let right: Either<Result<Vec<u8>, u32>, _> = Right(Ok(String::new()));
     /// assert_eq!(right.factor_err(), Ok(Right(String::new())));
     /// ```
-    // TODO(MSRV): doc(alias) was stabilized in Rust 1.48
-    // #[doc(alias = "transpose")]
+    #[doc(alias = "transpose")]
     pub fn factor_err(self) -> Result<Either<L, R>, E> {
         match self {
             Left(l) => l.map(Either::Left),
@@ -853,7 +1291,7 @@ impl<L, R, E> Either<Result<L, E>, Result<R, E>> {
 }
 
 impl<T, L, R> Either<Result<T, L>, Result<T, R>> {
-    /// Factors out a homogenous type from an `Either` of [`Result`].
+    /// Factors out a homogeneous type from an `Either` of [`Result`].
     ///
     /// Here, the homogeneous type is the `Ok` type of the [`Result`].
     ///
@@ -865,8 +1303,7 @@ impl<T, L, R> Either<Result<T, L>, Result<T, R>> {
     /// let right: Either<Result<u32, Vec<u8>>, _> = Right(Err(String::new()));
     /// assert_eq!(right.factor_ok(), Err(Right(String::new())));
     /// ```
-    // TODO(MSRV): doc(alias) was stabilized in Rust 1.48
-    // #[doc(alias = "transpose")]
+    #[doc(alias = "transpose")]
     pub fn factor_ok(self) -> Result<T, Either<L, R>> {
         match self {
             Left(l) => l.map_err(Either::Left),
@@ -948,10 +1385,51 @@ impl<T> Either<T, T> {
     where
         F: FnOnce(T) -> M,
     {
-        match self {
-            Left(l) => Left(f(l)),
-            Right(r) => Right(f(r)),
-        }
+        map_both!(self, t => f(t))
+    }
+}
+
+impl<L, R> Either<&L, &R> {
+    /// Maps an `Either<&L, &R>` to an `Either<L, R>` by cloning the contents of
+    /// either branch.
+    pub fn cloned(self) -> Either<L, R>
+    where
+        L: Clone,
+        R: Clone,
+    {
+        map_both!(self, inner => inner.clone())
+    }
+
+    /// Maps an `Either<&L, &R>` to an `Either<L, R>` by copying the contents of
+    /// either branch.
+    pub fn copied(self) -> Either<L, R>
+    where
+        L: Copy,
+        R: Copy,
+    {
+        map_both!(self, inner => *inner)
+    }
+}
+
+impl<L, R> Either<&mut L, &mut R> {
+    /// Maps an `Either<&mut L, &mut R>` to an `Either<L, R>` by cloning the contents of
+    /// either branch.
+    pub fn cloned(self) -> Either<L, R>
+    where
+        L: Clone,
+        R: Clone,
+    {
+        map_both!(self, inner => inner.clone())
+    }
+
+    /// Maps an `Either<&mut L, &mut R>` to an `Either<L, R>` by copying the contents of
+    /// either branch.
+    pub fn copied(self) -> Either<L, R>
+    where
+        L: Copy,
+        R: Copy,
+    {
+        map_both!(self, inner => *inner)
     }
 }
 
@@ -966,166 +1444,13 @@ impl<L, R> From<Result<R, L>> for Either<L, R> {
 }
 
 /// Convert from `Either` to `Result` with `Right => Ok` and `Left => Err`.
-#[allow(clippy::from_over_into)] // From requires RFC 2451, Rust 1.41
-impl<L, R> Into<Result<R, L>> for Either<L, R> {
-    fn into(self) -> Result<R, L> {
-        match self {
+impl<L, R> From<Either<L, R>> for Result<R, L> {
+    fn from(val: Either<L, R>) -> Self {
+        match val {
             Left(l) => Err(l),
             Right(r) => Ok(r),
         }
     }
-}
-
-impl<L, R, A> Extend<A> for Either<L, R>
-where
-    L: Extend<A>,
-    R: Extend<A>,
-{
-    fn extend<T>(&mut self, iter: T)
-    where
-        T: IntoIterator<Item = A>,
-    {
-        for_both!(*self, ref mut inner => inner.extend(iter))
-    }
-}
-
-/// `Either<L, R>` is an iterator if both `L` and `R` are iterators.
-impl<L, R> Iterator for Either<L, R>
-where
-    L: Iterator,
-    R: Iterator<Item = L::Item>,
-{
-    type Item = L::Item;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        for_both!(*self, ref mut inner => inner.next())
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        for_both!(*self, ref inner => inner.size_hint())
-    }
-
-    fn fold<Acc, G>(self, init: Acc, f: G) -> Acc
-    where
-        G: FnMut(Acc, Self::Item) -> Acc,
-    {
-        for_both!(self, inner => inner.fold(init, f))
-    }
-
-    fn for_each<F>(self, f: F)
-    where
-        F: FnMut(Self::Item),
-    {
-        for_both!(self, inner => inner.for_each(f))
-    }
-
-    fn count(self) -> usize {
-        for_both!(self, inner => inner.count())
-    }
-
-    fn last(self) -> Option<Self::Item> {
-        for_both!(self, inner => inner.last())
-    }
-
-    fn nth(&mut self, n: usize) -> Option<Self::Item> {
-        for_both!(*self, ref mut inner => inner.nth(n))
-    }
-
-    fn collect<B>(self) -> B
-    where
-        B: iter::FromIterator<Self::Item>,
-    {
-        for_both!(self, inner => inner.collect())
-    }
-
-    fn partition<B, F>(self, f: F) -> (B, B)
-    where
-        B: Default + Extend<Self::Item>,
-        F: FnMut(&Self::Item) -> bool,
-    {
-        for_both!(self, inner => inner.partition(f))
-    }
-
-    fn all<F>(&mut self, f: F) -> bool
-    where
-        F: FnMut(Self::Item) -> bool,
-    {
-        for_both!(*self, ref mut inner => inner.all(f))
-    }
-
-    fn any<F>(&mut self, f: F) -> bool
-    where
-        F: FnMut(Self::Item) -> bool,
-    {
-        for_both!(*self, ref mut inner => inner.any(f))
-    }
-
-    fn find<P>(&mut self, predicate: P) -> Option<Self::Item>
-    where
-        P: FnMut(&Self::Item) -> bool,
-    {
-        for_both!(*self, ref mut inner => inner.find(predicate))
-    }
-
-    fn find_map<B, F>(&mut self, f: F) -> Option<B>
-    where
-        F: FnMut(Self::Item) -> Option<B>,
-    {
-        for_both!(*self, ref mut inner => inner.find_map(f))
-    }
-
-    fn position<P>(&mut self, predicate: P) -> Option<usize>
-    where
-        P: FnMut(Self::Item) -> bool,
-    {
-        for_both!(*self, ref mut inner => inner.position(predicate))
-    }
-}
-
-impl<L, R> DoubleEndedIterator for Either<L, R>
-where
-    L: DoubleEndedIterator,
-    R: DoubleEndedIterator<Item = L::Item>,
-{
-    fn next_back(&mut self) -> Option<Self::Item> {
-        for_both!(*self, ref mut inner => inner.next_back())
-    }
-
-    // TODO(MSRV): This was stabilized in Rust 1.37
-    // fn nth_back(&mut self, n: usize) -> Option<Self::Item> {
-    //     for_both!(*self, ref mut inner => inner.nth_back(n))
-    // }
-
-    fn rfold<Acc, G>(self, init: Acc, f: G) -> Acc
-    where
-        G: FnMut(Acc, Self::Item) -> Acc,
-    {
-        for_both!(self, inner => inner.rfold(init, f))
-    }
-
-    fn rfind<P>(&mut self, predicate: P) -> Option<Self::Item>
-    where
-        P: FnMut(&Self::Item) -> bool,
-    {
-        for_both!(*self, ref mut inner => inner.rfind(predicate))
-    }
-}
-
-impl<L, R> ExactSizeIterator for Either<L, R>
-where
-    L: ExactSizeIterator,
-    R: ExactSizeIterator<Item = L::Item>,
-{
-    fn len(&self) -> usize {
-        for_both!(*self, ref inner => inner.len())
-    }
-}
-
-impl<L, R> iter::FusedIterator for Either<L, R>
-where
-    L: iter::FusedIterator,
-    R: iter::FusedIterator<Item = L::Item>,
-{
 }
 
 /// `Either<L, R>` is a future if both `L` and `R` are futures.
@@ -1144,93 +1469,93 @@ where
     }
 }
 
-#[cfg(any(test, feature = "use_std"))]
+#[cfg(any(test, feature = "std"))]
 /// `Either<L, R>` implements `Read` if both `L` and `R` do.
 ///
-/// Requires crate feature `"use_std"`
+/// Requires crate feature `"std"`
 impl<L, R> Read for Either<L, R>
 where
     L: Read,
     R: Read,
 {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        for_both!(*self, ref mut inner => inner.read(buf))
+        for_both!(self, inner => inner.read(buf))
     }
 
     fn read_exact(&mut self, buf: &mut [u8]) -> io::Result<()> {
-        for_both!(*self, ref mut inner => inner.read_exact(buf))
+        for_both!(self, inner => inner.read_exact(buf))
     }
 
     fn read_to_end(&mut self, buf: &mut std::vec::Vec<u8>) -> io::Result<usize> {
-        for_both!(*self, ref mut inner => inner.read_to_end(buf))
+        for_both!(self, inner => inner.read_to_end(buf))
     }
 
     fn read_to_string(&mut self, buf: &mut std::string::String) -> io::Result<usize> {
-        for_both!(*self, ref mut inner => inner.read_to_string(buf))
+        for_both!(self, inner => inner.read_to_string(buf))
     }
 }
 
-#[cfg(any(test, feature = "use_std"))]
+#[cfg(any(test, feature = "std"))]
 /// `Either<L, R>` implements `Seek` if both `L` and `R` do.
 ///
-/// Requires crate feature `"use_std"`
+/// Requires crate feature `"std"`
 impl<L, R> Seek for Either<L, R>
 where
     L: Seek,
     R: Seek,
 {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
-        for_both!(*self, ref mut inner => inner.seek(pos))
+        for_both!(self, inner => inner.seek(pos))
     }
 }
 
-#[cfg(any(test, feature = "use_std"))]
-/// Requires crate feature `"use_std"`
+#[cfg(any(test, feature = "std"))]
+/// Requires crate feature `"std"`
 impl<L, R> BufRead for Either<L, R>
 where
     L: BufRead,
     R: BufRead,
 {
     fn fill_buf(&mut self) -> io::Result<&[u8]> {
-        for_both!(*self, ref mut inner => inner.fill_buf())
+        for_both!(self, inner => inner.fill_buf())
     }
 
     fn consume(&mut self, amt: usize) {
-        for_both!(*self, ref mut inner => inner.consume(amt))
+        for_both!(self, inner => inner.consume(amt))
     }
 
     fn read_until(&mut self, byte: u8, buf: &mut std::vec::Vec<u8>) -> io::Result<usize> {
-        for_both!(*self, ref mut inner => inner.read_until(byte, buf))
+        for_both!(self, inner => inner.read_until(byte, buf))
     }
 
     fn read_line(&mut self, buf: &mut std::string::String) -> io::Result<usize> {
-        for_both!(*self, ref mut inner => inner.read_line(buf))
+        for_both!(self, inner => inner.read_line(buf))
     }
 }
 
-#[cfg(any(test, feature = "use_std"))]
+#[cfg(any(test, feature = "std"))]
 /// `Either<L, R>` implements `Write` if both `L` and `R` do.
 ///
-/// Requires crate feature `"use_std"`
+/// Requires crate feature `"std"`
 impl<L, R> Write for Either<L, R>
 where
     L: Write,
     R: Write,
 {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        for_both!(*self, ref mut inner => inner.write(buf))
+        for_both!(self, inner => inner.write(buf))
     }
 
     fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
-        for_both!(*self, ref mut inner => inner.write_all(buf))
+        for_both!(self, inner => inner.write_all(buf))
     }
 
     fn write_fmt(&mut self, fmt: fmt::Arguments<'_>) -> io::Result<()> {
-        for_both!(*self, ref mut inner => inner.write_fmt(fmt))
+        for_both!(self, inner => inner.write_fmt(fmt))
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        for_both!(*self, ref mut inner => inner.flush())
+        for_both!(self, inner => inner.flush())
     }
 }
 
@@ -1240,7 +1565,7 @@ where
     R: AsRef<Target>,
 {
     fn as_ref(&self) -> &Target {
-        for_both!(*self, ref inner => inner.as_ref())
+        for_both!(self, inner => inner.as_ref())
     }
 }
 
@@ -1251,7 +1576,7 @@ macro_rules! impl_specific_ref_and_mut {
             where L: AsRef<$t>, R: AsRef<$t>
         {
             fn as_ref(&self) -> &$t {
-                for_both!(*self, ref inner => inner.as_ref())
+                for_both!(self, inner => inner.as_ref())
             }
         }
 
@@ -1260,7 +1585,7 @@ macro_rules! impl_specific_ref_and_mut {
             where L: AsMut<$t>, R: AsMut<$t>
         {
             fn as_mut(&mut self) -> &mut $t {
-                for_both!(*self, ref mut inner => inner.as_mut())
+                for_both!(self, inner => inner.as_mut())
             }
         }
     };
@@ -1269,18 +1594,18 @@ macro_rules! impl_specific_ref_and_mut {
 impl_specific_ref_and_mut!(str,);
 impl_specific_ref_and_mut!(
     ::std::path::Path,
-    cfg(feature = "use_std"),
-    doc = "Requires crate feature `use_std`."
+    cfg(feature = "std"),
+    doc = "Requires crate feature `std`."
 );
 impl_specific_ref_and_mut!(
     ::std::ffi::OsStr,
-    cfg(feature = "use_std"),
-    doc = "Requires crate feature `use_std`."
+    cfg(feature = "std"),
+    doc = "Requires crate feature `std`."
 );
 impl_specific_ref_and_mut!(
     ::std::ffi::CStr,
-    cfg(feature = "use_std"),
-    doc = "Requires crate feature `use_std`."
+    cfg(feature = "std"),
+    doc = "Requires crate feature `std`."
 );
 
 impl<L, R, Target> AsRef<[Target]> for Either<L, R>
@@ -1289,7 +1614,7 @@ where
     R: AsRef<[Target]>,
 {
     fn as_ref(&self) -> &[Target] {
-        for_both!(*self, ref inner => inner.as_ref())
+        for_both!(self, inner => inner.as_ref())
     }
 }
 
@@ -1299,7 +1624,7 @@ where
     R: AsMut<Target>,
 {
     fn as_mut(&mut self) -> &mut Target {
-        for_both!(*self, ref mut inner => inner.as_mut())
+        for_both!(self, inner => inner.as_mut())
     }
 }
 
@@ -1309,7 +1634,7 @@ where
     R: AsMut<[Target]>,
 {
     fn as_mut(&mut self) -> &mut [Target] {
-        for_both!(*self, ref mut inner => inner.as_mut())
+        for_both!(self, inner => inner.as_mut())
     }
 }
 
@@ -1321,7 +1646,7 @@ where
     type Target = L::Target;
 
     fn deref(&self) -> &Self::Target {
-        for_both!(*self, ref inner => &**inner)
+        for_both!(self, inner => &**inner)
     }
 }
 
@@ -1331,39 +1656,67 @@ where
     R: DerefMut<Target = L::Target>,
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        for_both!(*self, ref mut inner => &mut *inner)
+        for_both!(self, inner => &mut *inner)
     }
 }
 
-#[cfg(any(test, feature = "use_std"))]
+#[cfg(any(test, feature = "std"))]
 /// `Either` implements `Error` if *both* `L` and `R` implement it.
+///
+/// Requires crate feature `"std"`
 impl<L, R> Error for Either<L, R>
 where
     L: Error,
     R: Error,
 {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
-        for_both!(*self, ref inner => inner.source())
+        for_both!(self, inner => inner.source())
     }
 
     #[allow(deprecated)]
     fn description(&self) -> &str {
-        for_both!(*self, ref inner => inner.description())
+        for_both!(self, inner => inner.description())
     }
 
     #[allow(deprecated)]
     fn cause(&self) -> Option<&dyn Error> {
-        for_both!(*self, ref inner => inner.cause())
+        for_both!(self, inner => inner.cause())
     }
 }
 
-impl<L, R> fmt::Display for Either<L, R>
+macro_rules! impl_fmt_traits {
+    ($($trait:ident),*) => {
+        $(
+            impl <L, R> fmt::$trait for Either<L, R>
+            where
+                L: fmt::$trait,
+                R: fmt::$trait,
+            {
+                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                    for_both!(self, inner => fmt::$trait::fmt(inner, f))
+                }
+            }
+        )*
+    }
+}
+
+impl_fmt_traits!(Binary, Display, LowerExp, LowerHex, Octal, Pointer, UpperExp, UpperHex);
+
+impl<L, R> fmt::Write for Either<L, R>
 where
-    L: fmt::Display,
-    R: fmt::Display,
+    L: fmt::Write,
+    R: fmt::Write,
 {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for_both!(*self, ref inner => inner.fmt(f))
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        for_both!(self, inner => inner.write_str(s))
+    }
+
+    fn write_char(&mut self, c: char) -> fmt::Result {
+        for_both!(self, inner => inner.write_char(c))
+    }
+
+    fn write_fmt(&mut self, args: fmt::Arguments<'_>) -> fmt::Result {
+        for_both!(self, inner => inner.write_fmt(args))
     }
 }
 
@@ -1402,7 +1755,32 @@ fn deref() {
 
     fn is_str(_: &str) {}
     let value: Either<String, &str> = Left(String::from("test"));
-    is_str(&*value);
+    is_str(&value);
+}
+
+#[test]
+fn fmt_traits() {
+    use std::format;
+
+    let value: Either<u32, i32> = Left(0xC0DE);
+    // fmt::Binary
+    assert_eq!("1100000011011110", format!("{value:b}"));
+    // fmt::Display
+    assert_eq!("49374", format!("{value}"));
+    // fmt::LowerExp
+    assert_eq!("4.9374e4", format!("{value:e}"));
+    // fmt::LowerHex
+    assert_eq!("c0de", format!("{value:x}"));
+    // fmt::Octal
+    assert_eq!("140336", format!("{value:o}"));
+    // fmt::UpperExp
+    assert_eq!("4.9374E4", format!("{value:E}"));
+    // fmt::UpperHex
+    assert_eq!("C0DE", format!("{value:X}"));
+
+    // fmt::Pointer
+    let pointer: Either<*const u32, &mut i32> = Left(std::ptr::null());
+    assert_eq!("0x0", format!("{pointer:p}"));
 }
 
 #[test]
@@ -1423,8 +1801,8 @@ fn seek() {
 
     let use_empty = false;
     let mut mockdata = [0x00; 256];
-    for i in 0..256 {
-        mockdata[i] = i as u8;
+    for (i, data) in mockdata.iter_mut().enumerate() {
+        *data = i as u8;
     }
 
     let mut reader = if use_empty {
@@ -1477,9 +1855,9 @@ fn read_write() {
 }
 
 #[test]
-#[allow(deprecated)]
 fn error() {
     let invalid_utf8 = b"\xff";
+    #[allow(invalid_from_utf8)]
     let res = if let Err(error) = ::std::str::from_utf8(invalid_utf8) {
         Err(Left(error))
     } else if let Err(error) = "x".parse::<i32>() {
@@ -1488,6 +1866,7 @@ fn error() {
         Ok(())
     };
     assert!(res.is_err());
+    #[allow(deprecated)]
     res.unwrap_err().description(); // make sure this can be called
 }
 
@@ -1522,7 +1901,7 @@ fn _unsized_ref_propagation() {
 }
 
 // This "unused" method is here to ensure that compilation doesn't fail on given types.
-#[cfg(feature = "use_std")]
+#[cfg(feature = "std")]
 fn _unsized_std_propagation() {
     check_t!(::std::path::Path);
     check_t!(::std::ffi::OsStr);

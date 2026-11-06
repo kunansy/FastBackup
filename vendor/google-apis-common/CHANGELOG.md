@@ -5,16 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## 6.0.1 (2024-01-05)
+## 7.0.0 (2024-10-15)
 
-Added another encoding/decoding wrapper for base64.
+Breaking as a lot of dependencies were updated, and there maybe minor API changes as well.
 
 ### Commit Statistics
 
 <csr-read-only-do-not-edit/>
 
- - 3 commits contributed to the release over the course of 100 calendar days.
- - 135 days passed between releases.
+ - 27 commits contributed to the release.
+ - 139 days passed between releases.
  - 0 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -25,6 +25,152 @@ Added another encoding/decoding wrapper for base64.
 <details><summary>view details</summary>
 
  * **Uncategorized**
+    - Update changelogs ([`9648129`](https://github.com/Byron/google-apis-rs/commit/9648129be46b2a0f96b599a7a21ae98ba1639938))
+    - Set next major version for google-(apis|clis)-common, and the crates ([`cdacfdf`](https://github.com/Byron/google-apis-rs/commit/cdacfdf7a7b17b58dbcf5fc271a005715d6f0aa4))
+    - Merge pull request #527 from IvanUkhov/body ([`fcd59df`](https://github.com/Byron/google-apis-rs/commit/fcd59df97c85c958481a2fdb205780196c81a310))
+    - Revisit the features of hyper-util ([`dca7fb6`](https://github.com/Byron/google-apis-rs/commit/dca7fb659dc6152fd3d06cd7cbd7fe3fdd71e1c9))
+    - Avoid processing incoming bodies unnecessarily ([`5e728f7`](https://github.com/Byron/google-apis-rs/commit/5e728f7ed8a477f28d59e2c8bf25044f9f37c423))
+    - Merge pull request #524 from IvanUkhov/yup-oauth2 ([`450748c`](https://github.com/Byron/google-apis-rs/commit/450748cf02173188a5731156f7694239899901e5))
+    - Sort out new lines and trailing whitespace ([`8e80440`](https://github.com/Byron/google-apis-rs/commit/8e80440fef232c7cda0e95524878e0c75c59e3f4))
+    - Adjust a docstring ([`13ae02e`](https://github.com/Byron/google-apis-rs/commit/13ae02edda02901e455e5d3e3491f04ac7ce7d00))
+    - Sort out the dependencies ([`f62b45e`](https://github.com/Byron/google-apis-rs/commit/f62b45e6ad923adc74b443317718eb246925b697))
+    - Address the lints ([`4bbf1ee`](https://github.com/Byron/google-apis-rs/commit/4bbf1ee673a189b2a5440b3aadd097b9e7d09abd))
+    - Rename Connection to Connector ([`c67b9d3`](https://github.com/Byron/google-apis-rs/commit/c67b9d3ce55c33e6018d193c84270c5493c78151))
+    - Make the API documentation compile ([`a72a918`](https://github.com/Byron/google-apis-rs/commit/a72a918a82208dab98360faccd0ee91a3d37343a))
+    - Introduce Client and Connection ([`6d3710f`](https://github.com/Byron/google-apis-rs/commit/6d3710fd116291280d52a86a29a42d8932820810))
+    - Remove the json alias ([`70bfc8f`](https://github.com/Byron/google-apis-rs/commit/70bfc8f4e3e73ecf815b4de762c975b8589a9956))
+    - Remove to_json and add to_string ([`8978b94`](https://github.com/Byron/google-apis-rs/commit/8978b94120932f8e4792c4c0dc05e97d6c00800c))
+    - Introduce to_response ([`5a494f3`](https://github.com/Byron/google-apis-rs/commit/5a494f351d78b79a91d39a25f6d10a1237f9f86b))
+    - Introduce Client ([`82a00cc`](https://github.com/Byron/google-apis-rs/commit/82a00cce69f6c6d73b0af287f24e36076164f973))
+    - Introduce to_body ([`8835901`](https://github.com/Byron/google-apis-rs/commit/8835901a4d2bdc7358d7deccb073f4cd856e9918))
+    - Remove get_body_as_string ([`a654f2c`](https://github.com/Byron/google-apis-rs/commit/a654f2cb8506958caf14964ef77eacaad7b0a2c3))
+    - Export Body and Response ([`98c432c`](https://github.com/Byron/google-apis-rs/commit/98c432ce3ba907ddeee95ce2fb1d9d413c156162))
+    - Update google-apis-common ([`926ad7b`](https://github.com/Byron/google-apis-rs/commit/926ad7bb2a3dd908321ad40da97331cb45363c89))
+    - Merge pull request #506 from dantreiman/tolerant_base64_decoders ([`7b70b66`](https://github.com/Byron/google-apis-rs/commit/7b70b66c634ff7c798cda36fc68f5b99ae5a703a))
+    - Merge pull request #508 from M4SS-Code/itertools-0.13 ([`46107ff`](https://github.com/Byron/google-apis-rs/commit/46107ff49371fa97ba4fedd0bf09498f23a98337))
+    - Test to ensure standard decoder accepts urlsafe, and vice-versa ([`b5bc9d6`](https://github.com/Byron/google-apis-rs/commit/b5bc9d694185d10ae365f886545506954bdef198))
+    - Bump itertools to 0.13 ([`20893b5`](https://github.com/Byron/google-apis-rs/commit/20893b5644708f3d538f9bb4fbdeb019e706d048))
+    - Fix copy-paste mistakes. ([`74b4a08`](https://github.com/Byron/google-apis-rs/commit/74b4a08e7cc464efa3cf72c9e67533d397d54086))
+    - Base64 decoding accepts standard or url-safe. ([`d659486`](https://github.com/Byron/google-apis-rs/commit/d6594866aaf30b609cb2e61175d003c90cf012a5))
+</details>
+
+## 6.0.4 (2024-05-29)
+
+Various fixes - please see the commit-details.
+
+### Commit Statistics
+
+<csr-read-only-do-not-edit/>
+
+ - 9 commits contributed to the release over the course of 36 calendar days.
+ - 0 commits were understood as [conventional](https://www.conventionalcommits.org).
+ - 0 issues like '(#ID)' were seen in commit messages
+
+### Commit Details
+
+<csr-read-only-do-not-edit/>
+
+<details><summary>view details</summary>
+
+ * **Uncategorized**
+    - Release google-apis-common v6.0.4 ([`279a0a5`](https://github.com/Byron/google-apis-rs/commit/279a0a5e9a42367ac37d66503c948a96baa0dfc7))
+    - Prepare changelog of `google-apis-common` ([`1c42538`](https://github.com/Byron/google-apis-rs/commit/1c42538333d6fd0cec554c977d9894080829c808))
+    - Merge pull request #493 from serprex/base64v22 ([`ce47a46`](https://github.com/Byron/google-apis-rs/commit/ce47a46ca4e80dfbb2ead94037169bc5257c306e))
+    - 6.0.4 ([`4b23b5a`](https://github.com/Byron/google-apis-rs/commit/4b23b5a0c6b267f0fc1213b2c401bd156abfdb1e))
+    - Base64 0.22, serde_with 3, url 2 ([`0fca3a9`](https://github.com/Byron/google-apis-rs/commit/0fca3a944a27a548a8d21508bfb67ba7828ab94f))
+    - Merge pull request #491 from IvanUkhov/oauth2 ([`6f44ce8`](https://github.com/Byron/google-apis-rs/commit/6f44ce870262de0536879d1fb93f66faa78da95c))
+    - Update yup-oauth2 to version 9 ([`8d47fd5`](https://github.com/Byron/google-apis-rs/commit/8d47fd501085f07cbf99419b527968a612657fc2))
+    - Merge pull request #490 from IvanUkhov/oauth2 ([`764857a`](https://github.com/Byron/google-apis-rs/commit/764857a3cf3092f599cc97a773a69e8f6fb87cb0))
+    - Update yup-oauth2 in google-apis-common ([`ba52472`](https://github.com/Byron/google-apis-rs/commit/ba52472c9f83f89651f735ac0781c45214ee13ae))
+</details>
+
+## 6.0.3 (2024-03-11)
+
+### Bug Fixes
+
+ - <csr-id-fa7f7b13fb07aa64be95a1d6fc42906f4d14a13c/> update `chrono` dependency version
+   It now requires a minimal version that introduced `try_seconds()`,
+   which is now being used instead of `seconds()`.
+
+### Commit Statistics
+
+<csr-read-only-do-not-edit/>
+
+ - 3 commits contributed to the release.
+ - 1 commit was understood as [conventional](https://www.conventionalcommits.org).
+ - 0 issues like '(#ID)' were seen in commit messages
+
+### Commit Details
+
+<csr-read-only-do-not-edit/>
+
+<details><summary>view details</summary>
+
+ * **Uncategorized**
+    - Release google-apis-common v6.0.3 ([`b117649`](https://github.com/Byron/google-apis-rs/commit/b1176493d6d1b08362def61f4b686387c73817ad))
+    - Release google-apis-common v6.0.2 ([`5c047b7`](https://github.com/Byron/google-apis-rs/commit/5c047b7e9132269494fcc96b090925cf6d32678c))
+    - Update `chrono` dependency version ([`fa7f7b1`](https://github.com/Byron/google-apis-rs/commit/fa7f7b13fb07aa64be95a1d6fc42906f4d14a13c))
+</details>
+
+## 6.0.2 (2024-03-11)
+
+Fix deprecation warnings in latest version of the `chrono` crate.
+
+### Bug Fixes
+
+ - <csr-id-fa7f7b13fb07aa64be95a1d6fc42906f4d14a13c/> update `chrono` dependency version
+   It now requires a minimal version that introduced `try_seconds()`,
+   which is now being used instead of `seconds()`.
+
+### Commit Statistics
+
+<csr-read-only-do-not-edit/>
+
+ - 11 commits contributed to the release.
+ - 65 days passed between releases.
+ - 0 commits were understood as [conventional](https://www.conventionalcommits.org).
+ - 0 issues like '(#ID)' were seen in commit messages
+
+### Commit Details
+
+<csr-read-only-do-not-edit/>
+
+<details><summary>view details</summary>
+
+ * **Uncategorized**
+    - Release google-apis-common v6.0.2 ([`b5c33a9`](https://github.com/Byron/google-apis-rs/commit/b5c33a9dce79e65e3ddca825fc468870350fcc40))
+    - Prepare changelog prior to release of google-apis-common ([`7ecead7`](https://github.com/Byron/google-apis-rs/commit/7ecead753cddcd890626e465f95d7fc9dee594db))
+    - Merge branch 'docker' ([`292a86e`](https://github.com/Byron/google-apis-rs/commit/292a86ee5a44a41533bbc3cde66c8739766b46a5))
+    - Fix lints by avoiding deprecated methods with latest chrono ([`36f78cd`](https://github.com/Byron/google-apis-rs/commit/36f78cdebfa1c9dc8ac7b58ceb1f3f889a14b20c))
+    - Merge pull request #471 from ytanay/fix-base64-deserialization-borrowed ([`b74056b`](https://github.com/Byron/google-apis-rs/commit/b74056b4b7e4e573e83e0fa2237b622be9655195))
+    - Use Cow for reading base64 strings ([`a8d7356`](https://github.com/Byron/google-apis-rs/commit/a8d735628215d13d736447e919d0bd57767135c5))
+    - Add failing test case for reading base64 string via reader ([`f990fd0`](https://github.com/Byron/google-apis-rs/commit/f990fd0589bb7f5d904c4ef613cd004c4883bcc1))
+    - Merge pull request #465 from andrewbaxter/field-mask-pub-value ([`00a3e18`](https://github.com/Byron/google-apis-rs/commit/00a3e18145c9163a314253a62a4d28d5606c2944))
+    - Add docstring ([`d09893e`](https://github.com/Byron/google-apis-rs/commit/d09893e9212be1f346f6fe8ca61d39ff6c8b8232))
+    - Add FieldMask new method instead of making internals public ([`157b45f`](https://github.com/Byron/google-apis-rs/commit/157b45f6064b9d2c95c2b7057c60875312530103))
+    - Make field mask inner public ([`1ee4014`](https://github.com/Byron/google-apis-rs/commit/1ee401408c6c5ec78b229f9cea556dbb583d296b))
+</details>
+
+## 6.0.1 (2024-01-05)
+
+Added another encoding/decoding wrapper for base64.
+
+### Commit Statistics
+
+<csr-read-only-do-not-edit/>
+
+ - 4 commits contributed to the release.
+ - 0 commits were understood as [conventional](https://www.conventionalcommits.org).
+ - 0 issues like '(#ID)' were seen in commit messages
+
+### Commit Details
+
+<csr-read-only-do-not-edit/>
+
+<details><summary>view details</summary>
+
+ * **Uncategorized**
+    - Release google-apis-common v6.0.1 ([`5a190c7`](https://github.com/Byron/google-apis-rs/commit/5a190c7e20cd8f4160e88d91d3c5c375a6f2bf94))
     - Prepare changelog prior to google-apis-common release. ([`3e0829c`](https://github.com/Byron/google-apis-rs/commit/3e0829caf73a3bb2f7430bb2fc8109d43d5b61d9))
     - Merge pull request #464 from andrewbaxter/standard-base64 ([`23aecc3`](https://github.com/Byron/google-apis-rs/commit/23aecc38e8b03ab3d50641e5581aca63dde76cb3))
     - Attempt to add 'standard' base64 bytes support ([`ee4ed07`](https://github.com/Byron/google-apis-rs/commit/ee4ed07af102f7ae5f685b78327737b233a4023e))
@@ -94,8 +240,7 @@ A maintenance release with updated yup-oauth2 dependency
 
 <csr-read-only-do-not-edit/>
 
- - 5 commits contributed to the release over the course of 55 calendar days.
- - 136 days passed between releases.
+ - 5 commits contributed to the release.
  - 1 commit was understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -133,7 +278,6 @@ A maintenance release with updated yup-oauth2 dependency
 <csr-read-only-do-not-edit/>
 
  - 5 commits contributed to the release over the course of 3 calendar days.
- - 44 days passed between releases.
  - 1 commit was understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -161,7 +305,7 @@ A maintenance release with updated yup-oauth2 dependency
 
 <csr-read-only-do-not-edit/>
 
- - 20 commits contributed to the release over the course of 2 calendar days.
+ - 20 commits contributed to the release.
  - 10 days passed between releases.
  - 1 commit was understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
@@ -206,7 +350,7 @@ A maintenance release with updated yup-oauth2 dependency
 
 <csr-read-only-do-not-edit/>
 
- - 18 commits contributed to the release over the course of 2 calendar days.
+ - 18 commits contributed to the release.
  - 8 days passed between releases.
  - 1 commit was understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
@@ -246,7 +390,7 @@ A maintenance release with updated yup-oauth2 dependency
 
 <csr-read-only-do-not-edit/>
 
- - 13 commits contributed to the release over the course of 3 calendar days.
+ - 13 commits contributed to the release.
  - 6 days passed between releases.
  - 0 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
@@ -516,13 +660,13 @@ you need.
  - <csr-id-f947a4552fad3d1c27b13cc3636922f6d170a9b2/> upgrade patch level
    It seems crates.io has inconsistent version information,
    making a few CLIs pull outdated crates.
-   
+
    [skip CI]
  - <csr-id-1dd5eadac1cd9a8aea817067f6ef3c968feab794/> all api+cli
    However, it appears some APIs changed without updating their respective
    version number. Thus newer CLIs pull outdated APIs?
    Something is wrong.
-   
+
    [skip CI]
  - <csr-id-fc4ff6fe8b31b2a6c49ab1de4f4e74e0675d3a81/> Update examples
  - <csr-id-9cff80836244ec600dafac1994943ed562107af0/> update all apis
@@ -532,7 +676,7 @@ you need.
  - <csr-id-d0eb8f3d9a8aa5cfdf9527a7989cc457f9d69612/> more crates published
  - <csr-id-87c15a7406bb84d71255942a7d47cdf34fcecfc6/> intermediate publish
    cargo cannot connect to github anymore for some reason
-   
+
    [skip ci]
  - <csr-id-d18714e9b2a76cebbe8c6004cddb95e77b9e04be/> regen all apis/clis for v1.0.4
  - <csr-id-6cad082b7632393cf1415c48023a4733534482cb/> v1.0.4 - serde upgrade
@@ -549,7 +693,7 @@ you need.
    dermesser/yup-oauth2#51. As long as the API crates depend on openssl 0.7
    via hyper 0.9, any client using the APIs won't build :( For example,
    examples/drive_example/ in dermesser/yup-oauth2.
-   
+
    Please regenerate and publish afterwards, if possible.
  - <csr-id-7a4d59d19768377a7e14cc90b66674293bd1a0a8/> published all v1.0.2
    For the sole purpose of getting the documentation onto
@@ -593,7 +737,7 @@ you need.
    It appears someone in the dependency chain is pulling in a
    failing aster. Ideally, we review this or try to make a PR
    to fix this in our upstream dependencies.
-   
+
    For now though, I want this badge green.
  - <csr-id-73f0e83086ba168f354a3395911409b4f2b91856/> use serde_derive
  - <csr-id-bc582e57612821e71ec056d4f213db3a4ff2bb83/> use yup-oauth2 1.0
@@ -628,26 +772,26 @@ you need.
    Use latest serde to make nightly builds work.
  - <csr-id-df2dc4784aaa988c7c1e2bc2598b538fa33e8aec/> one more down
    Even though docs work on this one, compilation does not.
-   
+
    [skip ci]
  - <csr-id-527ffa35c23186a1253365448469030aae313b0c/> v0.3.6
    With simpler authentication flow.
  - <csr-id-2a2e7bfc9a6ae870acc2901527fb69c41895fb08/> rustc version no longer needed
    It now just works, and hopefully will keep doing so for a while.
-   
+
    [skip ci]
  - <csr-id-38c3d9a34dcdb947324b02876a5d2f3ef4e614e2/> update to latest version
    [skip ci]
  - <csr-id-2b37fc4d353f8a6f139eef70cc5254140675facc/> update with latest troublemakers
    Those don't compile, usually for trivial reason, which means
    they come up with duplicate types, or have name-clashes.
-   
+
    If there is the need, this can be fixed.
  - <csr-id-b9f237eec04ca2547cc8c53deb149e88aea1d2cb/> latest version to crates.io
    Also update the latest source-code, which is just a cleanup.
  - <csr-id-e7721ce53bafc70ea4de3d14920739649c06c492/> remove workaround marker
    ... and some left-over comments.
-   
+
    The workaround code is actually more readable than the previous version,
    so it may as well stay.
  - <csr-id-ae276438ae7dbc4cb141c8f216834435976e80f0/> update code to latest version
@@ -678,7 +822,7 @@ you need.
  - <csr-id-8d7a49891f8e6db1c528ce4b212029612c077472/> update to latest version + nightly support
    Nightly is now supported, in theory, to allow not to use serde_codegen,
    which currently has trouble to build thanks to an assertion error.
-   
+
    Nightly on the other hand suffers from being build with incorrect
    feature-flags, which makes quasi_macros fail to build ... .
  - <csr-id-ca5dca7af93f7feef1b81237a9c7c1d5b07e1577/> pin `url` crate
@@ -721,7 +865,7 @@ you need.
  - <csr-id-8295bf3c2dc310aeae293dc7287e2efe8d651abd/> no wildcards in dependencies
    Also version specifications in dependencies were chosen to provide
    maximum flexibility for users of the libraries.
-   
+
    CLIs on the other hand specify last known-to-work major and minor versions
    to prevent breakage
  - <csr-id-e3f4fcadad5310ad79d91a1ce449e1ee9f3d0c74/> support for latest hyper
@@ -744,7 +888,7 @@ you need.
  - <csr-id-6393bbf7f69f63e1291dc5b2cbd71a79bfdac2cc/> latest version of v0.3.1 code
    * also fixed OSX deployment utility to deal with target folder
      as primary location for build-artifacts
-   
+
    [skip ci]
  - <csr-id-337f167e6c9cfd464231bbbac9ea4503f9c77e00/> CLI v0.3.1
  - <csr-id-7d58d66025ea58088950a0914bfb910a35a16748/> update json and regen all code
@@ -752,14 +896,14 @@ you need.
    Thanks to the latest cargo 0.3.0, it's possible to keep everything
    in the stanard doc output directory, which essentially collects
    everything for us.
-   
+
    This creatly reduces the space required to hold all documentation, and
    is in fact quite beatiful.
  - <csr-id-31f22b1535feaa031586bdb6d16e2a306fd62a38/> one target dir for all projects
    Starting from cargo 0.3.0, one can override the target-directory
    to be an absolute path, forcing all output to be dumped into
    one and the same target dir.
-   
+
    That way, all dependencies are shared among the projects, saving
    4 to 7 minutes per project in debug and release mode respectively.
  - <csr-id-d0fb7a5ccc5729303b5aca2419ac06abf12e0133/> cli code update
@@ -772,7 +916,7 @@ you need.
  - <csr-id-d6ddff240d1fefac28549efad78648d98e4ed9a4/> api+cli increment
    CLI was incremented to 0.3.0, just to signal usage of the latest clap-rs
    as well as the update of the used API implememtation.
-   
+
    In that moment we also got rid of the json-tools dependency - it
    required unstable features, and I was not willing to enforce making
    it stable just yet.
@@ -788,7 +932,7 @@ you need.
  - <csr-id-5e5f0dcc662160a378387a91a0719407dde503c9/> fix tar-handling
    Previously it would fail as '*' was in fact not substituted by the
    subshell. Now I just take the brutal route, using find.
-   
+
    [skip ci]
  - <csr-id-296debda85e0afb22261b61ab671325f539e01ff/> typo + fixed yaml references
    [skip ci]
@@ -799,20 +943,20 @@ you need.
  - <csr-id-ad6dd7758e08e72cf3df3cee87df41286e9d5f0a/> move all scripts into src/bash
    That way, they are more official than hidden scripts dumped in the
    project root.
-   
+
    [skip ci]
  - <csr-id-1d44d794eba6d7c371c10205e6f1d8b416748035/> script to deploy for download
    A fully untested utility script allows to unpack a tar file previously
    created from `*-depoly.sh` scripts to a suitable location to be
    compatible with the downloads links we generate in the documentation
    index.
-   
+
    Related to #107
    [skip ci]
  - <csr-id-3e70a896742dd682a55394be6936811eaad27111/> publish APIs @v0.1.7
    * keep track of publish through version files
    * updated clog configuration and changelog (automatic)
-   
+
    [skip ci]
  - <csr-id-9e6c9537a527528debd0c68a5fe4494291facdbd/> latest version of all code
  - <csr-id-8375dd0508c6e09761f79f8b47379cc240a0c7c4/> remove special clap configuration
@@ -820,7 +964,7 @@ you need.
  - <csr-id-294da41a308e4f4125db876c5b24084ae8cfcb5f/> special clap configuration
    Turn off default features to disable overly red first version
    of otherwise very promising ascii-coloring support.
-   
+
    It's good to see that thanks to yaml, that flexibility is easily
    achieved without altering any generator code.
  - <csr-id-362781e6014a2b050f69f5487b33aba8434c14a0/> added dev diary episode 2 link
@@ -830,12 +974,12 @@ you need.
    A new feature supported in clog v0.5.0
  - <csr-id-fb80b056ac6cc8eee1972eec979a7f810861f8b8/> added changelog
    Powered by [clog](http://goo.gl/QUpyeL)
-   
+
    [skip ci]
  - <csr-id-d8acd607aea2e4bed548695e46fe541cb72ee904/> disabled rust linter,but configured it
    It's usually too slow to run it, but besides that it's very practical
    to have !
-   
+
    [skip ci]
  - <csr-id-cc1bfd19c8aecb4a62bf68f3bf7db650eb8fc29d/> to reflect recent changes
    And to be sure we don't forget to publish new crates when the new CLI
@@ -859,7 +1003,7 @@ you need.
  - <csr-id-9377220c59cf9a8a29720b0528b9263e9e947580/> api-list is now in separte file
    This file is completely generated, and allows us to easily bring in
    new versions after each json update.
-   
+
    To make that work, we simple merge all data handed to mako-render,
    inside of it. That way, we can put 'api/list' data in any yaml.
  - <csr-id-7b81646f43c1c4de5165c5b3e9e7ea5c836eb664/> update-json and all APIs
@@ -1197,7 +1341,7 @@ you need.
      elaborate.
 * everything related to docopts functionality is now in the docopts
      module.
-   
+
      Related to #45
 * crate version: code gen version
 * +<revision> (build-metadata): exact version of API schema
@@ -1616,7 +1760,7 @@ you need.
    aimed at reducing dependency on the DictObject class. The rough idea is
    to annotate everything as Dict, add some tests to codify the existing
    behavior, and then start defining dataclasses for the dischovery schema.
-   
+
    We also remove some unused logic & params.
  - <csr-id-819e1ccce5c503329bf6ed5dd9078553a48997c5/> :iter not needed
  - <csr-id-d202f9792ba0aea107213ad33ce5e7da06145ef1/> blacklist versions that do not exist
@@ -1624,7 +1768,7 @@ you need.
    mkdocs depends on tornado that fails to compile on Python before 2.7.9.
    When running in Travis not using the Python language a very old version
    of Python is used.
-   
+
    This commit adds pyenv and uses it to ensure Travis Python is viable and
    stable.
  - <csr-id-aaac92bad68634923c554f4f2e8bc28769a47e84/> update toc
@@ -1632,7 +1776,7 @@ you need.
  - <csr-id-c4e363d94ce1715f3ecfe6fd6ee56b93c670bfb2/> remove obsolete notes about linux
    We use cargo now as installation method, no need
    to provide binaries anymore.
-   
+
    [skip ci]
  - <csr-id-0337435cd44105749cb219cc75d61da6895d5d8a/> upgrade to v0.9
    This provides proc macros, greatly simplifying the build
@@ -1641,7 +1785,7 @@ you need.
    The only openssl dependency left would be coming from yup-oauth2!
  - <csr-id-cc30a2e20b697ca318bd3b54e5b94f6935eaadd2/> don't use relative links
    Instead we link to the absolute location.
-   
+
    tech debt: we now use http://byron.github.io/google-apis-rs
    multiple times and thus duplicate that information.
  - <csr-id-6279fd8f5df3ca9c9013635c36041e89df902428/> improve UX
@@ -1651,18 +1795,18 @@ you need.
    We now consider the blacklist, which is probably what the previous
    implementation achieved as it checked for existence of files on disk.
    We do the same, but more directly.
-   
+
    A complete installation script is provided for those who don't yet
    have rustup installed.
  - <csr-id-fad9d3b0ca3f588f65faf6ec46caf51a7ca1c239/> link to doc.rs for APIs
    We also link more specifically to crates.io.
-   
+
    Some debt was taken on as the build_version is special and
    duplicated right now.
  - <csr-id-fdc0141fbcabf68ed5d715314d483469e7a7ef14/> button to copy install-script
  - <csr-id-d6accb8f6194bac7f982ee93409821436dd8beed/> remove all download links
    Instead refer to cargo install for installation.
-   
+
    [skip ci]
  - <csr-id-fc34337ee4ba708f63e3d2f164660edd5ffe5614/> use docs.rs for library documentation
    We will still need to host the CLI docs though.
@@ -1689,7 +1833,7 @@ you need.
  - <csr-id-69b12104a9f9579773553825f63c321e7d1a6899/> DL title contains os-name
    That way, it's clearer, besides the icons themselves, which OS you are
    downloading for.
-   
+
    Related to #106
    [skip ci]
  - <csr-id-e86e55cae788506a2280816009b8620bad091477/> improved display of BadRequest
@@ -1701,11 +1845,11 @@ you need.
  - <csr-id-5894c8163afa9f9d9bed592e7e41912c77cf993d/> remove null in pretty-printed json
    Without all that clutter, it's so much more enjoyable to read the
    output.
-   
+
    The implementation is based on a suggestion of @erickt, which is
    converts into a json::Value (able to represent any json structure),
    on which the filtering is applied.
-   
+
    If we should ever implement pretty-printing in json-tools, we might
    still consider using these capabilities instead, as we would avoid
    building potentially large datastructures, all we would need is
@@ -1715,7 +1859,7 @@ you need.
    Previously reserialization of token streams with removed null values
    was performed on a byte-per-byte basis, which was quite inefficient
    to say the least.
-   
+
    Now it uses `io::copy` to copy in chunks of 65kb, which makes out
    our throughput and should deliver about 150MB/s at least.
 
@@ -1737,7 +1881,7 @@ you need.
  - <csr-id-f83dff672bc5a739f1a4b76333e25d40523fbe2c/> bring in all required field data
    Previously we only knew the type as string, now we have enums and
    additional type information, like whether or not it's a POD.
-   
+
    However, borrow-checker doesn't like the current code, will need more
    work.
  - <csr-id-5c284e1c418d93bca7da4a29c4f8feaf5800c1ce/> non-redundant data access
@@ -1755,18 +1899,18 @@ you need.
    Instead of using multiple lines to add vectors up involving iterators,
    I just add slices together. This should produce less, and possibly
    faster machine code, with less ascii code.
-   
+
    Downloads tested with drive2, and are verified to be working !
  - <csr-id-f1fe6bac018c2268d10233ec1635f0273f1192dc/> move global params to runtime
    Global params were repeated per method, even though they were global,
    per API. Now they are kept in vectors and used at runtime, accordingly.
    We save a little bit of code, have simple matches, and less repition.
-   
+
    It's unclear if this reduces the size of the binary though ... or the
    compile times, as the extra loop is an extra loop after all ;).
-   
+
    Still need to test the download mode using drive1
-   
+
    Related to #97
    [skip ci]
  - <csr-id-bbab1f2e38f4445179e7385a9507098d6ff15cbf/> use raw strings for argparser
@@ -1790,7 +1934,7 @@ you need.
  - <csr-id-a2550d11811de9f9ee51652975363d0f24b8d032/> into own def
    Was rather easy, and shows that plenty of complexity arose from the
    usage example.
-   
+
    Implementing the action will probably be quite something ... .
    Can't wait to have an auto-generated sample program !
  - <csr-id-331ecf87a76189b10672770377d36877dbd7f53a/> methods useful for mbuild as too

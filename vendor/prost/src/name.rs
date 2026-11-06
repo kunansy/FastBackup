@@ -1,6 +1,8 @@
 //! Support for associating type name information with a [`Message`].
 
 use crate::Message;
+
+#[cfg(not(feature = "std"))]
 use alloc::{format, string::String};
 
 /// Associate a type name with a [`Message`] type.
@@ -19,13 +21,17 @@ pub trait Name: Message {
     /// By default, this is the package name followed by the message name.
     /// Fully-qualified names must be unique within a domain of Type URLs.
     fn full_name() -> String {
-        format!("{}.{}", Self::PACKAGE, Self::NAME)
+        if Self::PACKAGE.is_empty() {
+            Self::NAME.into()
+        } else {
+            format!("{}.{}", Self::PACKAGE, Self::NAME)
+        }
     }
 
     /// Type URL for this [`Message`], which by default is the full name with a
     /// leading slash, but may also include a leading domain name, e.g.
     /// `type.googleapis.com/google.profile.Person`.
-    /// This can be used when serializing with the [`Any`] type.
+    /// This can be used when serializing into the `google.protobuf.Any` type.
     fn type_url() -> String {
         format!("/{}", Self::full_name())
     }

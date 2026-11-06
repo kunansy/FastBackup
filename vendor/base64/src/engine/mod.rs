@@ -1,4 +1,5 @@
 //! Provides the [Engine] abstraction and out of the box implementations.
+use crate::alphabet::Symbol;
 #[cfg(any(feature = "alloc", test))]
 use crate::chunked_encoder;
 use crate::{
@@ -13,21 +14,53 @@ use alloc::{string::String, vec};
 
 pub mod general_purpose;
 
+#[cfg(all(
+    feature = "simd-unsafe",
+    any(
+        target_arch = "x86_64",
+        all(target_arch = "aarch64", target_feature = "neon")
+    )
+))]
+pub mod simd;
+
 #[cfg(test)]
 mod naive;
 
 #[cfg(test)]
 mod tests;
 
-pub use general_purpose::{GeneralPurpose, GeneralPurposeConfig};
+pub use general_purpose::{GeneralPurpose, GeneralPurposeConfig, Scalar};
+
+/// The runtime-detected SIMD engine. Requires the `simd-unsafe` feature.
+#[cfg(all(
+    feature = "simd-unsafe",
+    feature = "std",
+    any(
+        target_arch = "x86_64",
+        all(target_arch = "aarch64", target_feature = "neon")
+    )
+))]
+pub use simd::Simd;
+
+/// The AVX2 engine. Requires the `simd-unsafe` feature on an `x86_64` target.
+#[cfg(all(feature = "simd-unsafe", target_arch = "x86_64"))]
+pub use simd::Avx2;
+
+/// The NEON engine. Requires the `simd-unsafe` feature on an `aarch64` target.
+#[cfg(all(
+    feature = "simd-unsafe",
+    target_arch = "aarch64",
+    target_feature = "neon"
+))]
+pub use simd::Neon;
 
 /// An `Engine` provides low-level encoding and decoding operations that all other higher-level parts of the API use. Users of the library will generally not need to implement this.
 ///
 /// Different implementations offer different characteristics. The library currently ships with
-/// [GeneralPurpose] that offers good speed and works on any CPU, with more choices
+/// [`GeneralPurpose`] that offers good speed and works on any CPU, with more choices
 /// coming later, like a constant-time one when side channel resistance is called for, and vendor-specific vectorized ones for more speed.
 ///
-/// See [general_purpose::STANDARD_NO_PAD] if you just want standard base64. Otherwise, when possible, it's
+/// See [`general_purpose::STANDARD_NO_PAD`] if you just want standard base64. Otherwise, when possible, it's
 /// recommended to store the engine in a `const` so that references to it won't pose any lifetime
 /// issues, and to avoid repeating the cost of engine setup.
 ///
@@ -81,19 +114,15 @@ pub trait Engine: Send + Sync {
     ///
     /// Decoding must not write any bytes into the output slice other than the decoded data.
     ///
-    /// Non-canonical trailing bits in the final tokens or non-canonical padding must be reported as
+    /// Non-canonical trailing bits in the final symbols or non-canonical padding must be reported as
     /// errors unless the engine is configured otherwise.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `output` is too small.
     #[doc(hidden)]
     fn internal_decode(
         &self,
         input: &[u8],
         output: &mut [u8],
         decode_estimate: Self::DecodeEstimate,
-    ) -> Result<DecodeMetadata, DecodeError>;
+    ) -> Result<DecodeMetadata, DecodeSliceError>;
 
     /// Returns the config for this engine.
     fn config(&self) -> &Self::Config;
@@ -113,6 +142,7 @@ pub trait Engine: Send + Sync {
     ///     engine::GeneralPurpose::new(&alphabet::URL_SAFE, general_purpose::NO_PAD);
     ///
     /// let b64_url = CUSTOM_ENGINE.encode(b"hello internet~");
+    /// ```
     #[cfg(any(feature = "alloc", test))]
     #[inline]
     fn encode<T: AsRef<[u8]>>(&self, input: T) -> String {
@@ -167,7 +197,7 @@ pub trait Engine: Send + Sync {
                 .expect("Writing to a String shouldn't fail");
         }
 
-        inner(self, input.as_ref(), output_buf)
+        inner(self, input.as_ref(), output_buf);
     }
 
     /// Encode arbitrary octets as base64 into a supplied slice.
@@ -253,7 +283,13 @@ pub trait Engine: Send + Sync {
             let mut buffer = vec![0; estimate.decoded_len_estimate()];
 
             let bytes_written = engine
-                .internal_decode(input_bytes, &mut buffer, estimate)?
+                .internal_decode(input_bytes, &mut buffer, estimate)
+                .map_err(|e| match e {
+                    DecodeSliceError::DecodeError(e) => e,
+                    DecodeSliceError::OutputSliceTooSmall => {
+                        unreachable!("Vec is sized conservatively")
+                    }
+                })?
                 .decoded_len;
 
             buffer.truncate(bytes_written);
@@ -318,7 +354,13 @@ pub trait Engine: Send + Sync {
             let buffer_slice = &mut buffer.as_mut_slice()[starting_output_len..];
 
             let bytes_written = engine
-                .internal_decode(input_bytes, buffer_slice, estimate)?
+                .internal_decode(input_bytes, buffer_slice, estimate)
+                .map_err(|e| match e {
+                    DecodeSliceError::DecodeError(e) => e,
+                    DecodeSliceError::OutputSliceTooSmall => {
+                        unreachable!("Vec is sized conservatively")
+                    }
+                })?
                 .decoded_len;
 
             buffer.truncate(starting_output_len + bytes_written);
@@ -336,9 +378,9 @@ pub trait Engine: Send + Sync {
     ///
     /// This will not write any bytes past exactly what is decoded (no stray garbage bytes at the end).
     ///
-    /// See [crate::decoded_len_estimate] for calculating buffer sizes.
+    /// See [`crate::decoded_len_estimate`] for calculating buffer sizes.
     ///
-    /// See [Engine::decode_slice_unchecked] for a version that panics instead of returning an error
+    /// See [`Engine::decode_slice_unchecked`] for a version that panics instead of returning an error
     /// if the output buffer is too small.
     #[inline]
     fn decode_slice<T: AsRef<[u8]>>(
@@ -354,15 +396,12 @@ pub trait Engine: Send + Sync {
         where
             E: Engine + ?Sized,
         {
-            let estimate = engine.internal_decoded_len_estimate(input_bytes.len());
-
-            if output.len() < estimate.decoded_len_estimate() {
-                return Err(DecodeSliceError::OutputSliceTooSmall);
-            }
-
             engine
-                .internal_decode(input_bytes, output, estimate)
-                .map_err(|e| e.into())
+                .internal_decode(
+                    input_bytes,
+                    output,
+                    engine.internal_decoded_len_estimate(input_bytes.len()),
+                )
                 .map(|dm| dm.decoded_len)
         }
 
@@ -375,9 +414,9 @@ pub trait Engine: Send + Sync {
     ///
     /// This will not write any bytes past exactly what is decoded (no stray garbage bytes at the end).
     ///
-    /// See [crate::decoded_len_estimate] for calculating buffer sizes.
+    /// See [`crate::decoded_len_estimate`] for calculating buffer sizes.
     ///
-    /// See [Engine::decode_slice] for a version that returns an error instead of panicking if the output
+    /// See [`Engine::decode_slice`] for a version that returns an error instead of panicking if the output
     /// buffer is too small.
     ///
     /// # Panics
@@ -400,17 +439,28 @@ pub trait Engine: Send + Sync {
                     engine.internal_decoded_len_estimate(input_bytes.len()),
                 )
                 .map(|dm| dm.decoded_len)
+                .map_err(|e| match e {
+                    DecodeSliceError::DecodeError(e) => e,
+                    DecodeSliceError::OutputSliceTooSmall => {
+                        panic!("Output slice is too small")
+                    }
+                })
         }
 
         inner(self, input.as_ref(), output)
     }
+
+    /// Returns the symbol used for encode padding.
+    ///
+    /// Typically this is `'='`, but weird alphabets may use other values.
+    fn padding(&self) -> Symbol;
 }
 
 /// The minimal level of configuration that engines must support.
 pub trait Config {
     /// Returns `true` if padding should be added after the encoded output.
     ///
-    /// Padding is added outside the engine's encode() since the engine may be used
+    /// Padding is added outside the engine's `encode()` since the engine may be used
     /// to encode only a chunk of the overall output, so it can't always know when
     /// the output is "done" and would therefore need padding (if configured).
     // It could be provided as a separate parameter when encoding, but that feels like
@@ -429,14 +479,14 @@ pub trait DecodeEstimate {
     /// for pre-allocating buffers, etc.
     ///
     /// The estimate must be no larger than the next largest complete triple of decoded bytes.
-    /// That is, the final quad of tokens to decode may be assumed to be complete with no padding.
+    /// That is, the final quad of symbols to decode may be assumed to be complete with no padding.
     fn decoded_len_estimate(&self) -> usize;
 }
 
 /// Controls how pad bytes are handled when decoding.
 ///
 /// Each [Engine] must support at least the behavior indicated by
-/// [DecodePaddingMode::RequireCanonical], and may support other modes.
+/// [`DecodePaddingMode::RequireCanonical`], and may support other modes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DecodePaddingMode {
     /// Canonical padding is allowed, but any fewer padding bytes than that is also allowed.

@@ -5,9 +5,9 @@ use crate::INDENT;
 use proc_macro2::TokenStream;
 use std::ptr;
 use syn::{
-    BoundLifetimes, ConstParam, GenericParam, Generics, LifetimeParam, PredicateLifetime,
-    PredicateType, TraitBound, TraitBoundModifier, TypeParam, TypeParamBound, WhereClause,
-    WherePredicate,
+    BoundLifetimes, CapturedParam, ConstParam, Expr, GenericParam, Generics, LifetimeParam,
+    PreciseCapture, PredicateLifetime, PredicateType, TraitBound, TraitBoundModifier, TypeParam,
+    TypeParamBound, WhereClause, WherePredicate,
 };
 
 impl Printer {
@@ -103,28 +103,34 @@ impl Printer {
 
     pub fn type_param_bound(&mut self, type_param_bound: &TypeParamBound) {
         match type_param_bound {
+            #![cfg_attr(all(test, exhaustive), deny(non_exhaustive_omitted_patterns))]
             TypeParamBound::Trait(trait_bound) => {
-                let tilde_const = false;
-                self.trait_bound(trait_bound, tilde_const);
+                self.trait_bound(trait_bound, TraitBoundConst::None);
             }
             TypeParamBound::Lifetime(lifetime) => self.lifetime(lifetime),
+            TypeParamBound::PreciseCapture(precise_capture) => {
+                self.precise_capture(precise_capture);
+            }
             TypeParamBound::Verbatim(bound) => self.type_param_bound_verbatim(bound),
-            #[cfg_attr(all(test, exhaustive), deny(non_exhaustive_omitted_patterns))]
             _ => unimplemented!("unknown TypeParamBound"),
         }
     }
 
-    fn trait_bound(&mut self, trait_bound: &TraitBound, tilde_const: bool) {
+    fn trait_bound(&mut self, trait_bound: &TraitBound, constness: TraitBoundConst) {
         if trait_bound.paren_token.is_some() {
             self.word("(");
         }
-        if tilde_const {
-            self.word("~const ");
-        }
-        self.trait_bound_modifier(&trait_bound.modifier);
         if let Some(bound_lifetimes) = &trait_bound.lifetimes {
             self.bound_lifetimes(bound_lifetimes);
         }
+        match constness {
+            TraitBoundConst::None => {}
+            #[cfg(feature = "verbatim")]
+            TraitBoundConst::Conditional => self.word("[const] "),
+            #[cfg(feature = "verbatim")]
+            TraitBoundConst::Unconditional => self.word("const "),
+        }
+        self.trait_bound_modifier(&trait_bound.modifier);
         for segment in trait_bound.path.segments.iter().delimited() {
             if !segment.is_first || trait_bound.path.leading_colon.is_some() {
                 self.word("::");
@@ -151,34 +157,67 @@ impl Printer {
     #[cfg(feature = "verbatim")]
     fn type_param_bound_verbatim(&mut self, tokens: &TokenStream) {
         use syn::parse::{Parse, ParseStream, Result};
-        use syn::{parenthesized, token, Token};
+        use syn::{
+            bracketed, parenthesized, token, ParenthesizedGenericArguments, Path, PathArguments,
+            Token,
+        };
 
         enum TypeParamBoundVerbatim {
             Ellipsis,
-            TildeConst(TraitBound),
+            Const(TraitBound, TraitBoundConst),
         }
 
         impl Parse for TypeParamBoundVerbatim {
             fn parse(input: ParseStream) -> Result<Self> {
-                let content;
-                let (paren_token, content) = if input.peek(token::Paren) {
-                    (Some(parenthesized!(content in input)), &content)
-                } else {
-                    (None, input)
-                };
-                let lookahead = content.lookahead1();
-                if lookahead.peek(Token![~]) {
-                    content.parse::<Token![~]>()?;
-                    content.parse::<Token![const]>()?;
-                    let mut bound: TraitBound = content.parse()?;
-                    bound.paren_token = paren_token;
-                    Ok(TypeParamBoundVerbatim::TildeConst(bound))
-                } else if lookahead.peek(Token![...]) {
-                    content.parse::<Token![...]>()?;
-                    Ok(TypeParamBoundVerbatim::Ellipsis)
-                } else {
-                    Err(lookahead.error())
+                if input.peek(Token![...]) {
+                    input.parse::<Token![...]>()?;
+                    return Ok(TypeParamBoundVerbatim::Ellipsis);
                 }
+
+                let content;
+                let content = if input.peek(token::Paren) {
+                    parenthesized!(content in input);
+                    &content
+                } else {
+                    input
+                };
+
+                let lifetimes: Option<BoundLifetimes> = content.parse()?;
+
+                let constness = if content.peek(token::Bracket) {
+                    let conditionally_const;
+                    bracketed!(conditionally_const in content);
+                    conditionally_const.parse::<Token![const]>()?;
+                    TraitBoundConst::Conditional
+                } else if content.peek(Token![const]) {
+                    content.parse::<Token![const]>()?;
+                    TraitBoundConst::Unconditional
+                } else {
+                    TraitBoundConst::None
+                };
+
+                let modifier: TraitBoundModifier = content.parse()?;
+
+                let mut path: Path = content.parse()?;
+                if path.segments.last().unwrap().arguments.is_empty()
+                    && (content.peek(token::Paren)
+                        || content.peek(Token![::]) && content.peek3(token::Paren))
+                {
+                    content.parse::<Option<Token![::]>>()?;
+                    let args: ParenthesizedGenericArguments = content.parse()?;
+                    let parenthesized = PathArguments::Parenthesized(args);
+                    path.segments.last_mut().unwrap().arguments = parenthesized;
+                }
+
+                Ok(TypeParamBoundVerbatim::Const(
+                    TraitBound {
+                        paren_token: None,
+                        modifier,
+                        lifetimes,
+                        path,
+                    },
+                    constness,
+                ))
             }
         }
 
@@ -191,9 +230,8 @@ impl Printer {
             TypeParamBoundVerbatim::Ellipsis => {
                 self.word("...");
             }
-            TypeParamBoundVerbatim::TildeConst(trait_bound) => {
-                let tilde_const = true;
-                self.trait_bound(&trait_bound, tilde_const);
+            TypeParamBoundVerbatim::Const(trait_bound, constness) => {
+                self.trait_bound(&trait_bound, constness);
             }
         }
     }
@@ -206,7 +244,7 @@ impl Printer {
         self.ty(&const_param.ty);
         if let Some(default) = &const_param.default {
             self.word(" = ");
-            self.expr(default);
+            self.const_argument(default);
         }
     }
 
@@ -289,9 +327,9 @@ impl Printer {
 
     fn where_predicate(&mut self, predicate: &WherePredicate) {
         match predicate {
+            #![cfg_attr(all(test, exhaustive), deny(non_exhaustive_omitted_patterns))]
             WherePredicate::Type(predicate) => self.predicate_type(predicate),
             WherePredicate::Lifetime(predicate) => self.predicate_lifetime(predicate),
-            #[cfg_attr(all(test, exhaustive), deny(non_exhaustive_omitted_patterns))]
             _ => unimplemented!("unknown WherePredicate"),
         }
     }
@@ -334,4 +372,55 @@ impl Printer {
         }
         self.end();
     }
+
+    fn precise_capture(&mut self, precise_capture: &PreciseCapture) {
+        self.word("use<");
+        for capture in precise_capture.params.iter().delimited() {
+            self.captured_param(&capture);
+            if !capture.is_last {
+                self.word(", ");
+            }
+        }
+        self.word(">");
+    }
+
+    fn captured_param(&mut self, capture: &CapturedParam) {
+        match capture {
+            #![cfg_attr(all(test, exhaustive), deny(non_exhaustive_omitted_patterns))]
+            CapturedParam::Lifetime(lifetime) => self.lifetime(lifetime),
+            CapturedParam::Ident(ident) => self.ident(ident),
+            _ => unimplemented!("unknown CapturedParam"),
+        }
+    }
+
+    pub fn const_argument(&mut self, expr: &Expr) {
+        match expr {
+            #![cfg_attr(all(test, exhaustive), allow(non_exhaustive_omitted_patterns))]
+            Expr::Lit(expr) => self.expr_lit(expr),
+
+            Expr::Path(expr)
+                if expr.attrs.is_empty()
+                    && expr.qself.is_none()
+                    && expr.path.get_ident().is_some() =>
+            {
+                self.expr_path(expr);
+            }
+
+            Expr::Block(expr) => self.expr_block(expr),
+
+            _ => {
+                self.cbox(INDENT);
+                self.expr_as_small_block(expr, 0);
+                self.end();
+            }
+        }
+    }
+}
+
+enum TraitBoundConst {
+    None,
+    #[cfg(feature = "verbatim")]
+    Conditional,
+    #[cfg(feature = "verbatim")]
+    Unconditional,
 }

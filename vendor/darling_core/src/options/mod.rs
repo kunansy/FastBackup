@@ -3,10 +3,12 @@ use syn::{parse_quote, spanned::Spanned};
 
 use crate::ast::NestedMeta;
 use crate::error::Accumulator;
+use crate::util::Callable;
 use crate::{Error, FromMeta, Result};
 
 mod core;
 mod forward_attrs;
+mod forwarded_field;
 mod from_attributes;
 mod from_derive;
 mod from_field;
@@ -19,7 +21,8 @@ mod outer_from;
 mod shape;
 
 pub use self::core::Core;
-pub use self::forward_attrs::ForwardAttrs;
+pub use self::forward_attrs::ForwardAttrsFilter;
+pub use self::forwarded_field::ForwardedField;
 pub use self::from_attributes::FromAttributesOptions;
 pub use self::from_derive::FdiOptions;
 pub use self::from_field::FromFieldOptions;
@@ -37,7 +40,8 @@ pub enum DefaultExpression {
     /// The value should be taken from the `default` instance of the containing struct.
     /// This is not valid in container options.
     Inherit,
-    Explicit(syn::Path),
+    /// `default = path::to::function` or `default = || default_val()`.
+    Explicit(Callable),
     Trait {
         /// The input span that is responsible for the use of `Default::default`.
         span: Span,
@@ -57,11 +61,11 @@ impl FromMeta for DefaultExpression {
     }
 
     fn from_expr(expr: &syn::Expr) -> Result<Self> {
-        syn::Path::from_expr(expr).map(DefaultExpression::Explicit)
+        Callable::from_expr(expr).map(Self::Explicit)
     }
 
     fn from_value(value: &syn::Lit) -> Result<Self> {
-        syn::Path::from_value(value).map(DefaultExpression::Explicit)
+        Callable::from_value(value).map(Self::Explicit)
     }
 }
 
