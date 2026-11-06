@@ -1,8 +1,8 @@
 use bytes::{Buf, Bytes};
 
 use crate::error::Error;
-use crate::io::Decode;
 use crate::io::MySqlBufExt;
+use crate::io::ProtocolDecode;
 use crate::protocol::response::Status;
 
 /// Indicates successful completion of a previous command sent by the client.
@@ -14,7 +14,7 @@ pub struct OkPacket {
     pub warnings: u16,
 }
 
-impl Decode<'_> for OkPacket {
+impl ProtocolDecode<'_> for OkPacket {
     fn decode_with(mut buf: Bytes, _: ()) -> Result<Self, Error> {
         let header = buf.get_u8();
         if header != 0 && header != 0xfe {
@@ -24,8 +24,16 @@ impl Decode<'_> for OkPacket {
             ));
         }
 
-        let affected_rows = buf.get_uint_lenenc();
-        let last_insert_id = buf.get_uint_lenenc();
+        let affected_rows = buf.get_uint_lenenc()?;
+        let last_insert_id = buf.get_uint_lenenc()?;
+
+        if buf.remaining() < 4 {
+            return Err(err_protocol!(
+                "OK_Packet too short: expected at least 4 more bytes for status+warnings, got {}",
+                buf.remaining()
+            ));
+        }
+
         let status = Status::from_bits_truncate(buf.get_u16_le());
         let warnings = buf.get_u16_le();
 
@@ -49,4 +57,38 @@ fn test_decode_ok_packet() {
     assert_eq!(p.warnings, 0);
     assert!(p.status.contains(Status::SERVER_STATUS_AUTOCOMMIT));
     assert!(p.status.contains(Status::SERVER_SESSION_STATE_CHANGED));
+}
+
+#[test]
+fn test_decode_ok_packet_with_info() {
+    // OK packet with 0xfe header and length >= 9 (with appended info)
+    const DATA: &[u8] = b"\xfe\x01\x00\x02\x00\x00\x00\x05\x09info data";
+
+    let p = OkPacket::decode(DATA.into()).unwrap();
+
+    assert_eq!(p.affected_rows, 1);
+    assert_eq!(p.last_insert_id, 0);
+    assert_eq!(p.warnings, 0);
+    assert!(p.status.contains(Status::SERVER_STATUS_AUTOCOMMIT));
+}
+
+#[test]
+fn test_decode_ok_packet_with_extended_info() {
+    // OK packet with 0xfe header, affected rows, last insert id, and extended info
+    const DATA: &[u8] = b"\xfe\x05\x64\x02\x00\x01\x00\x0e\x14extended information";
+
+    let p = OkPacket::decode(DATA.into()).unwrap();
+
+    assert_eq!(p.affected_rows, 5);
+    assert_eq!(p.last_insert_id, 100);
+    assert_eq!(p.warnings, 1);
+    assert!(p.status.contains(Status::SERVER_STATUS_AUTOCOMMIT));
+}
+
+#[test]
+fn test_decode_ok_packet_truncated() {
+    const DATA: &[u8] = b"\x00\x00\x00\x01";
+
+    let err = OkPacket::decode(DATA.into()).unwrap_err();
+    assert!(matches!(err, Error::Protocol(_)), "{err}");
 }

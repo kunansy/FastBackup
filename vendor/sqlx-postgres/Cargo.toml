@@ -11,37 +11,104 @@
 
 [package]
 edition = "2021"
+rust-version = "1.94.0"
 name = "sqlx-postgres"
-version = "0.7.3"
+version = "0.9.0"
 authors = [
     "Ryan Leckey <leckey.ryan@gmail.com>",
     "Austin Bonander <austin.bonander@gmail.com>",
     "Chloe Ross <orangesnowfox@gmail.com>",
     "Daniel Akhterov <akhterovd@gmail.com>",
 ]
+build = false
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
 description = "PostgreSQL driver implementation for SQLx. Not for direct use; see the `sqlx` crate for details."
 documentation = "https://docs.rs/sqlx"
+readme = false
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/launchbadge/sqlx"
+
+[features]
+any = ["sqlx-core/any"]
+bigdecimal = [
+    "dep:bigdecimal",
+    "dep:num-bigint",
+    "sqlx-core/bigdecimal",
+]
+bit-vec = [
+    "dep:bit-vec",
+    "sqlx-core/bit-vec",
+]
+chrono = [
+    "dep:chrono",
+    "sqlx-core/chrono",
+]
+ipnet = [
+    "dep:ipnet",
+    "sqlx-core/ipnet",
+]
+ipnetwork = [
+    "dep:ipnetwork",
+    "sqlx-core/ipnetwork",
+]
+json = [
+    "dep:serde",
+    "dep:serde_json",
+    "sqlx-core/json",
+]
+mac_address = [
+    "dep:mac_address",
+    "sqlx-core/mac_address",
+]
+migrate = [
+    "sqlx-core/migrate",
+    "dep:crc",
+]
+offline = [
+    "json",
+    "sqlx-core/offline",
+    "smallvec/serde",
+]
+rust_decimal = [
+    "dep:rust_decimal",
+    "rust_decimal/maths",
+    "sqlx-core/rust_decimal",
+]
+time = [
+    "dep:time",
+    "sqlx-core/time",
+]
+uuid = [
+    "dep:uuid",
+    "sqlx-core/uuid",
+]
+
+[lib]
+name = "sqlx_postgres"
+path = "src/lib.rs"
 
 [dependencies.atoi]
 version = "2.0"
 
 [dependencies.base64]
-version = "0.21.0"
-features = ["std"]
+version = "0.22.1"
+features = ["alloc"]
 default-features = false
 
 [dependencies.bigdecimal]
-version = "0.3.0"
+version = "0.4.0"
 optional = true
 
 [dependencies.bit-vec]
-version = "0.6.3"
+version = "0.8"
 optional = true
 
 [dependencies.bitflags]
-version = "2"
+version = "2.4"
 default-features = false
 
 [dependencies.byteorder]
@@ -50,19 +117,24 @@ features = ["std"]
 default-features = false
 
 [dependencies.chrono]
-version = "0.4.22"
+version = "0.4.34"
+features = [
+    "std",
+    "clock",
+]
 optional = true
 default-features = false
 
 [dependencies.crc]
 version = "3.0.0"
+optional = true
 
 [dependencies.dotenvy]
-version = "0.15.0"
+version = "0.15.7"
 default-features = false
 
 [dependencies.futures-channel]
-version = "0.3.19"
+version = "0.3.32"
 features = [
     "sink",
     "alloc",
@@ -71,14 +143,11 @@ features = [
 default-features = false
 
 [dependencies.futures-core]
-version = "0.3.19"
+version = "0.3.32"
 default-features = false
 
-[dependencies.futures-io]
-version = "0.3.24"
-
 [dependencies.futures-util]
-version = "0.3.19"
+version = "0.3.32"
 features = [
     "alloc",
     "sink",
@@ -90,87 +159,83 @@ default-features = false
 version = "0.4.3"
 
 [dependencies.hkdf]
-version = "0.12.0"
+version = "0.13.0"
 
 [dependencies.hmac]
-version = "0.12.0"
+version = "0.13.0"
 default-features = false
 
-[dependencies.home]
-version = "0.5.5"
+[dependencies.ipnet]
+version = "2.3.0"
+optional = true
 
 [dependencies.ipnetwork]
-version = "0.20.0"
+version = "0.21.1"
 optional = true
 
 [dependencies.itoa]
-version = "1.0.1"
+version = "1.0.5"
 
 [dependencies.log]
-version = "0.4.17"
+version = "0.4.18"
 
 [dependencies.mac_address]
 version = "1.1.5"
 optional = true
 
 [dependencies.md-5]
-version = "0.10.0"
+version = "0.11.0"
 default-features = false
 
 [dependencies.memchr]
-version = "2.4.1"
+version = "2.5.0"
 default-features = false
 
 [dependencies.num-bigint]
 version = "0.4.3"
 optional = true
 
-[dependencies.once_cell]
-version = "1.9.0"
-
 [dependencies.rand]
-version = "0.8.4"
-features = [
-    "std",
-    "std_rng",
-]
+version = "0.10.1"
+features = ["thread_rng"]
 default-features = false
 
 [dependencies.rust_decimal]
-version = "1.26.1"
+version = "1.36.0"
+features = ["std"]
 optional = true
-
-[dependencies.serde]
-version = "1.0.144"
-features = ["derive"]
-
-[dependencies.serde_json]
-version = "1.0.85"
-features = ["raw_value"]
-
-[dependencies.sha1]
-version = "0.10.1"
 default-features = false
 
+[dependencies.serde]
+version = "1.0.219"
+features = ["derive"]
+optional = true
+
+[dependencies.serde_json]
+version = "1.0.142"
+features = ["raw_value"]
+optional = true
+
 [dependencies.sha2]
-version = "0.10.0"
+version = "0.11.0"
 default-features = false
 
 [dependencies.smallvec]
-version = "1.7.0"
+version = "1.13.1"
 
 [dependencies.sqlx-core]
-version = "=0.7.3"
-features = ["json"]
+version = "=0.9.0"
 
 [dependencies.stringprep]
 version = "0.1.2"
 
 [dependencies.thiserror]
-version = "1.0.35"
+version = "2.0.18"
+features = ["std"]
+default-features = false
 
 [dependencies.time]
-version = "0.3.14"
+version = "0.3.47"
 features = [
     "formatting",
     "parsing",
@@ -183,26 +248,20 @@ version = "0.1.37"
 features = ["log"]
 
 [dependencies.uuid]
-version = "1.1.2"
+version = "1.12.1"
 optional = true
 
 [dependencies.whoami]
-version = "1.2.1"
+version = "2.0.2"
 default-features = false
 
-[features]
-any = ["sqlx-core/any"]
-bigdecimal = [
-    "dep:bigdecimal",
-    "dep:num-bigint",
-]
-json = ["sqlx-core/json"]
-migrate = ["sqlx-core/migrate"]
-offline = ["sqlx-core/offline"]
-rust_decimal = [
-    "dep:rust_decimal",
-    "rust_decimal/maths",
-]
+[dev-dependencies]
 
-[target."cfg(target_os = \"windows\")".dependencies.etcetera]
-version = "0.8.0"
+[target.'cfg(target_os = "windows")'.dependencies.etcetera]
+version = "0.11.0"
+
+[lints.clippy]
+cast_possible_truncation = "deny"
+cast_possible_wrap = "deny"
+cast_sign_loss = "deny"
+disallowed_methods = "deny"

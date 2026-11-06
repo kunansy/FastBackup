@@ -1,12 +1,16 @@
-use futures::{StreamExt, TryStreamExt};
+use futures_util::{Stream, StreamExt, TryStreamExt};
+
 use sqlx::postgres::types::Oid;
 use sqlx::postgres::{
     PgAdvisoryLock, PgConnectOptions, PgConnection, PgDatabaseError, PgErrorPosition, PgListener,
-    PgPoolOptions, PgRow, PgSeverity, Postgres,
+    PgPoolOptions, PgRow, PgSeverity, Postgres, PG_COPY_MAX_DATA_LEN,
 };
-use sqlx::{Column, Connection, Executor, Row, Statement, TypeInfo};
+use sqlx::{Column, Connection, Executor, Row, SqlSafeStr, Statement, TypeInfo};
+use sqlx_core::sql_str::AssertSqlSafe;
+use sqlx_core::{bytes::Bytes, error::BoxDynError};
 use sqlx_test::{new, pool, setup_if_needed};
 use std::env;
+use std::pin::{pin, Pin};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -49,7 +53,8 @@ async fn it_pings() -> anyhow::Result<()> {
 async fn it_pings_after_suspended_query() -> anyhow::Result<()> {
     let mut conn = new::<Postgres>().await?;
 
-    conn.execute("create temporary table processed_row(val int4 primary key)")
+    sqlx::raw_sql("create temporary table processed_row(val int4 primary key)")
+        .execute(&mut conn)
         .await?;
 
     // This query wants to return 50 rows but we only read the first one.
@@ -215,7 +220,7 @@ CREATE TEMPORARY TABLE json_stuff (obj json, obj2 jsonb);
         .await?;
 
     let query = "INSERT INTO json_stuff (obj, obj2) VALUES ($1, $2)";
-    let _ = conn.describe(query).await?;
+    let _ = conn.describe(query.into_sql_str()).await?;
 
     let done = sqlx::query(query)
         .bind(serde_json::json!({ "a": "a" }))
@@ -305,7 +310,10 @@ async fn it_can_fail_and_recover() -> anyhow::Result<()> {
         assert!(res.is_err());
 
         // now try and use the connection
-        let val: i32 = conn.fetch_one(&*format!("SELECT {i}::int4")).await?.get(0);
+        let val: i32 = conn
+            .fetch_one(AssertSqlSafe(format!("SELECT {i}::int4")))
+            .await?
+            .get(0);
 
         assert_eq!(val, i);
     }
@@ -326,7 +334,10 @@ async fn it_can_fail_and_recover_with_pool() -> anyhow::Result<()> {
         assert!(res.is_err());
 
         // now try and use the connection
-        let val: i32 = pool.fetch_one(&*format!("SELECT {i}::int4")).await?.get(0);
+        let val: i32 = pool
+            .fetch_one(AssertSqlSafe(format!("SELECT {i}::int4")))
+            .await?
+            .get(0);
 
         assert_eq!(val, i);
     }
@@ -377,6 +388,68 @@ async fn it_can_query_all_scalar() -> anyhow::Result<()> {
         .fetch_all(&mut conn)
         .await?;
     assert_eq!(scalar, vec![Some(42), None]);
+
+    Ok(())
+}
+
+#[ignore]
+#[sqlx_macros::test]
+async fn copy_can_work_with_failed_transactions() -> anyhow::Result<()> {
+    let mut conn = new::<Postgres>().await?;
+
+    // We're using a (local) statement_timeout to simulate a runtime failure, as opposed to
+    // a parse/plan failure.
+    let mut tx = conn.begin().await?;
+    let _ = sqlx::query("SELECT pg_catalog.set_config($1, $2, true)")
+        .bind("statement_timeout")
+        .bind("1ms")
+        .execute(tx.as_mut())
+        .await?;
+
+    let mut copy_out: Pin<
+        Box<dyn Stream<Item = Result<Bytes, sqlx::Error>> + Send>,
+    > = (&mut tx)
+        .copy_out_raw("COPY (SELECT nspname FROM pg_catalog.pg_namespace WHERE pg_sleep(0.001) IS NULL) TO STDOUT")
+        .await?;
+
+    while copy_out.try_next().await.is_ok() {}
+    drop(copy_out);
+
+    tx.rollback().await?;
+
+    // conn should be usable again, as we explicitly rolled back the transaction
+    let got: i32 = sqlx::query_scalar("SELECT 1")
+        .fetch_one(conn.as_mut())
+        .await?;
+    assert_eq!(1, got);
+
+    Ok(())
+}
+
+#[sqlx_macros::test]
+async fn it_can_work_with_failed_transactions() -> anyhow::Result<()> {
+    let mut conn = new::<Postgres>().await?;
+
+    // We're using a (local) statement_timeout to simulate a runtime failure, as opposed to
+    // a parse/plan failure.
+    let mut tx = conn.begin().await?;
+    let _ = sqlx::query("SELECT pg_catalog.set_config($1, $2, true)")
+        .bind("statement_timeout")
+        .bind("1ms")
+        .execute(tx.as_mut())
+        .await?;
+
+    assert!(sqlx::query("SELECT 1 WHERE pg_sleep(0.30) IS NULL")
+        .fetch_one(tx.as_mut())
+        .await
+        .is_err());
+    tx.rollback().await?;
+
+    // conn should be usable again, as we explicitly rolled back the transaction
+    let got: i32 = sqlx::query_scalar("SELECT 1")
+        .fetch_one(conn.as_mut())
+        .await?;
+    assert_eq!(1, got);
 
     Ok(())
 }
@@ -449,6 +522,7 @@ async fn it_can_work_with_transactions() -> anyhow::Result<()> {
 #[sqlx_macros::test]
 async fn it_can_work_with_nested_transactions() -> anyhow::Result<()> {
     let mut conn = new::<Postgres>().await?;
+    assert!(!conn.is_in_transaction());
 
     conn.execute("CREATE TABLE IF NOT EXISTS _sqlx_users_2523 (id INTEGER PRIMARY KEY)")
         .await?;
@@ -457,6 +531,7 @@ async fn it_can_work_with_nested_transactions() -> anyhow::Result<()> {
 
     // begin
     let mut tx = conn.begin().await?; // transaction
+    assert!(tx.is_in_transaction());
 
     // insert a user
     sqlx::query("INSERT INTO _sqlx_users_2523 (id) VALUES ($1)")
@@ -466,6 +541,7 @@ async fn it_can_work_with_nested_transactions() -> anyhow::Result<()> {
 
     // begin once more
     let mut tx2 = tx.begin().await?; // savepoint
+    assert!(tx2.is_in_transaction());
 
     // insert another user
     sqlx::query("INSERT INTO _sqlx_users_2523 (id) VALUES ($1)")
@@ -475,6 +551,7 @@ async fn it_can_work_with_nested_transactions() -> anyhow::Result<()> {
 
     // never mind, rollback
     tx2.rollback().await?; // roll that one back
+    assert!(tx.is_in_transaction());
 
     // did we really?
     let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM _sqlx_users_2523")
@@ -485,6 +562,7 @@ async fn it_can_work_with_nested_transactions() -> anyhow::Result<()> {
 
     // actually, commit
     tx.commit().await?;
+    assert!(!conn.is_in_transaction());
 
     // did we really?
     let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM _sqlx_users_2523")
@@ -533,7 +611,7 @@ async fn it_can_drop_multiple_transactions() -> anyhow::Result<()> {
 #[ignore]
 #[sqlx_macros::test]
 async fn pool_smoke_test() -> anyhow::Result<()> {
-    use futures::{future, task::Poll, Future};
+    use futures_util::{task::Poll, Future};
 
     eprintln!("starting pool");
 
@@ -571,11 +649,10 @@ async fn pool_smoke_test() -> anyhow::Result<()> {
         let pool = pool.clone();
         sqlx_core::rt::spawn(async move {
             while !pool.is_closed() {
-                let acquire = pool.acquire();
-                futures::pin_mut!(acquire);
+                let mut acquire = pin!(pool.acquire());
 
                 // poll the acquire future once to put the waiter in the queue
-                future::poll_fn(move |cx| {
+                std::future::poll_fn(move |cx| {
                     let _ = acquire.as_mut().poll(cx);
                     Poll::Ready(())
                 })
@@ -733,7 +810,7 @@ async fn it_closes_statement_from_cache_issue_470() -> anyhow::Result<()> {
     let mut conn = PgConnection::connect_with(&options).await?;
 
     for i in 0..5 {
-        let row = sqlx::query(&*format!("SELECT {i}::int4 AS val"))
+        let row = sqlx::query(AssertSqlSafe(format!("SELECT {i}::int4 AS val")))
             .fetch_one(&mut conn)
             .await?;
 
@@ -743,6 +820,27 @@ async fn it_closes_statement_from_cache_issue_470() -> anyhow::Result<()> {
     }
 
     assert_eq!(1, conn.cached_statements_size());
+
+    Ok(())
+}
+
+#[sqlx_macros::test]
+async fn it_closes_statements_when_not_persistent_issue_3850() -> anyhow::Result<()> {
+    let mut conn = new::<Postgres>().await?;
+
+    let _row = sqlx::query("SELECT $1 AS val")
+        .bind(Oid(1))
+        .persistent(false)
+        .fetch_one(&mut conn)
+        .await?;
+
+    let row = sqlx::query("SELECT count(*) AS num_prepared_statements FROM pg_prepared_statements")
+        .persistent(false)
+        .fetch_one(&mut conn)
+        .await?;
+
+    let n: i64 = row.get("num_prepared_statements");
+    assert_eq!(0, n, "no prepared statements should be open");
 
     Ok(())
 }
@@ -783,7 +881,9 @@ async fn it_can_prepare_then_execute() -> anyhow::Result<()> {
             .fetch_one(&mut *tx)
             .await?;
 
-    let statement = tx.prepare("SELECT * FROM tweet WHERE id = $1").await?;
+    let statement = tx
+        .prepare("SELECT * FROM tweet WHERE id = $1".into_sql_str())
+        .await?;
 
     assert_eq!(statement.column(0).name(), "id");
     assert_eq!(statement.column(1).name(), "created_at");
@@ -852,7 +952,7 @@ async fn test_issue_622() -> anyhow::Result<()> {
         }));
     }
 
-    futures::future::try_join_all(handles).await?;
+    futures_util::future::try_join_all(handles).await?;
 
     Ok(())
 }
@@ -869,7 +969,8 @@ async fn test_describe_outer_join_nullable() -> anyhow::Result<()> {
         .describe(
             "select tweet.id
     from tweet
-    inner join products on products.name = tweet.text",
+    inner join products on products.name = tweet.text"
+                .into_sql_str(),
         )
         .await?;
 
@@ -880,7 +981,8 @@ async fn test_describe_outer_join_nullable() -> anyhow::Result<()> {
         .describe(
             "select tweet.id
 from (values (null)) vals(val)
-         left join tweet on false",
+         left join tweet on false"
+                .into_sql_str(),
         )
         .await?;
 
@@ -894,7 +996,8 @@ from (values (null)) vals(val)
         .describe(
             "select tweet1.id, tweet2.id
     from tweet tweet1
-    left join tweet tweet2 on false",
+    left join tweet tweet2 on false"
+                .into_sql_str(),
         )
         .await?;
 
@@ -907,7 +1010,8 @@ from (values (null)) vals(val)
         .describe(
             "select tweet1.id, tweet2.id
     from tweet tweet1
-    right join tweet tweet2 on false",
+    right join tweet tweet2 on false"
+                .into_sql_str(),
         )
         .await?;
 
@@ -920,7 +1024,8 @@ from (values (null)) vals(val)
         .describe(
             "select tweet1.id, tweet2.id
     from tweet tweet1
-    full join tweet tweet2 on false",
+    full join tweet tweet2 on false"
+                .into_sql_str(),
         )
         .await?;
 
@@ -932,11 +1037,7 @@ from (values (null)) vals(val)
 
 #[sqlx_macros::test]
 async fn test_listener_cleanup() -> anyhow::Result<()> {
-    #[cfg(feature = "_rt-tokio")]
-    use tokio::time::timeout;
-
-    #[cfg(feature = "_rt-async-std")]
-    use async_std::future::timeout;
+    use sqlx_core::rt::timeout;
 
     use sqlx::pool::PoolOptions;
     use sqlx::postgres::PgListener;
@@ -996,6 +1097,77 @@ async fn test_listener_cleanup() -> anyhow::Result<()> {
 }
 
 #[sqlx_macros::test]
+async fn test_listener_try_recv_buffered() -> anyhow::Result<()> {
+    use sqlx_core::rt::timeout;
+
+    use sqlx::pool::PoolOptions;
+    use sqlx::postgres::PgListener;
+
+    // Create a connection on which to send notifications
+    let mut notify_conn = new::<Postgres>().await?;
+
+    let pool = PoolOptions::<Postgres>::new()
+        .min_connections(1)
+        .max_connections(1)
+        .test_before_acquire(true)
+        .connect(&env::var("DATABASE_URL")?)
+        .await?;
+
+    let mut listener = PgListener::connect_with(&pool).await?;
+    listener.listen("test_channel2").await?;
+
+    // Checks for a notification on the test channel
+    async fn try_recv(listener: &mut PgListener) -> anyhow::Result<bool> {
+        match timeout(Duration::from_millis(100), listener.recv()).await {
+            Ok(res) => {
+                res?;
+                Ok(true)
+            }
+            Err(_) => Ok(false),
+        }
+    }
+
+    // Check no notification is buffered, since we haven't sent one.
+    assert!(listener.next_buffered().is_none());
+
+    // Send five notifications transactionally, so they all arrive at once.
+    {
+        let mut txn = notify_conn.begin().await?;
+        for i in 0..5 {
+            txn.execute(AssertSqlSafe(format!(
+                "NOTIFY test_channel2, 'payload {i}'"
+            )))
+            .await?;
+        }
+        txn.commit().await?;
+    }
+
+    // Still no notifications buffered, since we haven't awaited the listener yet.
+    assert!(listener.next_buffered().is_none());
+
+    // Activate connection.
+    sqlx::query!("SELECT 1 AS one")
+        .fetch_all(&mut listener)
+        .await?;
+
+    // The next five notifications should now be buffered.
+    for i in 0..5 {
+        assert!(
+            listener.next_buffered().is_some(),
+            "Notification {i} was not buffered"
+        );
+    }
+
+    // Should be no more.
+    assert!(listener.next_buffered().is_none());
+
+    // Even if we wait.
+    assert!(!try_recv(&mut listener).await?, "Notification received");
+
+    Ok(())
+}
+
+#[sqlx_macros::test]
 async fn test_pg_listener_allows_pool_to_close() -> anyhow::Result<()> {
     let pool = pool::<Postgres>().await?;
 
@@ -1008,6 +1180,45 @@ async fn test_pg_listener_allows_pool_to_close() -> anyhow::Result<()> {
 
     // would previously hang forever since `PgListener` had no way to know the pool wanted to close
     pool.close().await;
+
+    Ok(())
+}
+
+#[sqlx_macros::test]
+async fn test_pg_listener_implements_acquire() -> anyhow::Result<()> {
+    use sqlx::Acquire;
+
+    let pool = pool::<Postgres>().await?;
+
+    let mut listener = PgListener::connect_with(&pool).await?;
+    listener
+        .listen("test_pg_listener_implements_acquire")
+        .await?;
+
+    // Start a transaction on the underlying connection
+    let mut txn = listener.begin().await?;
+
+    // This will reuse the same connection, so this connection should be listening to the channel
+    let channels: Vec<String> = sqlx::query_scalar("SELECT pg_listening_channels()")
+        .fetch_all(&mut *txn)
+        .await?;
+
+    assert_eq!(channels, vec!["test_pg_listener_implements_acquire"]);
+
+    // Send a notification
+    sqlx::query("NOTIFY test_pg_listener_implements_acquire, 'hello'")
+        .execute(&mut *txn)
+        .await?;
+
+    txn.commit().await?;
+
+    // And now we can receive the notification we sent in the transaction
+    let notification = listener.recv().await?;
+    assert_eq!(
+        notification.channel(),
+        "test_pg_listener_implements_acquire"
+    );
+    assert_eq!(notification.payload(), "hello");
 
     Ok(())
 }
@@ -1063,7 +1274,7 @@ CREATE TABLE heating_bills (
         fn encode_by_ref(
             &self,
             buf: &mut sqlx::postgres::PgArgumentBuffer,
-        ) -> sqlx::encode::IsNull {
+        ) -> Result<sqlx::encode::IsNull, BoxDynError> {
             <i16 as sqlx::Encode<Postgres>>::encode(self.0, buf)
         }
     }
@@ -1101,12 +1312,12 @@ CREATE TABLE heating_bills (
         fn encode_by_ref(
             &self,
             buf: &mut sqlx::postgres::PgArgumentBuffer,
-        ) -> sqlx::encode::IsNull {
+        ) -> Result<sqlx::encode::IsNull, sqlx::error::BoxDynError> {
             let mut encoder = sqlx::postgres::types::PgRecordEncoder::new(buf);
-            encoder.encode(self.year);
-            encoder.encode(self.month);
+            encoder.encode(self.year)?;
+            encoder.encode(self.month)?;
             encoder.finish();
-            sqlx::encode::IsNull::No
+            Ok(sqlx::encode::IsNull::No)
         }
     }
     let mut conn = new::<Postgres>().await?;
@@ -1423,7 +1634,7 @@ CREATE TYPE another.some_enum_type AS ENUM ('d', 'e', 'f');
         fn encode_by_ref(
             &self,
             buf: &mut sqlx::postgres::PgArgumentBuffer,
-        ) -> sqlx::encode::IsNull {
+        ) -> Result<sqlx::encode::IsNull, BoxDynError> {
             <String as sqlx::Encode<Postgres>>::encode_by_ref(&self.0, buf)
         }
     }
@@ -1612,7 +1823,7 @@ async fn it_encodes_custom_array_issue_1504() -> anyhow::Result<()> {
             }
         }
 
-        fn encode_by_ref(&self, buf: &mut PgArgumentBuffer) -> IsNull {
+        fn encode_by_ref(&self, buf: &mut PgArgumentBuffer) -> Result<IsNull, BoxDynError> {
             match self {
                 Value::String(s) => <String as Encode<'_, Postgres>>::encode_by_ref(s, buf),
                 Value::Number(n) => <i32 as Encode<'_, Postgres>>::encode_by_ref(n, buf),
@@ -1777,7 +1988,8 @@ async fn test_postgres_bytea_hex_deserialization_errors() -> anyhow::Result<()> 
     conn.execute("SET bytea_output = 'escape';").await?;
     for value in ["", "DEADBEEF"] {
         let query = format!("SELECT '\\x{value}'::bytea");
-        let res: sqlx::Result<Vec<u8>> = conn.fetch_one(query.as_str()).await?.try_get(0usize);
+        let res: sqlx::Result<Vec<u8>> =
+            conn.fetch_one(AssertSqlSafe(query)).await?.try_get(0usize);
         // Deserialization only supports hex format so this should error and definitely not panic.
         res.unwrap_err();
     }
@@ -1812,4 +2024,197 @@ async fn test_shrink_buffers() -> anyhow::Result<()> {
     assert_eq!(ret, 12345678i64);
 
     Ok(())
+}
+
+#[sqlx_macros::test]
+async fn test_error_handling_with_deferred_constraints() -> anyhow::Result<()> {
+    let mut conn = new::<Postgres>().await?;
+
+    sqlx::query("CREATE TABLE IF NOT EXISTS deferred_constraint ( id INTEGER PRIMARY KEY )")
+        .execute(&mut conn)
+        .await?;
+
+    sqlx::query("CREATE TABLE IF NOT EXISTS deferred_constraint_fk ( fk INTEGER CONSTRAINT deferred_fk REFERENCES deferred_constraint(id) DEFERRABLE INITIALLY DEFERRED )")
+            .execute(&mut conn)
+            .await?;
+
+    let result: sqlx::Result<i32> =
+        sqlx::query_scalar("INSERT INTO deferred_constraint_fk VALUES (1) RETURNING fk")
+            .fetch_one(&mut conn)
+            .await;
+
+    let err = result.unwrap_err();
+    let db_err = err.as_database_error().unwrap();
+    assert_eq!(db_err.constraint(), Some("deferred_fk"));
+
+    Ok(())
+}
+
+#[sqlx_macros::test]
+#[cfg(feature = "bigdecimal")]
+async fn test_issue_3052() {
+    use sqlx::types::BigDecimal;
+
+    // https://github.com/launchbadge/sqlx/issues/3052
+    // Previously, attempting to bind a `BigDecimal` would panic if the value was out of range.
+    // Now, we rewrite it to a sentinel value so that Postgres will return a range error.
+    let too_small: BigDecimal = "1E-65536".parse().unwrap();
+    let too_large: BigDecimal = "1E262144".parse().unwrap();
+
+    let mut conn = new::<Postgres>().await.unwrap();
+
+    let too_small_error = sqlx::query_scalar::<_, BigDecimal>("SELECT $1::numeric")
+        .bind(&too_small)
+        .fetch_one(&mut conn)
+        .await
+        .expect_err("Too small number should have failed");
+    assert!(
+        matches!(&too_small_error, sqlx::Error::Encode(_)),
+        "expected encode error, got {too_small_error:?}"
+    );
+
+    let too_large_error = sqlx::query_scalar::<_, BigDecimal>("SELECT $1::numeric")
+        .bind(&too_large)
+        .fetch_one(&mut conn)
+        .await
+        .expect_err("Too large number should have failed");
+
+    assert!(
+        matches!(&too_large_error, sqlx::Error::Encode(_)),
+        "expected encode error, got {too_large_error:?}",
+    );
+}
+
+#[sqlx_macros::test]
+#[cfg(feature = "chrono")]
+async fn test_bind_iter() -> anyhow::Result<()> {
+    use sqlx::postgres::PgBindIterExt;
+    use sqlx::types::chrono::{DateTime, Utc};
+
+    let mut conn = new::<Postgres>().await?;
+
+    #[derive(sqlx::FromRow, PartialEq, Debug)]
+    struct Person {
+        id: i64,
+        name: String,
+        birthdate: DateTime<Utc>,
+    }
+
+    let people: Vec<Person> = vec![
+        Person {
+            id: 1,
+            name: "Alice".into(),
+            birthdate: "1984-01-01T00:00:00Z".parse().unwrap(),
+        },
+        Person {
+            id: 2,
+            name: "Bob".into(),
+            birthdate: "2000-01-01T00:00:00Z".parse().unwrap(),
+        },
+    ];
+
+    sqlx::query(
+        r#"
+create temporary table person(
+  id int8 primary key,
+  name text not null,
+  birthdate timestamptz not null
+)"#,
+    )
+    .execute(&mut conn)
+    .await?;
+
+    let rows_affected =
+        sqlx::query("insert into person(id, name, birthdate) select * from unnest($1, $2, $3)")
+            // owned value
+            .bind(people.iter().map(|p| p.id).bind_iter())
+            // borrowed value
+            .bind(people.iter().map(|p| &p.name).bind_iter())
+            .bind(people.iter().map(|p| &p.birthdate).bind_iter())
+            .execute(&mut conn)
+            .await?
+            .rows_affected();
+    assert_eq!(rows_affected, 2);
+
+    let p_query = sqlx::query_as::<_, Person>("select * from person order by id")
+        .fetch_all(&mut conn)
+        .await?;
+
+    assert_eq!(people, p_query);
+    Ok(())
+}
+
+#[sqlx_macros::test]
+async fn test_pg_copy_chunked() -> anyhow::Result<()> {
+    let mut conn = new::<Postgres>().await?;
+
+    let mut row = "1".repeat(PG_COPY_MAX_DATA_LEN / 10 - 1);
+    row.push_str("\n");
+
+    // creates a payload with COPY_MAX_DATA_LEN + 1 as size
+    let mut payload = row.repeat(10);
+    payload.push_str("12345678\n");
+
+    assert_eq!(payload.len(), PG_COPY_MAX_DATA_LEN + 1);
+
+    let mut copy = conn.copy_in_raw("COPY products(name) FROM STDIN").await?;
+
+    assert!(copy.send(payload.as_bytes()).await.is_ok());
+    assert!(copy.finish().await.is_ok());
+    Ok(())
+}
+
+async fn test_copy_in_error_case(query: &str, expected_error: &str) -> anyhow::Result<()> {
+    let mut conn = new::<Postgres>().await?;
+    conn.execute("CREATE TEMPORARY TABLE IF NOT EXISTS invalid_copy_target (id int4)")
+        .await?;
+    // Try the COPY operation
+    match conn.copy_in_raw(query).await {
+        Ok(_) => anyhow::bail!("expected error"),
+        Err(e) => assert!(
+            e.to_string().contains(expected_error),
+            "expected error to contain: {expected_error}, got: {e:?}"
+        ),
+    }
+    // Verify connection is still usable
+    let value = sqlx::query("select 1 + 1")
+        .try_map(|row: PgRow| row.try_get::<i32, _>(0))
+        .fetch_one(&mut conn)
+        .await?;
+    assert_eq!(2i32, value);
+    Ok(())
+}
+#[sqlx_macros::test]
+async fn it_can_recover_from_copy_in_to_missing_table() -> anyhow::Result<()> {
+    test_copy_in_error_case(
+        r#"
+        COPY nonexistent_table (id) FROM STDIN WITH (FORMAT CSV, HEADER);
+        "#,
+        "does not exist",
+    )
+    .await
+}
+#[sqlx_macros::test]
+async fn it_can_recover_from_copy_in_empty_query() -> anyhow::Result<()> {
+    test_copy_in_error_case("", "EmptyQuery").await
+}
+#[sqlx_macros::test]
+async fn it_can_recover_from_copy_in_syntax_error() -> anyhow::Result<()> {
+    test_copy_in_error_case(
+        r#"
+        COPY FROM STDIN WITH (FORMAT CSV);
+        "#,
+        "syntax error",
+    )
+    .await
+}
+#[sqlx_macros::test]
+async fn it_can_recover_from_copy_in_invalid_params() -> anyhow::Result<()> {
+    test_copy_in_error_case(
+        r#"
+        COPY invalid_copy_target FROM STDIN WITH (FORMAT CSV, INVALID_PARAM true);
+        "#,
+        "invalid_param",
+    )
+    .await
 }

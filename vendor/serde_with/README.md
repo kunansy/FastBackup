@@ -1,14 +1,13 @@
 # Custom de/serialization functions for Rust's [serde](https://serde.rs)
 
 [![crates.io badge](https://img.shields.io/crates/v/serde_with.svg)](https://crates.io/crates/serde_with/)
-[![Build Status](https://github.com/jonasbb/serde_with/workflows/Rust%20CI/badge.svg)](https://github.com/jonasbb/serde_with)
+[![Build Status](https://github.com/jonasbb/serde_with/actions/workflows/ci.yaml/badge.svg)](https://github.com/jonasbb/serde_with)
 [![codecov](https://codecov.io/gh/jonasbb/serde_with/branch/master/graph/badge.svg)](https://codecov.io/gh/jonasbb/serde_with)
 [![CII Best Practices](https://bestpractices.coreinfrastructure.org/projects/4322/badge)](https://bestpractices.coreinfrastructure.org/projects/4322)
-[![Rustexplorer](https://img.shields.io/badge/Try%20on-rustexplorer-lightgrey?logo=rust&logoColor=orange)](https://www.rustexplorer.com/b/py7ida)
 
 ---
 
-This crate provides custom de/serialization helpers to use in combination with [serde's with-annotation][with-annotation] and with the improved [`serde_as`][as-annotation]-annotation.
+This crate provides custom de/serialization helpers to use in combination with [serde's `with` annotation][with-annotation] and with the improved [`serde_as`][as-annotation]-annotation.
 Some common use cases are:
 
 * De/Serializing a type using the `Display` and `FromStr` traits, e.g., for `u8`, `url::Url`, or `mime::Mime`.
@@ -17,7 +16,7 @@ Some common use cases are:
     With `serde_as` large arrays are supported, even if they are nested in other types.
     `[bool; 64]`, `Option<[u8; M]>`, and `Box<[[u8; 64]; N]>` are all supported, as [this examples shows](#large-and-const-generic-arrays).
 * Skip serializing all empty `Option` types with [`#[skip_serializing_none]`][skip_serializing_none].
-* Apply a prefix to each field name of a struct, without changing the de/serialize implementations of the struct using [`with_prefix!`][].
+* Apply a prefix / suffix to each field name of a struct, without changing the de/serialize implementations of the struct using [`with_prefix!`][] / [`with_suffix!`][].
 * Deserialize a comma separated list like `#hash,#tags,#are,#great` into a `Vec<String>`.
      Check the documentation for [`serde_with::StringWithSeparator::<CommaSeparator, T>`][StringWithSeparator].
 
@@ -25,7 +24,7 @@ Some common use cases are:
 
 **Check out the [user guide][user guide] to find out more tips and tricks about this crate.**
 
-For further help using this crate you can [open a new discussion](https://github.com/jonasbb/serde_with/discussions/new) or ask on [users.rust-lang.org](https://users.rust-lang.org/).
+For further help using this crate, you can [open a new discussion](https://github.com/jonasbb/serde_with/discussions/new) or ask on [users.rust-lang.org](https://users.rust-lang.org/).
 For bugs, please open a [new issue](https://github.com/jonasbb/serde_with/issues/new) on GitHub.
 
 ## Use `serde_with` in your Project
@@ -50,7 +49,6 @@ The default de/serialization behavior can be restored by using `_` as a placehol
 
 ### `DisplayFromStr`
 
-[![Rustexplorer](https://img.shields.io/badge/Try%20on-rustexplorer-lightgrey?logo=rust&logoColor=orange)](https://www.rustexplorer.com/b/py7ida)
 ```rust
 #[serde_as]
 #[derive(Deserialize, Serialize)]
@@ -74,7 +72,6 @@ The `serde_as` attribute allows circumventing this restriction, even for nested 
 
 On top of it, `[u8; N]` (aka, bytes) can use the specialized `"Bytes"` for efficiency much like the `serde_bytes` crate.
 
-[![Rustexplorer](https://img.shields.io/badge/Try%20on-rustexplorer-lightgrey?logo=rust&logoColor=orange)](https://www.rustexplorer.com/b/um0xyi)
 ```rust
 #[serde_as]
 #[derive(Deserialize, Serialize)]
@@ -108,7 +105,6 @@ This situation often occurs with JSON, but other formats also support optional f
 If many fields are optional, putting the annotations on the structs can become tedious.
 The `#[skip_serializing_none]` attribute must be placed *before* the `#[derive]`.
 
-[![Rustexplorer](https://img.shields.io/badge/Try%20on-rustexplorer-lightgrey?logo=rust&logoColor=orange)](https://www.rustexplorer.com/b/xr1tm0)
 ```rust
 #[skip_serializing_none]
 #[derive(Deserialize, Serialize)]
@@ -131,7 +127,7 @@ Foo {a: None, b: None, c: None, d: Some(4), e: None, f: None, g: Some(7)}
 
 ### Advanced `serde_as` usage
 
-This example is mainly supposed to highlight the flexibility of the `serde_as`-annotation compared to [serde's with-annotation][with-annotation].
+This example is mainly supposed to highlight the flexibility of the `serde_as` annotation compared to [serde's `with` annotation][with-annotation].
 More details about `serde_as` can be found in the [user guide].
 
 ```rust
@@ -183,14 +179,15 @@ Foo::Bytes {
 }
 ```
 
-[`DisplayFromStr`]: https://docs.rs/serde_with/2.3.3/serde_with/struct.DisplayFromStr.html
-[`with_prefix!`]: https://docs.rs/serde_with/2.3.3/serde_with/macro.with_prefix.html
-[feature flags]: https://docs.rs/serde_with/2.3.3/serde_with/guide/feature_flags/index.html
-[skip_serializing_none]: https://docs.rs/serde_with/2.3.3/serde_with/attr.skip_serializing_none.html
-[StringWithSeparator]: https://docs.rs/serde_with/2.3.3/serde_with/struct.StringWithSeparator.html
-[user guide]: https://docs.rs/serde_with/2.3.3/serde_with/guide/index.html
+[`DisplayFromStr`]: https://docs.rs/serde_with/3.24.0/serde_with/struct.DisplayFromStr.html
+[`with_prefix!`]: https://docs.rs/serde_with/3.24.0/serde_with/macro.with_prefix.html
+[`with_suffix!`]: https://docs.rs/serde_with/3.24.0/serde_with/macro.with_suffix.html
+[feature flags]: https://docs.rs/serde_with/3.24.0/serde_with/guide/feature_flags/index.html
+[skip_serializing_none]: https://docs.rs/serde_with/3.24.0/serde_with/attr.skip_serializing_none.html
+[StringWithSeparator]: https://docs.rs/serde_with/3.24.0/serde_with/struct.StringWithSeparator.html
+[user guide]: https://docs.rs/serde_with/3.24.0/serde_with/guide/index.html
 [with-annotation]: https://serde.rs/field-attrs.html#with
-[as-annotation]: https://docs.rs/serde_with/2.3.3/serde_with/guide/serde_as/index.html
+[as-annotation]: https://docs.rs/serde_with/3.24.0/serde_with/guide/serde_as/index.html
 
 ## License
 
@@ -207,6 +204,6 @@ For detailed contribution instructions please read [`CONTRIBUTING.md`].
 
 Unless you explicitly state otherwise, any contribution intentionally submitted
 for inclusion in the work by you, as defined in the Apache-2.0 license, shall
-be dual licensed as above, without any additional terms or conditions.
+be dual-licensed as above, without any additional terms or conditions.
 
 [`CONTRIBUTING.md`]: https://github.com/jonasbb/serde_with/blob/master/CONTRIBUTING.md

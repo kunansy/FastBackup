@@ -4,17 +4,18 @@ use futures_core::stream::Stream;
 use futures_core::task::{Context, Poll};
 use futures_task::{waker_ref, ArcWake};
 use futures_task::{FutureObj, LocalFutureObj, LocalSpawn, Spawn, SpawnError};
-use futures_util::pin_mut;
 use futures_util::stream::FuturesUnordered;
 use futures_util::stream::StreamExt;
 use std::cell::RefCell;
 use std::ops::{Deref, DerefMut};
+use std::pin::pin;
 use std::rc::{Rc, Weak};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
 use std::thread::{self, Thread};
+use std::vec::Vec;
 
 /// A single-threaded task pool for polling futures to completion.
 ///
@@ -22,8 +23,7 @@ use std::thread::{self, Thread};
 /// thread. It's appropriate to poll strictly I/O-bound futures that do very
 /// little work in between I/O actions.
 ///
-/// To get a handle to the pool that implements
-/// [`Spawn`](futures_task::Spawn), use the
+/// To get a handle to the pool that implements [`Spawn`], use the
 /// [`spawner()`](LocalPool::spawner) method. Because the executor is
 /// single-threaded, it supports a special form of task spawning for non-`Send`
 /// futures, via [`spawn_local_obj`](futures_task::LocalSpawn::spawn_local_obj).
@@ -33,8 +33,7 @@ pub struct LocalPool {
     incoming: Rc<Incoming>,
 }
 
-/// A handle to a [`LocalPool`](LocalPool) that implements
-/// [`Spawn`](futures_task::Spawn).
+/// A handle to a [`LocalPool`] that implements [`Spawn`].
 #[derive(Clone, Debug)]
 pub struct LocalSpawner {
     incoming: Weak<Incoming>,
@@ -53,7 +52,7 @@ pub(crate) struct ThreadNotify {
     unparked: AtomicBool,
 }
 
-thread_local! {
+std::thread_local! {
     static CURRENT_THREAD_NOTIFY: Arc<ThreadNotify> = Arc::new(ThreadNotify {
         thread: thread::current(),
         unparked: AtomicBool::new(false),
@@ -155,7 +154,7 @@ impl LocalPool {
     /// one of the pool's run or poll methods. While the function is running,
     /// however, all tasks in the pool will try to make progress.
     pub fn run_until<F: Future>(&mut self, future: F) -> F::Output {
-        pin_mut!(future);
+        let mut future = pin!(future);
 
         run_executor(|cx| {
             {
@@ -310,10 +309,9 @@ impl Default for LocalPool {
 ///
 /// This function will block the caller until the given future has completed.
 ///
-/// Use a [`LocalPool`](LocalPool) if you need finer-grained control over
-/// spawned tasks.
+/// Use a [`LocalPool`] if you need finer-grained control over spawned tasks.
 pub fn block_on<F: Future>(f: F) -> F::Output {
-    pin_mut!(f);
+    let mut f = pin!(f);
     run_executor(|cx| f.as_mut().poll(cx))
 }
 

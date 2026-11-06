@@ -34,6 +34,12 @@ pub enum Error {
     #[error("error with configuration: {0}")]
     Configuration(#[source] BoxDynError),
 
+    /// One or more of the arguments to the called function was invalid.
+    ///
+    /// The string contains more information.
+    #[error("{0}")]
+    InvalidArgument(String),
+
     /// Error returned from the database.
     #[error("error returned from database: {0}")]
     Database(#[source] Box<dyn DatabaseError>),
@@ -78,6 +84,10 @@ pub enum Error {
         source: BoxDynError,
     },
 
+    /// Error occurred while encoding a value.
+    #[error("error occurred while encoding a value: {0}")]
+    Encode(#[source] BoxDynError),
+
     /// Error occurred while decoding a value.
     #[error("error occurred while decoding: {0}")]
     Decode(#[source] BoxDynError),
@@ -107,6 +117,18 @@ pub enum Error {
     #[cfg(feature = "migrate")]
     #[error("{0}")]
     Migrate(#[source] Box<crate::migrate::MigrateError>),
+
+    #[error("attempted to call begin_with at non-zero transaction depth")]
+    InvalidSavePointStatement,
+
+    #[error("got unexpected connection status after attempting to begin transaction")]
+    BeginFailed,
+
+    // Not returned in normal operation.
+    /// Error occurred while reading configuration file
+    #[doc(hidden)]
+    #[error("error reading configuration file: {0}")]
+    ConfigFile(#[from] crate::config::ConfigError),
 }
 
 impl StdError for Box<dyn DatabaseError> {}
@@ -130,6 +152,12 @@ impl Error {
     #[inline]
     pub fn protocol(err: impl Display) -> Self {
         Error::Protocol(err.to_string())
+    }
+
+    #[doc(hidden)]
+    #[inline]
+    pub fn database(err: impl DatabaseError) -> Self {
+        Error::Database(Box::new(err))
     }
 
     #[doc(hidden)]
@@ -175,6 +203,8 @@ pub enum ErrorKind {
     NotNullViolation,
     /// Check constraint violation.
     CheckViolation,
+    /// Exclusion constraint violation.
+    ExclusionViolation,
     /// An unmapped error.
     Other,
 }
@@ -308,11 +338,16 @@ impl From<crate::migrate::MigrateError> for Error {
 /// Format an error message as a `Protocol` error
 #[macro_export]
 macro_rules! err_protocol {
-    ($expr:expr) => {
-        $crate::error::Error::Protocol($expr.into())
-    };
-
-    ($fmt:expr, $($arg:tt)*) => {
-        $crate::error::Error::Protocol(format!($fmt, $($arg)*))
+    ($($fmt_args:tt)*) => {
+        $crate::error::Error::Protocol(
+            format!(
+                "{} ({}:{})",
+                // Note: the format string needs to be unmodified (e.g. by `concat!()`)
+                // for implicit formatting arguments to work
+                format_args!($($fmt_args)*),
+                module_path!(),
+                line!(),
+            )
+        )
     };
 }

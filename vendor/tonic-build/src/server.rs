@@ -1,3 +1,27 @@
+/*
+ *
+ * Copyright 2025 gRPC authors.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to
+ * deal in the Software without restriction, including without limitation the
+ * rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+ * sell copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+ * IN THE SOFTWARE.
+ *
+ */
+
 use std::collections::HashSet;
 
 use super::{Attributes, Method, Service};
@@ -9,6 +33,7 @@ use proc_macro2::{Span, TokenStream};
 use quote::quote;
 use syn::{Ident, Lit, LitStr};
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn generate_internal<T: Service>(
     service: &T,
     emit_package: bool,
@@ -31,6 +56,7 @@ pub(crate) fn generate_internal<T: Service>(
     let server_service = quote::format_ident!("{}Server", service.name());
     let server_trait = quote::format_ident!("{}", service.name());
     let server_mod = quote::format_ident!("{}_server", naive_snake_case(service.name()));
+    let trait_attributes = attributes.for_trait(service.name());
     let generated_trait = generate_trait(
         service,
         emit_package,
@@ -40,6 +66,7 @@ pub(crate) fn generate_internal<T: Service>(
         disable_comments,
         use_arc_self,
         generate_default_stubs,
+        trait_attributes,
     );
     let package = if emit_package { service.package() } else { "" };
     // Transport based implementations
@@ -51,7 +78,7 @@ pub(crate) fn generate_internal<T: Service>(
         generate_doc_comments(service.comment())
     };
 
-    let named = generate_named(&server_service, &server_trait, &service_name);
+    let named = generate_named(&server_service, &service_name);
     let mod_attributes = attributes.for_mod(package);
     let struct_attributes = attributes.for_struct(&service_name);
 
@@ -99,6 +126,7 @@ pub(crate) fn generate_internal<T: Service>(
                 unused_variables,
                 dead_code,
                 missing_docs,
+                clippy::wildcard_imports,
                 // will trigger if compression is disabled
                 clippy::let_unit_value,
             )]
@@ -109,23 +137,20 @@ pub(crate) fn generate_internal<T: Service>(
             #service_doc
             #(#struct_attributes)*
             #[derive(Debug)]
-            pub struct #server_service<T: #server_trait> {
-                inner: _Inner<T>,
+            pub struct #server_service<T> {
+                inner: Arc<T>,
                 accept_compression_encodings: EnabledCompressionEncodings,
                 send_compression_encodings: EnabledCompressionEncodings,
                 max_decoding_message_size: Option<usize>,
                 max_encoding_message_size: Option<usize>,
             }
 
-            struct _Inner<T>(Arc<T>);
-
-            impl<T: #server_trait> #server_service<T> {
+            impl<T> #server_service<T> {
                 pub fn new(inner: T) -> Self {
                     Self::from_arc(Arc::new(inner))
                 }
 
                 pub fn from_arc(inner: Arc<T>) -> Self {
-                    let inner = _Inner(inner);
                     Self {
                         inner,
                         accept_compression_encodings: Default::default(),
@@ -150,10 +175,10 @@ pub(crate) fn generate_internal<T: Service>(
             impl<T, B> tonic::codegen::Service<http::Request<B>> for #server_service<T>
                 where
                     T: #server_trait,
-                    B: Body + Send + 'static,
-                    B::Error: Into<StdError> + Send + 'static,
+                    B: Body + std::marker::Send + 'static,
+                    B::Error: Into<StdError> + std::marker::Send + 'static,
             {
-                type Response = http::Response<tonic::body::BoxBody>;
+                type Response = http::Response<tonic::body::Body>;
                 type Error = std::convert::Infallible;
                 type Future = BoxFuture<Self::Response, Self::Error>;
 
@@ -162,24 +187,21 @@ pub(crate) fn generate_internal<T: Service>(
                 }
 
                 fn call(&mut self, req: http::Request<B>) -> Self::Future {
-                    let inner = self.inner.clone();
-
                     match req.uri().path() {
                         #methods
 
                         _ => Box::pin(async move {
-                            Ok(http::Response::builder()
-                               .status(200)
-                               .header("grpc-status", "12")
-                               .header("content-type", "application/grpc")
-                               .body(empty_body())
-                               .unwrap())
+                            let mut response = http::Response::new(tonic::body::Body::default());
+                            let headers = response.headers_mut();
+                            headers.insert(tonic::Status::GRPC_STATUS, (tonic::Code::Unimplemented as i32).into());
+                            headers.insert(http::header::CONTENT_TYPE, tonic::metadata::GRPC_CONTENT_TYPE);
+                            Ok(response)
                         }),
                     }
                 }
             }
 
-            impl<T: #server_trait> Clone for #server_service<T> {
+            impl<T> Clone for #server_service<T> {
                 fn clone(&self) -> Self {
                     let inner = self.inner.clone();
                     Self {
@@ -192,23 +214,12 @@ pub(crate) fn generate_internal<T: Service>(
                 }
             }
 
-            impl<T: #server_trait> Clone for _Inner<T> {
-                fn clone(&self) -> Self {
-                    Self(Arc::clone(&self.0))
-                }
-            }
-
-            impl<T: std::fmt::Debug> std::fmt::Debug for _Inner<T> {
-                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                   write!(f, "{:?}", self.0)
-                }
-            }
-
             #named
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn generate_trait<T: Service>(
     service: &T,
     emit_package: bool,
@@ -218,6 +229,7 @@ fn generate_trait<T: Service>(
     disable_comments: &HashSet<String>,
     use_arc_self: bool,
     generate_default_stubs: bool,
+    trait_attributes: Vec<syn::Attribute>,
 ) -> TokenStream {
     let methods = generate_trait_methods(
         service,
@@ -235,8 +247,9 @@ fn generate_trait<T: Service>(
 
     quote! {
         #trait_doc
+        #(#trait_attributes)*
         #[async_trait]
-        pub trait #server_trait : Send + Sync + 'static {
+        pub trait #server_trait : std::marker::Send + std::marker::Sync + 'static {
             #methods
         }
     }
@@ -327,7 +340,7 @@ fn generate_trait_methods<T: Service>(
 
                 quote! {
                     #stream_doc
-                    type #stream: tonic::codegen::tokio_stream::Stream<Item = std::result::Result<#res_message, tonic::Status>> + Send + 'static;
+                    type #stream: tonic::codegen::tokio_stream::Stream<Item = std::result::Result<#res_message, tonic::Status>> + std::marker::Send + 'static;
 
                     #method_doc
                     async fn #name(#self_param, request: tonic::Request<#req_message>)
@@ -352,7 +365,7 @@ fn generate_trait_methods<T: Service>(
 
                 quote! {
                     #stream_doc
-                    type #stream: tonic::codegen::tokio_stream::Stream<Item = std::result::Result<#res_message, tonic::Status>> + Send + 'static;
+                    type #stream: tonic::codegen::tokio_stream::Stream<Item = std::result::Result<#res_message, tonic::Status>> + std::marker::Send + 'static;
 
                     #method_doc
                     async fn #name(#self_param, request: tonic::Request<tonic::Streaming<#req_message>>)
@@ -367,16 +380,16 @@ fn generate_trait_methods<T: Service>(
     stream
 }
 
-fn generate_named(
-    server_service: &syn::Ident,
-    server_trait: &syn::Ident,
-    service_name: &str,
-) -> TokenStream {
+fn generate_named(server_service: &syn::Ident, service_name: &str) -> TokenStream {
     let service_name = syn::LitStr::new(service_name, proc_macro2::Span::call_site());
+    let name_doc = generate_doc_comment(" Generated gRPC service name");
 
     quote! {
-        impl<T: #server_trait> tonic::server::NamedService for #server_service<T> {
-            const NAME: &'static str = #service_name;
+        #name_doc
+        pub const SERVICE_NAME: &str = #service_name;
+
+        impl<T> tonic::server::NamedService for #server_service<T> {
+            const NAME: &'static str = SERVICE_NAME;
         }
     }
 }
@@ -490,7 +503,6 @@ fn generate_unary<T: Method>(
         let max_encoding_message_size = self.max_encoding_message_size;
         let inner = self.inner.clone();
         let fut = async move {
-            let inner = inner.0;
             let method = #service_ident(inner);
             let codec = #codec_name::default();
 
@@ -558,7 +570,6 @@ fn generate_server_streaming<T: Method>(
         let max_encoding_message_size = self.max_encoding_message_size;
         let inner = self.inner.clone();
         let fut = async move {
-            let inner = inner.0;
             let method = #service_ident(inner);
             let codec = #codec_name::default();
 
@@ -617,7 +628,6 @@ fn generate_client_streaming<T: Method>(
         let max_encoding_message_size = self.max_encoding_message_size;
         let inner = self.inner.clone();
         let fut = async move {
-            let inner = inner.0;
             let method = #service_ident(inner);
             let codec = #codec_name::default();
 
@@ -686,7 +696,6 @@ fn generate_streaming<T: Method>(
         let max_encoding_message_size = self.max_encoding_message_size;
         let inner = self.inner.clone();
         let fut = async move {
-            let inner = inner.0;
             let method = #service_ident(inner);
             let codec = #codec_name::default();
 

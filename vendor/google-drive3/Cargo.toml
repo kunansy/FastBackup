@@ -10,14 +10,19 @@
 # See Cargo.toml.orig for the original contents.
 
 [package]
-edition = "2018"
+edition = "2021"
 name = "google-drive3"
-version = "5.0.3+20230115"
+version = "7.0.0+20251218"
 authors = ["Sebastian Thiel <byronimo@gmail.com>"]
+build = false
+autolib = false
 autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
 description = "A complete library to interact with drive (protocol v3)"
-homepage = "https://developers.google.com/drive/"
-documentation = "https://docs.rs/google-drive3/5.0.3+20230115"
+homepage = "https://developers.google.com/workspace/drive/"
+documentation = "https://docs.rs/google-drive3/7.0.0+20251218"
 readme = "README.md"
 keywords = [
     "drive",
@@ -29,43 +34,83 @@ keywords = [
 license = "MIT"
 repository = "https://github.com/Byron/google-apis-rs/tree/main/gen/drive3"
 
-[dependencies.anyhow]
-version = "^ 1.0"
+[features]
+aws-lc-rs = [
+    "yup-oauth2?/aws-lc-rs",
+    "google-apis-common/aws-lc-rs",
+    "hyper-rustls/aws-lc-rs",
+]
+default = [
+    "yup-oauth2",
+    "ring",
+]
+ring = [
+    "yup-oauth2?/ring",
+    "google-apis-common/ring",
+    "hyper-rustls/ring",
+]
+utoipa = ["dep:utoipa"]
+yup-oauth2 = [
+    "dep:yup-oauth2",
+    "google-apis-common/yup-oauth2",
+]
+yup-oauth2-service-account = [
+    "yup-oauth2",
+    "yup-oauth2/service-account",
+    "google-apis-common/yup-oauth2-service-account",
+]
+
+[lib]
+name = "google_drive3"
+path = "src/lib.rs"
+
+[dependencies.chrono]
+version = "0.4"
+features = ["clock"]
+default-features = false
 
 [dependencies.google-apis-common]
-version = "6.0"
-
-[dependencies.http]
-version = "^0.2"
+version = "8"
 
 [dependencies.hyper]
-version = "^ 0.14"
+version = "1"
 
 [dependencies.hyper-rustls]
-version = "0.24.0"
+version = "0.27"
+features = [
+    "http2",
+    "rustls-native-certs",
+    "native-tokio",
+]
+default-features = false
 
-[dependencies.itertools]
-version = "^ 0.10"
+[dependencies.hyper-util]
+version = "0.1"
 
 [dependencies.mime]
-version = "^ 0.3.0"
+version = "0.3"
 
 [dependencies.serde]
-version = "^ 1.0"
+version = "1"
 features = ["derive"]
 
 [dependencies.serde_json]
-version = "^ 1.0"
+version = "1.0.130"
+
+[dependencies.serde_with]
+version = "3"
 
 [dependencies.tokio]
-version = "^1.0"
-
-[dependencies.tower-service]
-version = "^0.3.1"
+version = "1"
 
 [dependencies.url]
-version = "= 1.7"
+version = "2"
 
-[features]
-default = ["yup-oauth2"]
-yup-oauth2 = ["google-apis-common/yup-oauth2"]
+[dependencies.utoipa]
+version = "4"
+optional = true
+
+[dependencies.yup-oauth2]
+version = "12"
+optional = true
+default-features = false

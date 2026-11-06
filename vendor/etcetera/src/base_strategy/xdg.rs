@@ -1,6 +1,8 @@
 use std::path::Path;
 use std::path::PathBuf;
 
+use crate::HomeDirError;
+
 /// This strategy implements the [XDG Base Directories Specification](https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html). It is the most common on Linux, but is increasingly being adopted elsewhere.
 ///
 /// This initial example removes all the XDG environment variables to show the strategy’s use of the XDG default directories.
@@ -11,11 +13,13 @@ use std::path::PathBuf;
 /// use std::path::Path;
 ///
 /// // Remove the environment variables that the strategy reads from.
+/// unsafe {
 /// std::env::remove_var("XDG_CONFIG_HOME");
 /// std::env::remove_var("XDG_DATA_HOME");
 /// std::env::remove_var("XDG_CACHE_HOME");
 /// std::env::remove_var("XDG_STATE_HOME");
 /// std::env::remove_var("XDG_RUNTIME_DIR");
+/// }
 ///
 /// let base_strategy = Xdg::new().unwrap();
 ///
@@ -81,11 +85,13 @@ use std::path::PathBuf;
 ///     "/qux/"
 /// };
 ///
+/// unsafe {
 /// std::env::set_var("XDG_CONFIG_HOME", config_path);
 /// std::env::set_var("XDG_DATA_HOME", data_path);
 /// std::env::set_var("XDG_CACHE_HOME", cache_path);
 /// std::env::set_var("XDG_STATE_HOME", state_path);
 /// std::env::set_var("XDG_RUNTIME_DIR", runtime_path);
+/// }
 ///
 /// let base_strategy = Xdg::new().unwrap();
 ///
@@ -119,11 +125,13 @@ use std::path::PathBuf;
 /// use std::path::Path;
 ///
 /// // Remove the environment variables that the strategy reads from.
+/// unsafe {
 /// std::env::set_var("XDG_CONFIG_HOME", "foo/");
 /// std::env::set_var("XDG_DATA_HOME", "bar/");
 /// std::env::set_var("XDG_CACHE_HOME", "baz/");
 /// std::env::set_var("XDG_STATE_HOME", "foobar/");
 /// std::env::set_var("XDG_RUNTIME_DIR", "qux/");
+/// }
 ///
 /// let base_strategy = Xdg::new().unwrap();
 ///
@@ -157,16 +165,19 @@ pub struct Xdg {
 }
 
 impl Xdg {
+    /// Create a new Xdg BaseStrategy
+    pub fn new() -> Result<Self, HomeDirError> {
+        Ok(Self {
+            home_dir: crate::home_dir()?,
+        })
+    }
+
     fn env_var_or_none(env_var: &str) -> Option<PathBuf> {
-        std::env::var(env_var).ok().and_then(|path| {
+        std::env::var_os(env_var).and_then(|path| {
             let path = PathBuf::from(path);
 
             // Return None if the path obtained from the environment variable isn’t absolute.
-            if path.is_absolute() {
-                Some(path)
-            } else {
-                None
-            }
+            if path.is_absolute() { Some(path) } else { None }
         })
     }
 
@@ -176,14 +187,6 @@ impl Xdg {
 }
 
 impl super::BaseStrategy for Xdg {
-    type CreationError = crate::HomeDirError;
-
-    fn new() -> Result<Self, Self::CreationError> {
-        Ok(Self {
-            home_dir: crate::home_dir()?,
-        })
-    }
-
     fn home_dir(&self) -> &Path {
         &self.home_dir
     }

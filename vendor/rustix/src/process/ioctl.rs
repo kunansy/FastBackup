@@ -18,7 +18,7 @@ use backend::fd::AsFd;
 ///  - [NetBSD]
 ///  - [OpenBSD]
 ///
-/// [Linux]: https://man7.org/linux/man-pages/man4/tty_ioctl.4.html
+/// [Linux]: https://man7.org/linux/man-pages/man2/TIOCSCTTY.2const.html
 /// [FreeBSD]: https://man.freebsd.org/cgi/man.cgi?query=tty&sektion=4
 /// [NetBSD]: https://man.netbsd.org/tty.4
 /// [OpenBSD]: https://man.openbsd.org/tty.4
@@ -37,10 +37,13 @@ unsafe impl ioctl::Ioctl for Tiocsctty {
     type Output = ();
 
     const IS_MUTATING: bool = false;
-    const OPCODE: ioctl::Opcode = ioctl::Opcode::old(c::TIOCSCTTY as ioctl::RawOpcode);
+
+    fn opcode(&self) -> ioctl::Opcode {
+        c::TIOCSCTTY as ioctl::Opcode
+    }
 
     fn as_ptr(&mut self) -> *mut c::c_void {
-        (&0u32) as *const u32 as *mut c::c_void
+        core::ptr::null_mut()
     }
 
     unsafe fn output_from_ptr(
@@ -49,4 +52,12 @@ unsafe impl ioctl::Ioctl for Tiocsctty {
     ) -> io::Result<Self::Output> {
         Ok(())
     }
+}
+
+#[test]
+#[cfg(not(any(windows, target_os = "aix", target_os = "redox", target_os = "wasi")))]
+fn tiocsctty_argument_is_zero() {
+    use crate::ioctl::Ioctl;
+
+    assert!(Tiocsctty.as_ptr().is_null());
 }

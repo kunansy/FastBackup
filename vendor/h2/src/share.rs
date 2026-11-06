@@ -187,7 +187,7 @@ pub struct RecvStream {
 /// * The window size is now 0 bytes. The peer may not send any more data.
 /// * [`release_capacity`] is called with 1024.
 /// * The receive window size is now 1024 bytes. The peer may now send more
-/// data.
+///   data.
 ///
 /// [flow control]: ../index.html#flow-control
 /// [`release_capacity`]: struct.FlowControl.html#method.release_capacity
@@ -308,7 +308,7 @@ impl<B: Buf> SendStream<B> {
     /// increased by the connection. Note that `n` here represents the **total**
     /// amount of assigned capacity at that point in time. It is also possible
     /// that `n` is lower than the previous call if, since then, the caller has
-    /// sent data.
+    /// sent data. `n` will always be greater than zero.
     pub fn poll_capacity(&mut self, cx: &mut Context) -> Poll<Option<Result<usize, crate::Error>>> {
         self.inner
             .poll_capacity(cx)
@@ -410,12 +410,12 @@ impl RecvStream {
 
     /// Get the next data frame.
     pub async fn data(&mut self) -> Option<Result<Bytes, crate::Error>> {
-        futures_util::future::poll_fn(move |cx| self.poll_data(cx)).await
+        crate::poll_fn(move |cx| self.poll_data(cx)).await
     }
 
     /// Get optional trailers for this stream.
     pub async fn trailers(&mut self) -> Result<Option<HeaderMap>, crate::Error> {
-        futures_util::future::poll_fn(move |cx| self.poll_trailers(cx)).await
+        crate::poll_fn(move |cx| self.poll_trailers(cx)).await
     }
 
     /// Poll for the next data frame.
@@ -549,7 +549,7 @@ impl PingPong {
     /// Send a PING frame and wait for the peer to send the pong.
     pub async fn ping(&mut self, ping: Ping) -> Result<Pong, crate::Error> {
         self.send_ping(ping)?;
-        futures_util::future::poll_fn(|cx| self.poll_pong(cx)).await
+        crate::poll_fn(|cx| self.poll_pong(cx)).await
     }
 
     #[doc(hidden)]

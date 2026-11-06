@@ -7,7 +7,7 @@ use core_foundation::string::CFString;
 use core_foundation_sys::data::CFDataRef;
 use core_foundation_sys::string::CFStringRef;
 use security_framework_sys::encrypt_transform::*;
-use security_framework_sys::transform::*;
+use security_framework_sys::transform::kSecTransformInputAttributeName;
 use std::ptr;
 
 use crate::key::SecKey;
@@ -146,6 +146,7 @@ impl Builder {
     }
 
     /// Encrypts data with a provided key.
+    // FIXME: deprecate and remove: don't expose CFData in Rust APIs.
     pub fn encrypt(&self, key: &SecKey, data: &CFData) -> Result<CFData, CFError> {
         unsafe {
             let mut error = ptr::null_mut();
@@ -160,6 +161,7 @@ impl Builder {
     }
 
     /// Decrypts data with a provided key.
+    // FIXME: deprecate and remove: don't expose CFData in Rust APIs.
     pub fn decrypt(&self, key: &SecKey, data: &CFData) -> Result<CFData, CFError> {
         unsafe {
             let mut error = ptr::null_mut();
@@ -175,17 +177,17 @@ impl Builder {
 
     fn finish(&self, mut transform: SecTransform, data: &CFData) -> Result<CFData, CFError> {
         unsafe {
-            if let Some(ref padding) = self.padding {
+            if let Some(padding) = &self.padding {
                 let key = CFString::wrap_under_get_rule(kSecPaddingKey);
                 transform.set_attribute(&key, &padding.to_str())?;
             }
 
-            if let Some(ref mode) = self.mode {
+            if let Some(mode) = &self.mode {
                 let key = CFString::wrap_under_get_rule(kSecEncryptionMode);
                 transform.set_attribute(&key, &mode.to_str())?;
             }
 
-            if let Some(ref iv) = self.iv {
+            if let Some(iv) = &self.iv {
                 let key = CFString::wrap_under_get_rule(kSecIVKey);
                 transform.set_attribute(&key, iv)?;
             }
@@ -194,21 +196,18 @@ impl Builder {
             transform.set_attribute(&key, data)?;
 
             let result = transform.execute()?;
-            Ok(CFData::wrap_under_get_rule(
-                result.as_CFTypeRef() as CFDataRef
-            ))
+            Ok(CFData::wrap_under_get_rule(result.as_CFTypeRef() as CFDataRef))
         }
     }
 }
 
 #[cfg(test)]
 mod test {
-    use core_foundation::data::CFData;
     use hex::FromHex;
 
     use super::*;
-    use crate::key::SecKey;
     use crate::os::macos::item::KeyType;
+    #[allow(deprecated)]
     use crate::os::macos::key::SecKeyExt;
 
     #[test]
@@ -229,6 +228,7 @@ mod test {
 
         let key = Vec::<u8>::from_hex(key).unwrap();
         let key = CFData::from_buffer(&key);
+        #[allow(deprecated)]
         let key = SecKey::from_data(KeyType::aes(), &key).unwrap();
 
         let iv = Vec::<u8>::from_hex(iv).unwrap();

@@ -1,10 +1,9 @@
-use super::{FromRequest, FromRequestParts};
+use super::{FromRequest, FromRequestParts, Request};
 use crate::response::{IntoResponse, Response};
-use async_trait::async_trait;
-use http::request::{Parts, Request};
-use std::convert::Infallible;
+use http::request::Parts;
+use std::{convert::Infallible, future::Future};
 
-#[async_trait]
+#[diagnostic::do_not_recommend]
 impl<S> FromRequestParts<S> for ()
 where
     S: Send + Sync,
@@ -20,7 +19,7 @@ macro_rules! impl_from_request {
     (
         [$($ty:ident),*], $last:ident
     ) => {
-        #[async_trait]
+        #[diagnostic::do_not_recommend]
         #[allow(non_snake_case, unused_mut, unused_variables)]
         impl<S, $($ty,)* $last> FromRequestParts<S> for ($($ty,)* $last,)
         where
@@ -45,30 +44,31 @@ macro_rules! impl_from_request {
         }
 
         // This impl must not be generic over M, otherwise it would conflict with the blanket
-        // implementation of `FromRequest<S, B, Mut>` for `T: FromRequestParts<S>`.
-        #[async_trait]
+        // implementation of `FromRequest<S, Mut>` for `T: FromRequestParts<S>`.
+        #[diagnostic::do_not_recommend]
         #[allow(non_snake_case, unused_mut, unused_variables)]
-        impl<S, B, $($ty,)* $last> FromRequest<S, B> for ($($ty,)* $last,)
+        impl<S, $($ty,)* $last> FromRequest<S> for ($($ty,)* $last,)
         where
             $( $ty: FromRequestParts<S> + Send, )*
-            $last: FromRequest<S, B> + Send,
-            B: Send + 'static,
+            $last: FromRequest<S> + Send,
             S: Send + Sync,
         {
             type Rejection = Response;
 
-            async fn from_request(req: Request<B>, state: &S) -> Result<Self, Self::Rejection> {
+            fn from_request(req: Request, state: &S) -> impl Future<Output = Result<Self, Self::Rejection>> {
                 let (mut parts, body) = req.into_parts();
 
-                $(
-                    let $ty = $ty::from_request_parts(&mut parts, state).await.map_err(|err| err.into_response())?;
-                )*
+                async move {
+                    $(
+                        let $ty = $ty::from_request_parts(&mut parts, state).await.map_err(|err| err.into_response())?;
+                    )*
 
-                let req = Request::from_parts(parts, body);
+                    let req = Request::from_parts(parts, body);
 
-                let $last = $last::from_request(req, state).await.map_err(|err| err.into_response())?;
+                    let $last = $last::from_request(req, state).await.map_err(|err| err.into_response())?;
 
-                Ok(($($ty,)* $last,))
+                    Ok(($($ty,)* $last,))
+                }
             }
         }
     };
@@ -85,7 +85,7 @@ mod tests {
 
     fn assert_from_request<M, T>()
     where
-        T: FromRequest<(), http_body::Full<Bytes>, M>,
+        T: FromRequest<(), M>,
     {
     }
 

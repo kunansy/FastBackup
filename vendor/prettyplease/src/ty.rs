@@ -1,4 +1,5 @@
 use crate::algorithm::Printer;
+use crate::fixup::FixupContext;
 use crate::iter::IterDelimited;
 use crate::path::PathKind;
 use crate::INDENT;
@@ -12,6 +13,7 @@ use syn::{
 impl Printer {
     pub fn ty(&mut self, ty: &Type) {
         match ty {
+            #![cfg_attr(all(test, exhaustive), deny(non_exhaustive_omitted_patterns))]
             Type::Array(ty) => self.type_array(ty),
             Type::BareFn(ty) => self.type_bare_fn(ty),
             Type::Group(ty) => self.type_group(ty),
@@ -27,7 +29,6 @@ impl Printer {
             Type::TraitObject(ty) => self.type_trait_object(ty),
             Type::Tuple(ty) => self.type_tuple(ty),
             Type::Verbatim(ty) => self.type_verbatim(ty),
-            #[cfg_attr(all(test, exhaustive), deny(non_exhaustive_omitted_patterns))]
             _ => unimplemented!("unknown Type"),
         }
     }
@@ -36,7 +37,7 @@ impl Printer {
         self.word("[");
         self.ty(&ty.elem);
         self.word("; ");
-        self.expr(&ty.len);
+        self.expr(&ty.len, FixupContext::NONE);
         self.word("]");
     }
 
@@ -179,7 +180,6 @@ impl Printer {
             AnonUnion(AnonUnion),
             DynStar(DynStar),
             MutSelf(MutSelf),
-            NotType(NotType),
         }
 
         struct AnonStruct {
@@ -196,10 +196,6 @@ impl Printer {
 
         struct MutSelf {
             ty: Option<Type>,
-        }
-
-        struct NotType {
-            inner: Type,
         }
 
         impl Parse for TypeVerbatim {
@@ -229,10 +225,6 @@ impl Printer {
                         Some(ty)
                     };
                     Ok(TypeVerbatim::MutSelf(MutSelf { ty }))
-                } else if lookahead.peek(Token![!]) {
-                    input.parse::<Token![!]>()?;
-                    let inner: Type = input.parse()?;
-                    Ok(TypeVerbatim::NotType(NotType { inner }))
                 } else if lookahead.peek(Token![...]) {
                     input.parse::<Token![...]>()?;
                     Ok(TypeVerbatim::Ellipsis)
@@ -292,10 +284,6 @@ impl Printer {
                     self.word(": ");
                     self.ty(ty);
                 }
-            }
-            TypeVerbatim::NotType(ty) => {
-                self.word("!");
-                self.ty(&ty.inner);
             }
         }
     }

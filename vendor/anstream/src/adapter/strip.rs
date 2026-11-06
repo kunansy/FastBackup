@@ -45,12 +45,12 @@ impl<'s> StrippedStr<'s> {
     pub fn to_string(&self) -> String {
         use std::fmt::Write as _;
         let mut stripped = String::with_capacity(self.bytes.len());
-        let _ = write!(&mut stripped, "{}", self);
+        let _ = write!(&mut stripped, "{self}");
         stripped
     }
 }
 
-impl<'s> std::fmt::Display for StrippedStr<'s> {
+impl std::fmt::Display for StrippedStr<'_> {
     /// **Note:** this does *not* exhaust the [`Iterator`]
     #[inline]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -145,11 +145,13 @@ fn next_str<'s>(bytes: &mut &'s [u8], state: &mut State) -> Option<&'s str> {
 
 #[inline]
 unsafe fn from_utf8_unchecked<'b>(bytes: &'b [u8], safety_justification: &'static str) -> &'b str {
-    if cfg!(debug_assertions) {
-        // Catch problems more quickly when testing
-        std::str::from_utf8(bytes).expect(safety_justification)
-    } else {
-        std::str::from_utf8_unchecked(bytes)
+    unsafe {
+        if cfg!(debug_assertions) {
+            // Catch problems more quickly when testing
+            std::str::from_utf8(bytes).expect(safety_justification)
+        } else {
+            std::str::from_utf8_unchecked(bytes)
+        }
     }
 }
 
@@ -327,7 +329,7 @@ fn next_bytes<'s>(
 }
 
 #[derive(Default, Clone, Debug, PartialEq, Eq)]
-pub struct Utf8Parser {
+pub(crate) struct Utf8Parser {
     utf8_parser: utf8parse::Parser,
 }
 
@@ -342,7 +344,7 @@ impl Utf8Parser {
 
 struct VtUtf8Receiver<'a>(&'a mut bool);
 
-impl<'a> utf8parse::Receiver for VtUtf8Receiver<'a> {
+impl utf8parse::Receiver for VtUtf8Receiver<'_> {
     fn codepoint(&mut self, _: char) {
         *self.0 = true;
     }
@@ -440,7 +442,7 @@ mod test {
     fn test_strip_byte_multibyte() {
         let bytes = [240, 145, 141, 139];
         let expected = parser_strip(&bytes);
-        let actual = String::from_utf8(strip_byte(&bytes).to_vec()).unwrap();
+        let actual = String::from_utf8(strip_byte(&bytes).clone()).unwrap();
         assert_eq!(expected, actual);
     }
 
@@ -456,7 +458,7 @@ mod test {
     fn test_strip_byte_del() {
         let bytes = [0x7f];
         let expected = "";
-        let actual = String::from_utf8(strip_byte(&bytes).to_vec()).unwrap();
+        let actual = String::from_utf8(strip_byte(&bytes).clone()).unwrap();
         assert_eq!(expected, actual);
     }
 
@@ -502,7 +504,7 @@ mod test {
             dbg!(&s);
             dbg!(s.as_bytes());
             let expected = parser_strip(s.as_bytes());
-            let actual = String::from_utf8(strip_byte(s.as_bytes()).to_vec()).unwrap();
+            let actual = String::from_utf8(strip_byte(s.as_bytes()).clone()).unwrap();
             assert_eq!(expected, actual);
         }
     }

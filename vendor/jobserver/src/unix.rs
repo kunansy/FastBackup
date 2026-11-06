@@ -6,19 +6,37 @@ use std::io::{self, Read, Write};
 use std::mem;
 use std::mem::MaybeUninit;
 use std::os::unix::prelude::*;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
-use std::ptr;
-use std::sync::{Arc, Once};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::thread::{self, Builder, JoinHandle};
 use std::time::Duration;
 
 #[derive(Debug)]
-pub enum Client {
-    /// `--jobserver-auth=R,W`
-    Pipe { read: File, write: File },
-    /// `--jobserver-auth=fifo:PATH`
-    Fifo { file: File, path: PathBuf },
+/// This preserves the `--jobserver-auth` type at creation time,
+/// so auth type will be passed down to and inherit from sub-Make processes correctly.
+///
+/// See <https://github.com/rust-lang/jobserver-rs/issues/99> for details.
+enum ClientCreationArg {
+    Fds { read: c_int, write: c_int },
+    Fifo(Box<Path>),
+}
+
+#[derive(Debug)]
+pub struct Client {
+    read: File,
+    write: File,
+    creation_arg: ClientCreationArg,
+    /// It is set to `None` if the pipe is shared with other processes, so it
+    /// cannot support non-blocking mode.
+    ///
+    /// If it is set to `Some`, then it can only go from
+    /// `Some(false)` -> `Some(true)` but not the other way around,
+    /// since that could cause a race condition.
+    is_non_blocking: Option<AtomicBool>,
 }
 
 #[derive(Debug)]
@@ -34,7 +52,7 @@ impl Client {
         // wrong!
         const BUFFER: [u8; 128] = [b'|'; 128];
 
-        let mut write = client.write();
+        let mut write = &client.write;
 
         set_nonblocking(write.as_raw_fd(), true)?;
 
@@ -53,32 +71,19 @@ impl Client {
     unsafe fn mk() -> io::Result<Client> {
         let mut pipes = [0; 2];
 
-        // Attempt atomically-create-with-cloexec if we can on Linux,
-        // detected by using the `syscall` function in `libc` to try to work
-        // with as many kernels/glibc implementations as possible.
+        // Atomically-create-with-cloexec on Linux.
         #[cfg(target_os = "linux")]
-        {
-            use std::sync::atomic::{AtomicBool, Ordering};
-
-            static PIPE2_AVAILABLE: AtomicBool = AtomicBool::new(true);
-            if PIPE2_AVAILABLE.load(Ordering::SeqCst) {
-                match libc::syscall(libc::SYS_pipe2, pipes.as_mut_ptr(), libc::O_CLOEXEC) {
-                    -1 => {
-                        let err = io::Error::last_os_error();
-                        if err.raw_os_error() == Some(libc::ENOSYS) {
-                            PIPE2_AVAILABLE.store(false, Ordering::SeqCst);
-                        } else {
-                            return Err(err);
-                        }
-                    }
-                    _ => return Ok(Client::from_fds(pipes[0], pipes[1])),
-                }
-            }
+        if libc::pipe2(pipes.as_mut_ptr(), libc::O_CLOEXEC) == -1 {
+            return Err(io::Error::last_os_error());
         }
 
-        cvt(libc::pipe(pipes.as_mut_ptr()))?;
-        drop(set_cloexec(pipes[0], true));
-        drop(set_cloexec(pipes[1], true));
+        #[cfg(not(target_os = "linux"))]
+        {
+            cvt(libc::pipe(pipes.as_mut_ptr()))?;
+            drop(set_cloexec(pipes[0], true));
+            drop(set_cloexec(pipes[1], true));
+        }
+
         Ok(Client::from_fds(pipes[0], pipes[1]))
     }
 
@@ -104,14 +109,24 @@ impl Client {
             FromEnvErrorInner::CannotParse("expected a path after `fifo:`".to_string())
         })?;
         let path = Path::new(path_str);
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(path)
-            .map_err(|err| FromEnvErrorInner::CannotOpenPath(path_str.to_string(), err))?;
-        Ok(Some(Client::Fifo {
-            file,
-            path: path.into(),
+
+        let open_file = || {
+            // Opening with read write is necessary, since opening with
+            // read-only or write-only could block the thread until another
+            // thread opens it with write-only or read-only (or RDWR)
+            // correspondingly.
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(path)
+                .map_err(|err| FromEnvErrorInner::CannotOpenPath(path_str.to_string(), err))
+        };
+
+        Ok(Some(Client {
+            read: open_file()?,
+            write: open_file()?,
+            creation_arg: ClientCreationArg::Fifo(path.into()),
+            is_non_blocking: Some(AtomicBool::new(false)),
         }))
     }
 
@@ -130,6 +145,17 @@ impl Client {
             .parse()
             .map_err(|e| FromEnvErrorInner::CannotParse(format!("cannot parse `write` fd: {e}")))?;
 
+        // If either or both of these file descriptors are negative,
+        // it means the jobserver is disabled for this process.
+        if read < 0 {
+            return Err(FromEnvErrorInner::NegativeFd(read));
+        }
+        if write < 0 {
+            return Err(FromEnvErrorInner::NegativeFd(write));
+        }
+
+        let creation_arg = ClientCreationArg::Fds { read, write };
+
         // Ok so we've got two integers that look like file descriptors, but
         // for extra sanity checking let's see if they actually look like
         // valid files and instances of a pipe if feature enabled before we
@@ -146,34 +172,46 @@ impl Client {
             (read_err, write_err) => {
                 read_err?;
                 write_err?;
+
+                // Optimization: Try converting it to a fifo by using /dev/fd
+                //
+                // On linux, opening `/dev/fd/$fd` returns a fd with a new file description,
+                // so we can set `O_NONBLOCK` on it without affecting other processes.
+                //
+                // On macOS, opening `/dev/fd/$fd` seems to be the same as `File::try_clone`.
+                //
+                // I tested this on macOS 14 and Linux 6.5.13
+                #[cfg(target_os = "linux")]
+                if let (Ok(read), Ok(write)) = (
+                    File::open(format!("/dev/fd/{}", read)),
+                    OpenOptions::new()
+                        .write(true)
+                        .open(format!("/dev/fd/{}", write)),
+                ) {
+                    return Ok(Some(Client {
+                        read,
+                        write,
+                        creation_arg,
+                        is_non_blocking: Some(AtomicBool::new(false)),
+                    }));
+                }
             }
         }
 
-        drop(set_cloexec(read, true));
-        drop(set_cloexec(write, true));
-        Ok(Some(Client::from_fds(read, write)))
+        Ok(Some(Client {
+            read: clone_fd_and_set_cloexec(read)?,
+            write: clone_fd_and_set_cloexec(write)?,
+            creation_arg,
+            is_non_blocking: None,
+        }))
     }
 
     unsafe fn from_fds(read: c_int, write: c_int) -> Client {
-        Client::Pipe {
+        Client {
             read: File::from_raw_fd(read),
             write: File::from_raw_fd(write),
-        }
-    }
-
-    /// Gets the read end of our jobserver client.
-    fn read(&self) -> &File {
-        match self {
-            Client::Pipe { read, .. } => read,
-            Client::Fifo { file, .. } => file,
-        }
-    }
-
-    /// Gets the write end of our jobserver client.
-    fn write(&self) -> &File {
-        match self {
-            Client::Pipe { write, .. } => write,
-            Client::Fifo { file, .. } => file,
+            creation_arg: ClientCreationArg::Fds { read, write },
+            is_non_blocking: None,
         }
     }
 
@@ -211,7 +249,7 @@ impl Client {
         // to shut us down, so we otherwise punt all errors upwards.
         unsafe {
             let mut fd: libc::pollfd = mem::zeroed();
-            let mut read = self.read();
+            let mut read = &self.read;
             fd.fd = read.as_raw_fd();
             fd.events = libc::POLLIN;
             loop {
@@ -220,7 +258,7 @@ impl Client {
                     Ok(1) => return Ok(Some(Acquired { byte: buf[0] })),
                     Ok(_) => {
                         return Err(io::Error::new(
-                            io::ErrorKind::Other,
+                            io::ErrorKind::UnexpectedEof,
                             "early EOF on jobserver pipe",
                         ));
                     }
@@ -248,13 +286,44 @@ impl Client {
         }
     }
 
+    pub fn try_acquire(&self) -> io::Result<Option<Acquired>> {
+        let mut buf = [0];
+        let mut fifo = &self.read;
+
+        if let Some(is_non_blocking) = self.is_non_blocking.as_ref() {
+            if !is_non_blocking.load(Ordering::Relaxed) {
+                set_nonblocking(fifo.as_raw_fd(), true)?;
+                is_non_blocking.store(true, Ordering::Relaxed);
+            }
+        } else {
+            return Err(io::ErrorKind::Unsupported.into());
+        }
+
+        loop {
+            match fifo.read(&mut buf) {
+                Ok(1) => break Ok(Some(Acquired { byte: buf[0] })),
+                Ok(_) => {
+                    break Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "early EOF on jobserver pipe",
+                    ))
+                }
+
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => break Ok(None),
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+
+                Err(err) => break Err(err),
+            }
+        }
+    }
+
     pub fn release(&self, data: Option<&Acquired>) -> io::Result<()> {
         // Note that the fd may be nonblocking but we're going to go ahead
         // and assume that the writes here are always nonblocking (we can
         // always quickly release a token). If that turns out to not be the
         // case we'll get an error anyway!
         let byte = data.map(|d| d.byte).unwrap_or(b'+');
-        match self.write().write(&[byte])? {
+        match (&self.write).write(&[byte])? {
             1 => Ok(()),
             _ => Err(io::Error::new(
                 io::ErrorKind::Other,
@@ -264,31 +333,30 @@ impl Client {
     }
 
     pub fn string_arg(&self) -> String {
-        match self {
-            Client::Pipe { read, write } => format!("{},{}", read.as_raw_fd(), write.as_raw_fd()),
-            Client::Fifo { path, .. } => format!("fifo:{}", path.to_str().unwrap()),
+        match &self.creation_arg {
+            ClientCreationArg::Fifo(path) => format!("fifo:{}", path.display()),
+            ClientCreationArg::Fds { read, write } => format!("{},{}", read, write),
         }
     }
 
     pub fn available(&self) -> io::Result<usize> {
         let mut len = MaybeUninit::<c_int>::uninit();
-        cvt(unsafe { libc::ioctl(self.read().as_raw_fd(), libc::FIONREAD, len.as_mut_ptr()) })?;
+        cvt(unsafe { libc::ioctl(self.read.as_raw_fd(), libc::FIONREAD, len.as_mut_ptr()) })?;
         Ok(unsafe { len.assume_init() } as usize)
     }
 
     pub fn configure(&self, cmd: &mut Command) {
-        match self {
+        if matches!(self.creation_arg, ClientCreationArg::Fifo { .. }) {
             // We `File::open`ed it when inheriting from environment,
             // so no need to set cloexec for fifo.
-            Client::Fifo { .. } => return,
-            Client::Pipe { .. } => {}
-        };
+            return;
+        }
         // Here we basically just want to say that in the child process
         // we'll configure the read/write file descriptors to *not* be
         // cloexec, so they're inherited across the exec and specified as
         // integers through `string_arg` above.
-        let read = self.read().as_raw_fd();
-        let write = self.write().as_raw_fd();
+        let read = self.read.as_raw_fd();
+        let write = self.write.as_raw_fd();
         unsafe {
             cmd.pre_exec(move || {
                 set_cloexec(read, false)?;
@@ -310,26 +378,24 @@ pub(crate) fn spawn_helper(
     state: Arc<super::HelperState>,
     mut f: Box<dyn FnMut(io::Result<crate::Acquired>) + Send>,
 ) -> io::Result<Helper> {
-    static USR1_INIT: Once = Once::new();
-    let mut err = None;
-    USR1_INIT.call_once(|| unsafe {
-        let mut new: libc::sigaction = mem::zeroed();
-        #[cfg(target_os = "aix")]
-        {
-            new.sa_union.__su_sigaction = sigusr1_handler;
-        }
-        #[cfg(not(target_os = "aix"))]
-        {
-            new.sa_sigaction = sigusr1_handler as usize;
-        }
-        new.sa_flags = libc::SA_SIGINFO as _;
-        if libc::sigaction(libc::SIGUSR1, &new, ptr::null_mut()) != 0 {
-            err = Some(io::Error::last_os_error());
-        }
-    });
+    #[cfg(not(miri))]
+    {
+        use std::sync::Once;
 
-    if let Some(e) = err.take() {
-        return Err(e);
+        static USR1_INIT: Once = Once::new();
+        let mut err = None;
+        USR1_INIT.call_once(|| unsafe {
+            let mut new: libc::sigaction = mem::zeroed();
+            new.sa_sigaction = sigusr1_handler as usize;
+            new.sa_flags = libc::SA_SIGINFO as _;
+            if libc::sigaction(libc::SIGUSR1, &new, std::ptr::null_mut()) != 0 {
+                err = Some(io::Error::last_os_error());
+            }
+        });
+
+        if let Some(e) = err.take() {
+            return Err(e);
+        }
     }
 
     let state2 = state.clone();
@@ -344,7 +410,7 @@ pub(crate) fn spawn_helper(
                     }));
                 }
                 Err(e) => break f(Err(e)),
-                Ok(None) if helper.producer_done() => break,
+                Ok(None) if helper.lock().producer_done => break,
                 Ok(None) => {}
             }
         });
@@ -374,6 +440,7 @@ impl Helper {
             if state.consumer_done {
                 break;
             }
+            #[cfg(not(miri))]
             unsafe {
                 // Ignore the return value here of `pthread_kill`,
                 // apparently on OSX if you kill a dead thread it will
@@ -435,6 +502,14 @@ unsafe fn fd_check(fd: c_int, check_pipe: bool) -> Result<(), FromEnvErrorInner>
     }
 }
 
+fn clone_fd_and_set_cloexec(fd: c_int) -> Result<File, FromEnvErrorInner> {
+    // Safety: fd is a valid fd and it remains open until returns
+    unsafe { BorrowedFd::borrow_raw(fd) }
+        .try_clone_to_owned()
+        .map(File::from)
+        .map_err(|err| FromEnvErrorInner::CannotOpenFd(fd, err))
+}
+
 fn set_cloexec(fd: c_int, set: bool) -> io::Result<()> {
     unsafe {
         let previous = cvt(libc::fcntl(fd, libc::F_GETFD))?;
@@ -468,10 +543,92 @@ fn cvt(t: c_int) -> io::Result<c_int> {
     }
 }
 
+#[cfg(not(miri))]
 extern "C" fn sigusr1_handler(
     _signum: c_int,
     _info: *mut libc::siginfo_t,
     _ptr: *mut libc::c_void,
 ) {
     // nothing to do
+}
+
+#[cfg(test)]
+mod test {
+    use super::Client as ClientImp;
+
+    use crate::{test::run_named_fifo_try_acquire_tests, Client};
+
+    use std::{fs::File, io::Write, os::unix::io::AsRawFd, sync::Arc};
+
+    fn from_imp_client(imp: ClientImp) -> Client {
+        Client {
+            inner: Arc::new(imp),
+        }
+    }
+
+    fn new_client_from_fifo() -> (Client, String) {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let fifo_path = file.path().to_owned();
+        file.close().unwrap(); // Remove the NamedTempFile to create fifo
+
+        nix::unistd::mkfifo(&fifo_path, nix::sys::stat::Mode::S_IRWXU).unwrap();
+
+        let arg = format!("fifo:{}", fifo_path.to_str().unwrap());
+
+        (
+            ClientImp::from_fifo(&arg)
+                .unwrap()
+                .map(from_imp_client)
+                .unwrap(),
+            arg,
+        )
+    }
+
+    fn new_client_from_pipe() -> (Client, String) {
+        let (read, write) = nix::unistd::pipe().unwrap();
+        let read = File::from(read);
+        let mut write = File::from(write);
+
+        write.write_all(b"1").unwrap();
+
+        let arg = format!("{},{}", read.as_raw_fd(), write.as_raw_fd());
+
+        (
+            unsafe { ClientImp::from_pipe(&arg, true) }
+                .unwrap()
+                .map(from_imp_client)
+                .unwrap(),
+            arg,
+        )
+    }
+
+    #[test]
+    fn test_try_acquire_named_fifo() {
+        run_named_fifo_try_acquire_tests(&new_client_from_fifo().0);
+    }
+
+    #[test]
+    fn test_try_acquire_annoymous_pipe_linux_specific_optimization() {
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(
+            new_client_from_pipe().0.try_acquire().unwrap_err().kind(),
+            std::io::ErrorKind::Unsupported
+        );
+
+        #[cfg(target_os = "linux")]
+        {
+            let client = new_client_from_pipe().0;
+            client.acquire().unwrap().drop_without_releasing();
+            run_named_fifo_try_acquire_tests(&client);
+        }
+    }
+
+    #[test]
+    fn test_string_arg() {
+        let (client, arg) = new_client_from_fifo();
+        assert_eq!(client.inner.string_arg(), arg);
+
+        let (client, arg) = new_client_from_pipe();
+        assert_eq!(client.inner.string_arg(), arg);
+    }
 }

@@ -11,7 +11,7 @@
 //! SQLx provides a canonical connection pool implementation intended to satisfy the majority
 //! of use cases.
 //!
-//! See [Pool][crate::pool::Pool] for details.
+//! See [Pool] for details.
 //!
 //! Type aliases are provided for each database to make it easier to sprinkle `Pool` through
 //! your codebase:
@@ -54,30 +54,28 @@
 //! [`Pool::acquire`] or
 //! [`Pool::begin`].
 
-use self::inner::PoolInner;
-#[cfg(all(
-    any(
-        feature = "postgres",
-        feature = "mysql",
-        feature = "mssql",
-        feature = "sqlite"
-    ),
-    feature = "any"
-))]
-use crate::any::{Any, AnyKind};
-use crate::connection::Connection;
-use crate::database::Database;
-use crate::error::Error;
-use crate::transaction::Transaction;
+use std::fmt;
+use std::future::Future;
+use std::pin::{pin, Pin};
+use std::sync::Arc;
+use std::task::{ready, Context, Poll};
+use std::time::{Duration, Instant};
+
 use event_listener::EventListener;
 use futures_core::FusedFuture;
 use futures_util::FutureExt;
-use std::fmt;
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::Arc;
-use std::task::{Context, Poll};
-use std::time::{Duration, Instant};
+
+use crate::connection::Connection;
+use crate::database::Database;
+use crate::error::Error;
+use crate::sql_str::SqlSafeStr;
+use crate::transaction::Transaction;
+
+pub use self::connection::PoolConnection;
+use self::inner::PoolInner;
+#[doc(hidden)]
+pub use self::maybe::MaybePoolConnection;
+pub use self::options::{PoolConnectionMetadata, PoolOptions};
 
 #[macro_use]
 mod executor;
@@ -88,12 +86,6 @@ pub mod maybe;
 mod connection;
 mod inner;
 mod options;
-
-pub use self::connection::PoolConnection;
-pub use self::options::{PoolConnectionMetadata, PoolOptions};
-
-#[doc(hidden)]
-pub use self::maybe::MaybePoolConnection;
 
 /// An asynchronous pool of SQLx database connections.
 ///
@@ -110,7 +102,7 @@ pub use self::maybe::MaybePoolConnection;
 /// when at this limit and all connections are checked out, the task will be made to wait until
 /// a connection becomes available.
 ///
-/// You can configure the connection limit, and other parameters, using [PoolOptions][crate::pool::PoolOptions].
+/// You can configure the connection limit, and other parameters, using [PoolOptions].
 ///
 /// Calls to `acquire()` are fair, i.e. fulfilled on a first-come, first-serve basis.
 ///
@@ -118,7 +110,8 @@ pub use self::maybe::MaybePoolConnection;
 /// application/daemon/web server/etc. and then shared with all tasks throughout the process'
 /// lifetime. How best to accomplish this depends on your program architecture.
 ///
-/// In Actix-Web, for example, you can share a single pool with all request handlers using [web::Data].
+/// In Actix-Web, for example, you can efficiently share a single pool with all request handlers
+/// using [web::ThinData].
 ///
 /// Cloning `Pool` is cheap as it is simply a reference-counted handle to the inner pool state.
 /// When the last remaining handle to the pool is dropped, the connections owned by the pool are
@@ -140,7 +133,7 @@ pub use self::maybe::MaybePoolConnection;
 /// * [PgPool][crate::postgres::PgPool] (PostgreSQL)
 /// * [SqlitePool][crate::sqlite::SqlitePool] (SQLite)
 ///
-/// [web::Data]: https://docs.rs/actix-web/3/actix_web/web/struct.Data.html
+/// [web::ThinData]: https://docs.rs/actix-web/4.9.0/actix_web/web/struct.ThinData.html
 ///
 /// ### Note: Drop Behavior
 /// Due to a lack of async `Drop`, dropping the last `Pool` handle may not immediately clean
@@ -230,7 +223,7 @@ pub use self::maybe::MaybePoolConnection;
 /// scheme. However, in a web context, telling a client "go away, maybe try again later" results in
 /// a sub-optimal user experience.
 ///
-/// Instead with a connection pool, clients are made to wait in a fair queue for a connection to
+/// Instead, with a connection pool, clients are made to wait in a fair queue for a connection to
 /// become available; by using a single connection pool for your whole application, you can ensure
 /// that you don't exceed the connection limit of your database server while allowing response
 /// time to degrade gracefully at high load.
@@ -310,7 +303,7 @@ impl<DB: Database> Pool<DB> {
     ///
     /// The pool will establish connections only as needed.
     ///
-    /// Refer to the relevant [`ConnectOptions`] impl for your database for the expected URL format:
+    /// Refer to the relevant [`ConnectOptions`][crate::connection::ConnectOptions] impl for your database for the expected URL format:
     ///
     /// * Postgres: [`PgConnectOptions`][crate::postgres::PgConnectOptions]
     /// * MySQL: [`MySqlConnectOptions`][crate::mysql::MySqlConnectOptions]
@@ -376,15 +369,49 @@ impl<DB: Database> Pool<DB> {
 
     /// Retrieves a connection and immediately begins a new transaction.
     pub async fn begin(&self) -> Result<Transaction<'static, DB>, Error> {
-        Ok(Transaction::begin(MaybePoolConnection::PoolConnection(self.acquire().await?)).await?)
+        Transaction::begin(
+            MaybePoolConnection::PoolConnection(self.acquire().await?),
+            None,
+        )
+        .await
     }
 
     /// Attempts to retrieve a connection and immediately begins a new transaction if successful.
     pub async fn try_begin(&self) -> Result<Option<Transaction<'static, DB>>, Error> {
         match self.try_acquire() {
-            Some(conn) => Transaction::begin(MaybePoolConnection::PoolConnection(conn))
+            Some(conn) => Transaction::begin(MaybePoolConnection::PoolConnection(conn), None)
                 .await
                 .map(Some),
+
+            None => Ok(None),
+        }
+    }
+
+    /// Retrieves a connection and immediately begins a new transaction using `statement`.
+    pub async fn begin_with(
+        &self,
+        statement: impl SqlSafeStr,
+    ) -> Result<Transaction<'static, DB>, Error> {
+        Transaction::begin(
+            MaybePoolConnection::PoolConnection(self.acquire().await?),
+            Some(statement.into_sql_str()),
+        )
+        .await
+    }
+
+    /// Attempts to retrieve a connection and, if successful, immediately begins a new
+    /// transaction using `statement`.
+    pub async fn try_begin_with(
+        &self,
+        statement: impl SqlSafeStr,
+    ) -> Result<Option<Transaction<'static, DB>>, Error> {
+        match self.try_acquire() {
+            Some(conn) => Transaction::begin(
+                MaybePoolConnection::PoolConnection(conn),
+                Some(statement.into_sql_str()),
+            )
+            .await
+            .map(Some),
 
             None => Ok(None),
         }
@@ -434,8 +461,7 @@ impl<DB: Database> Pool<DB> {
     ///
     /// Do something when the pool is closed:
     /// ```rust,no_run
-    /// # #[cfg(feature = "postgres")]
-    /// # async fn bleh() -> sqlx_core::error::Result<()> {
+    /// # async fn bleh() -> sqlx::Result<()> {
     /// use sqlx::PgPool;
     ///
     /// let pool = PgPool::connect("postgresql://...").await?;
@@ -463,8 +489,7 @@ impl<DB: Database> Pool<DB> {
     ///
     /// Cancel a long-running operation:
     /// ```rust,no_run
-    /// # #[cfg(feature = "postgres")]
-    /// # async fn bleh() -> sqlx_core::error::Result<()> {
+    /// # async fn bleh() -> sqlx::Result<()> {
     /// use sqlx::{Executor, PgPool};
     ///
     /// let pool = PgPool::connect("postgresql://...").await?;
@@ -472,16 +497,26 @@ impl<DB: Database> Pool<DB> {
     /// let pool2 = pool.clone();
     ///
     /// tokio::spawn(async move {
-    ///     pool2.close_event().do_until(async {
+    ///     // `do_until` yields the inner future's output wrapped in `sqlx::Result`,
+    ///     // in this case giving a double-wrapped result.
+    ///     let res: sqlx::Result<sqlx::Result<()>> = pool2.close_event().do_until(async {
     ///         // This statement normally won't return for 30 days!
     ///         // (Assuming the connection doesn't time out first, of course.)
-    ///         pool2.execute("SELECT pg_sleep('30 days')").await;
+    ///         pool2.execute("SELECT pg_sleep('30 days')").await?;
     ///
     ///         // If the pool is closed before the statement completes, this won't be printed.
     ///         // This is because `.do_until()` cancels the future it's given if the
     ///         // pool is closed first.
     ///         println!("Waited!");
+    ///
+    ///         Ok(())
     ///     }).await;
+    ///
+    ///     match res {
+    ///         Ok(Ok(())) => println!("Wait succeeded"),
+    ///         Ok(Err(e)) => println!("Error from inside do_until: {e:?}"),
+    ///         Err(e) => println!("Error from do_until: {e:?}"),
+    ///     }
     /// });
     ///
     /// // This normally wouldn't return until the above statement completed and the connection
@@ -502,12 +537,6 @@ impl<DB: Database> Pool<DB> {
     }
 
     /// Returns the number of connections active and idle (not in use).
-    ///
-    /// As of 0.6.0, this has been fixed to use a separate atomic counter and so should be fine to
-    /// call even at high load.
-    ///
-    /// This previously called [`crossbeam::queue::ArrayQueue::len()`] which waits for the head and
-    /// tail pointers to be in a consistent state, which may never happen at high levels of churn.
     pub fn num_idle(&self) -> usize {
         self.0.num_idle()
     }
@@ -537,28 +566,6 @@ impl<DB: Database> Pool<DB> {
     /// Get the options for this pool
     pub fn options(&self) -> &PoolOptions<DB> {
         &self.0.options
-    }
-}
-
-#[cfg(all(
-    any(
-        feature = "postgres",
-        feature = "mysql",
-        feature = "mssql",
-        feature = "sqlite"
-    ),
-    feature = "any"
-))]
-impl Pool<Any> {
-    /// Returns the database driver currently in-use by this `Pool`.
-    ///
-    /// Determined by the connection URL.
-    pub fn any_kind(&self) -> AnyKind {
-        self.0
-            .connect_options
-            .read()
-            .expect("write-lock holder panicked")
-            .kind()
     }
 }
 
@@ -594,11 +601,11 @@ impl CloseEvent {
             .await
             .map_or(Ok(()), |_| Err(Error::PoolClosed))?;
 
-        futures_util::pin_mut!(fut);
+        let mut fut = pin!(fut);
 
         // I find that this is clearer in intent than `futures_util::future::select()`
         // or `futures_util::select_biased!{}` (which isn't enabled anyway).
-        futures_util::future::poll_fn(|cx| {
+        std::future::poll_fn(|cx| {
             // Poll `fut` first as the wakeup event is more likely for it than `self`.
             if let Poll::Ready(ret) = fut.as_mut().poll(cx) {
                 return Poll::Ready(Ok(ret));
@@ -620,7 +627,7 @@ impl Future for CloseEvent {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         if let Some(listener) = &mut self.listener {
-            futures_core::ready!(listener.poll_unpin(cx));
+            ready!(listener.poll_unpin(cx));
         }
 
         // `EventListener` doesn't like being polled after it yields, and even if it did it
@@ -642,7 +649,7 @@ impl FusedFuture for CloseEvent {
 /// get the time between the deadline and now and use that as our timeout
 ///
 /// returns `Error::PoolTimedOut` if the deadline is in the past
-fn deadline_as_timeout<DB: Database>(deadline: Instant) -> Result<Duration, Error> {
+fn deadline_as_timeout(deadline: Instant) -> Result<Duration, Error> {
     deadline
         .checked_duration_since(Instant::now())
         .ok_or(Error::PoolTimedOut)

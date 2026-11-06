@@ -3,7 +3,7 @@ use crate::io::{AsyncRead, AsyncWrite, ReadBuf};
 use std::future::Future;
 use std::io;
 use std::pin::Pin;
-use std::task::{Context, Poll};
+use std::task::{ready, Context, Poll};
 
 #[derive(Debug)]
 pub(super) struct CopyBuffer {
@@ -16,21 +16,21 @@ pub(super) struct CopyBuffer {
 }
 
 impl CopyBuffer {
-    pub(super) fn new() -> Self {
+    pub(super) fn new(buf_size: usize) -> Self {
         Self {
             read_done: false,
             need_flush: false,
             pos: 0,
             cap: 0,
             amt: 0,
-            buf: vec![0; super::DEFAULT_BUF_SIZE].into_boxed_slice(),
+            buf: vec![0; buf_size].into_boxed_slice(),
         }
     }
 
     fn poll_fill_buf<R>(
         &mut self,
         cx: &mut Context<'_>,
-        reader: Pin<&mut R>,
+        mut reader: Pin<&mut R>,
     ) -> Poll<io::Result<()>>
     where
         R: AsyncRead + ?Sized,
@@ -39,7 +39,12 @@ impl CopyBuffer {
         let mut buf = ReadBuf::new(&mut me.buf);
         buf.set_filled(me.cap);
 
-        let res = reader.poll_read(cx, &mut buf);
+        let res = loop {
+            match reader.as_mut().poll_read(cx, &mut buf) {
+                Poll::Ready(Err(e)) if e.kind() == io::ErrorKind::Interrupted => continue,
+                res => break res,
+            }
+        };
         if let Poll::Ready(Ok(())) = res {
             let filled_len = buf.filled().len();
             me.read_done = me.cap == filled_len;
@@ -59,16 +64,19 @@ impl CopyBuffer {
         W: AsyncWrite + ?Sized,
     {
         let me = &mut *self;
-        match writer.as_mut().poll_write(cx, &me.buf[me.pos..me.cap]) {
-            Poll::Pending => {
-                // Top up the buffer towards full if we can read a bit more
-                // data - this should improve the chances of a large write
-                if !me.read_done && me.cap < me.buf.len() {
-                    ready!(me.poll_fill_buf(cx, reader.as_mut()))?;
+        loop {
+            match writer.as_mut().poll_write(cx, &me.buf[me.pos..me.cap]) {
+                Poll::Ready(Err(e)) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Poll::Pending => {
+                    // Top up the buffer towards full if we can read a bit more
+                    // data - this should improve the chances of a large write
+                    if !me.read_done && me.cap < me.buf.len() {
+                        ready!(me.poll_fill_buf(cx, reader.as_mut()))?;
+                    }
+                    return Poll::Pending;
                 }
-                Poll::Pending
+                res => return res,
             }
-            res => res,
         }
     }
 
@@ -94,14 +102,11 @@ impl CopyBuffer {
             feature = "time",
         ))]
         // Keep track of task budget
-        let coop = ready!(crate::runtime::coop::poll_proceed(cx));
+        let coop = ready!(crate::task::coop::poll_proceed(cx));
         loop {
-            // If our buffer is empty, then we need to read some data to
-            // continue.
-            if self.pos == self.cap && !self.read_done {
-                self.pos = 0;
-                self.cap = 0;
-
+            // If there is some space left in our buffer, then we try to read some
+            // data to continue, thus maximizing the chances of a large write.
+            if self.cap < self.buf.len() && !self.read_done {
                 match self.poll_fill_buf(cx, reader.as_mut()) {
                     Poll::Ready(Ok(())) => {
                         #[cfg(any(
@@ -131,25 +136,29 @@ impl CopyBuffer {
                         return Poll::Ready(Err(err));
                     }
                     Poll::Pending => {
-                        // Try flushing when the reader has no progress to avoid deadlock
-                        // when the reader depends on buffered writer.
-                        if self.need_flush {
-                            ready!(writer.as_mut().poll_flush(cx))?;
-                            #[cfg(any(
-                                feature = "fs",
-                                feature = "io-std",
-                                feature = "net",
-                                feature = "process",
-                                feature = "rt",
-                                feature = "signal",
-                                feature = "sync",
-                                feature = "time",
-                            ))]
-                            coop.made_progress();
-                            self.need_flush = false;
-                        }
+                        // Ignore pending reads when our buffer is not empty, because
+                        // we can try to write data immediately.
+                        if self.pos == self.cap {
+                            // Try flushing when the reader has no progress to avoid deadlock
+                            // when the reader depends on buffered writer.
+                            if self.need_flush {
+                                ready!(writer.as_mut().poll_flush(cx))?;
+                                #[cfg(any(
+                                    feature = "fs",
+                                    feature = "io-std",
+                                    feature = "net",
+                                    feature = "process",
+                                    feature = "rt",
+                                    feature = "signal",
+                                    feature = "sync",
+                                    feature = "time",
+                                ))]
+                                coop.made_progress();
+                                self.need_flush = false;
+                            }
 
-                        return Poll::Pending;
+                            return Poll::Pending;
+                        }
                     }
                 }
             }
@@ -188,9 +197,13 @@ impl CopyBuffer {
                 "writer returned length larger than input slice"
             );
 
+            // All data has been written, the buffer can be considered empty again
+            self.pos = 0;
+            self.cap = 0;
+
             // If we've written all the data and we've seen EOF, flush out the
             // data and finish the transfer.
-            if self.pos == self.cap && self.read_done {
+            if self.read_done {
                 ready!(writer.as_mut().poll_flush(cx))?;
                 #[cfg(any(
                     feature = "fs",
@@ -236,15 +249,25 @@ cfg_io_util! {
     /// [`AsyncBufRead`]. You can use `copy_buf` with [`BufReader`] to change the
     /// buffer capacity.
     ///
+    /// # When to use async alternatives instead of `SyncIoBridge`
+    ///
+    /// If you are looking to use [`std::io::copy`] with a synchronous consumer
+    /// (like a `hasher` or compressor), consider using async alternatives instead of
+    /// wrapping the reader with [`SyncIoBridge`].
+    /// See the [`SyncIoBridge`] documentation for detailed examples and guidance.
+    ///
     /// [std]: std::io::copy
     /// [`copy_buf`]: crate::io::copy_buf
     /// [`AsyncBufRead`]: crate::io::AsyncBufRead
     /// [`BufReader`]: crate::io::BufReader
+    /// [`SyncIoBridge`]: https://docs.rs/tokio-util/latest/tokio_util/io/struct.SyncIoBridge.html
     ///
     /// # Errors
     ///
     /// The returned future will return an error immediately if any call to
-    /// `poll_read` or `poll_write` returns an error.
+    /// `poll_read` or `poll_write` returns an error other than
+    /// [`io::ErrorKind::Interrupted`], which is retried. Errors from flushing
+    /// the writer are returned without retrying.
     ///
     /// # Examples
     ///
@@ -269,7 +292,7 @@ cfg_io_util! {
         Copy {
             reader,
             writer,
-            buf: CopyBuffer::new()
+            buf: CopyBuffer::new(super::DEFAULT_BUF_SIZE)
         }.await
     }
 }

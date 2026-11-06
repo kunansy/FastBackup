@@ -30,10 +30,10 @@
 //! ## AppStrategy
 //! If you want to get the path to a configuration, data, cache or another directory, and you want to follow the naming conventions for your application, you can use the `choose_app_strategy` function.
 //!
-//! Let’s take an application created by `Acme Corp` with the name `Frobnicator Plus` and the top-level domain of `jrg` as an example.
+//! Let’s take an application created by `Acme Corp` with the name `Frobnicator Plus` and the top-level domain of `org` as an example.
 //! - XDG strategy would place these in `~/.config/frobnicator-plus`.
 //! - Unix strategy would place these in `~/.frobnicator-plus`.
-//! - Apple strategy would place these in `~/Library/Preferences/org.acmecorp.FrobnicatorPlus`.
+//! - Apple strategy would place these in `~/Library/Preferences/org.acme-corp.Frobnicator-Plus`.
 //! - Windows strategy would place these in `~\AppData\Roaming\Acme Corp\Frobnicator Plus`.
 //!
 //! ```
@@ -105,12 +105,12 @@
 pub mod app_strategy;
 pub mod base_strategy;
 
-pub use app_strategy::{choose_app_strategy, AppStrategy, AppStrategyArgs};
-pub use base_strategy::{choose_base_strategy, BaseStrategy};
+pub use app_strategy::{AppStrategy, AppStrategyArgs, choose_app_strategy};
+pub use base_strategy::{BaseStrategy, choose_base_strategy};
 
-/// A convenience function that wraps the [`home_dir`](https://docs.rs/home/0.5.4/home/fn.home_dir.html) function from the [home](https://docs.rs/home) crate.
+/// A convenience function that wraps the [`home_dir`](https://doc.rust-lang.org/std/env/fn.home_dir.html) function from the standard library.
 pub fn home_dir() -> Result<std::path::PathBuf, HomeDirError> {
-    home::home_dir().ok_or(HomeDirError)
+    std::env::home_dir().ok_or(HomeDirError)
 }
 
 /// This error occurs when the home directory cannot be located.

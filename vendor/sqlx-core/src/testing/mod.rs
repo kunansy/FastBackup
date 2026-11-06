@@ -1,9 +1,9 @@
 use std::future::Future;
 use std::time::Duration;
 
-use futures_core::future::BoxFuture;
-
+use base64::{engine::general_purpose::URL_SAFE, Engine as _};
 pub use fixtures::FixtureSnapshot;
+use sha2::{Digest, Sha512};
 
 use crate::connection::{ConnectOptions, Connection};
 use crate::database::Database;
@@ -24,9 +24,11 @@ pub trait TestSupport: Database {
     ///
     /// The implementation may require `DATABASE_URL` to be set in order to manage databases.
     /// The user credentials it contains must have the privilege to create and drop databases.
-    fn test_context(args: &TestArgs) -> BoxFuture<'_, Result<TestContext<Self>, Error>>;
+    fn test_context(
+        args: &TestArgs,
+    ) -> impl Future<Output = Result<TestContext<Self>, Error>> + Send + '_;
 
-    fn cleanup_test(db_name: &str) -> BoxFuture<'_, Result<(), Error>>;
+    fn cleanup_test(db_name: &str) -> impl Future<Output = Result<(), Error>> + Send + '_;
 
     /// Cleanup any test databases that are no longer in-use.
     ///
@@ -34,13 +36,25 @@ pub trait TestSupport: Database {
     ///
     /// The implementation may require `DATABASE_URL` to be set in order to manage databases.
     /// The user credentials it contains must have the privilege to create and drop databases.
-    fn cleanup_test_dbs() -> BoxFuture<'static, Result<Option<usize>, Error>>;
+    fn cleanup_test_dbs() -> impl Future<Output = Result<Option<usize>, Error>> + Send + 'static;
 
     /// Take a snapshot of the current state of the database (data only).
     ///
     /// This snapshot can then be used to generate test fixtures.
-    fn snapshot(conn: &mut Self::Connection)
-        -> BoxFuture<'_, Result<FixtureSnapshot<Self>, Error>>;
+    fn snapshot(
+        conn: &mut Self::Connection,
+    ) -> impl Future<Output = Result<FixtureSnapshot<Self>, Error>> + Send + '_;
+
+    /// Generate a unique database name for the given test path.
+    fn db_name(args: &TestArgs) -> String {
+        let mut hasher = Sha512::new();
+        hasher.update(args.test_path.as_bytes());
+        let hash = hasher.finalize();
+        let hash = URL_SAFE.encode(&hash[..39]);
+        let db_name = format!("_sqlx_test_{}", hash).replace('-', "_");
+        debug_assert!(db_name.len() == 63);
+        db_name
+    }
 }
 
 pub struct TestFixture {
@@ -217,7 +231,7 @@ where
         let res = test_fn(test_context.pool_opts, test_context.connect_opts).await;
 
         if res.is_success() {
-            if let Err(e) = DB::cleanup_test(&test_context.db_name).await {
+            if let Err(e) = DB::cleanup_test(&DB::db_name(&args)).await {
                 eprintln!(
                     "failed to delete database {:?}: {}",
                     test_context.db_name, e
@@ -243,7 +257,7 @@ async fn setup_test_db<DB: Database>(
 
     if let Some(migrator) = args.migrator {
         migrator
-            .run_direct(&mut conn)
+            .run_direct(None, &mut conn, false)
             .await
             .expect("failed to apply migrations");
     }

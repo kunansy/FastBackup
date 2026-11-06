@@ -10,10 +10,16 @@
 # See Cargo.toml.orig for the original contents.
 
 [package]
-edition = "2018"
+edition = "2021"
+rust-version = "1.65"
 name = "hashlink"
-version = "0.8.4"
-authors = ["kyren <kerriganw@gmail.com>"]
+version = "0.11.1"
+build = false
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
 description = "HashMap-like containers that hold their key-value pairs in a user controllable order"
 documentation = "https://docs.rs/hashlink"
 readme = "README.md"
@@ -22,10 +28,35 @@ keywords = [
     "no_std",
 ]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/kyren/hashlink"
+repository = "https://github.com/djc/hashlink"
+
+[features]
+serde_impl = ["serde"]
+
+[lib]
+name = "hashlink"
+path = "src/lib.rs"
+
+[[test]]
+name = "linked_hash_map"
+path = "tests/linked_hash_map.rs"
+
+[[test]]
+name = "linked_hash_set"
+path = "tests/linked_hash_set.rs"
+
+[[test]]
+name = "lru_cache"
+path = "tests/lru_cache.rs"
+
+[[test]]
+name = "serde"
+path = "tests/serde.rs"
 
 [dependencies.hashbrown]
-version = "0.14"
+version = "0.16"
+features = ["default-hasher"]
+default-features = false
 
 [dependencies.serde]
 version = "1.0"
@@ -33,14 +64,7 @@ optional = true
 default-features = false
 
 [dev-dependencies.rustc-hash]
-version = "1.1"
+version = "2"
 
 [dev-dependencies.serde_test]
 version = "1.0"
-
-[features]
-serde_impl = ["serde"]
-
-[badges.circle-ci]
-branch = "master"
-repository = "kyren/hashlink"

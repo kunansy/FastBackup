@@ -1,18 +1,18 @@
-use darling::{ast, FromDeriveInput, FromVariant};
+use darling::{ast, FromDeriveInput, FromField, FromVariant};
 
 #[derive(Debug, FromDeriveInput)]
 #[darling(attributes(from_variants), supports(enum_any))]
 pub struct Container {
     // The second type parameter can be anything that implements FromField, since
     // FromDeriveInput will produce an error if given a struct.
-    data: ast::Data<Variant, ()>,
+    data: ast::Data<Variant, Panic>,
 }
 
-#[derive(Default, Debug, FromVariant)]
-#[darling(default, attributes(from_variants), supports(newtype, unit))]
+#[derive(Debug, FromVariant)]
+#[darling(attributes(from_variants), supports(newtype, unit))]
 pub struct Variant {
-    into: Option<bool>,
-    skip: Option<bool>,
+    // Having this field tests compilation when both `supports` and forwarding are in use.
+    fields: darling::ast::Fields<syn::Type>,
 }
 
 #[derive(Debug, FromDeriveInput)]
@@ -20,7 +20,28 @@ pub struct Variant {
 pub struct StructContainer {
     // The second type parameter can be anything that implements FromVariant, since
     // FromDeriveInput will produce an error if given an enum.
-    data: ast::Data<(), syn::Field>,
+    data: ast::Data<Panic, syn::Field>,
+}
+
+/// A struct that will panic if construction is attempted via `FromVariant` or `FromField`.
+///
+/// These tests use this to ensure no attempts are made to read fields or variants if
+/// shape validation has failed. Failure to do this could cause panics or spurious errors
+/// to be emitted by derived `FromDeriveInput` impls, which breaks library author's trust
+/// in `darling` to emit great error messages.
+#[derive(Debug)]
+struct Panic;
+
+impl FromVariant for Panic {
+    fn from_variant(variant: &syn::Variant) -> darling::Result<Self> {
+        panic!("Should not have called from_variant on {}", variant.ident);
+    }
+}
+
+impl FromField for Panic {
+    fn from_field(_field: &syn::Field) -> darling::Result<Self> {
+        panic!("Should not have called from_field");
+    }
 }
 
 mod source {
@@ -70,6 +91,12 @@ fn enum_newtype_or_unit() {
     // Should pass
     let container = Container::from_derive_input(&source::newtype_enum()).unwrap();
     assert!(container.data.is_enum());
+    let variants = container.data.take_enum().unwrap();
+    assert!(variants[0].fields.is_tuple() && variants[0].fields.len() == 1);
+    assert!(variants[1].fields.is_tuple() && variants[1].fields.len() == 1);
+
+    let empty = Container::from_derive_input(&source::empty_enum()).unwrap();
+    assert!(empty.data.is_enum());
 
     // Should error
     Container::from_derive_input(&source::named_field_enum()).unwrap_err();

@@ -10,6 +10,10 @@ pub struct MySqlColumn {
     pub(crate) name: UStr,
     pub(crate) type_info: MySqlTypeInfo,
 
+    #[cfg_attr(feature = "offline", serde(default))]
+    pub(crate) origin: ColumnOrigin,
+
+    #[allow(unused)]
     #[cfg_attr(feature = "offline", serde(skip))]
     pub(crate) flags: Option<ColumnFlags>,
 }
@@ -22,10 +26,14 @@ impl Column for MySqlColumn {
     }
 
     fn name(&self) -> &str {
-        &*self.name
+        &self.name
     }
 
     fn type_info(&self) -> &MySqlTypeInfo {
         &self.type_info
+    }
+
+    fn origin(&self) -> ColumnOrigin {
+        self.origin.clone()
     }
 }

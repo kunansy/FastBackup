@@ -1,20 +1,22 @@
+use alloc::boxed::Box;
+
+use aws_lc_rs::{aead, tls_prf};
+
 use crate::crypto::cipher::{
-    make_tls12_aad, AeadKey, Iv, KeyBlockShape, MessageDecrypter, MessageEncrypter, Nonce,
-    Tls12AeadAlgorithm, UnsupportedOperationError, NONCE_LEN,
+    AeadKey, InboundOpaqueMessage, Iv, KeyBlockShape, MessageDecrypter, MessageEncrypter,
+    NONCE_LEN, Nonce, Tls12AeadAlgorithm, UnsupportedOperationError, make_tls12_aad,
 };
 use crate::crypto::tls12::Prf;
 use crate::crypto::{ActiveKeyExchange, KeyExchangeAlgorithm};
 use crate::enums::{CipherSuite, SignatureScheme};
 use crate::error::Error;
 use crate::msgs::fragmenter::MAX_FRAGMENT_LEN;
-use crate::msgs::message::{BorrowedPlainMessage, OpaqueMessage, PlainMessage};
+use crate::msgs::message::{
+    InboundPlainMessage, OutboundOpaqueMessage, OutboundPlainMessage, PrefixedPayload,
+};
 use crate::suites::{CipherSuiteCommon, ConnectionTrafficSecrets, SupportedCipherSuite};
 use crate::tls12::Tls12CipherSuite;
-
-use alloc::boxed::Box;
-use alloc::vec::Vec;
-
-use aws_lc_rs::{aead, tls_prf};
+use crate::version::TLS12;
 
 /// The TLS1.2 ciphersuite TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256.
 pub static TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256: SupportedCipherSuite =
@@ -23,7 +25,6 @@ pub static TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256: SupportedCipherSuite =
             suite: CipherSuite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
             hash_provider: &super::hash::SHA256,
             confidentiality_limit: u64::MAX,
-            integrity_limit: 1 << 36,
         },
         kx: KeyExchangeAlgorithm::ECDHE,
         sign: TLS12_ECDSA_SCHEMES,
@@ -38,7 +39,6 @@ pub static TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256: SupportedCipherSuite =
             suite: CipherSuite::TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
             hash_provider: &super::hash::SHA256,
             confidentiality_limit: u64::MAX,
-            integrity_limit: 1 << 36,
         },
         kx: KeyExchangeAlgorithm::ECDHE,
         sign: TLS12_RSA_SCHEMES,
@@ -52,8 +52,7 @@ pub static TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256: SupportedCipherSuite =
         common: CipherSuiteCommon {
             suite: CipherSuite::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
             hash_provider: &super::hash::SHA256,
-            confidentiality_limit: 1 << 23,
-            integrity_limit: 1 << 52,
+            confidentiality_limit: 1 << 24,
         },
         kx: KeyExchangeAlgorithm::ECDHE,
         sign: TLS12_RSA_SCHEMES,
@@ -67,8 +66,7 @@ pub static TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384: SupportedCipherSuite =
         common: CipherSuiteCommon {
             suite: CipherSuite::TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
             hash_provider: &super::hash::SHA384,
-            confidentiality_limit: 1 << 23,
-            integrity_limit: 1 << 52,
+            confidentiality_limit: 1 << 24,
         },
         kx: KeyExchangeAlgorithm::ECDHE,
         sign: TLS12_RSA_SCHEMES,
@@ -82,8 +80,7 @@ pub static TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256: SupportedCipherSuite =
         common: CipherSuiteCommon {
             suite: CipherSuite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
             hash_provider: &super::hash::SHA256,
-            confidentiality_limit: 1 << 23,
-            integrity_limit: 1 << 52,
+            confidentiality_limit: 1 << 24,
         },
         kx: KeyExchangeAlgorithm::ECDHE,
         sign: TLS12_ECDSA_SCHEMES,
@@ -97,8 +94,7 @@ pub static TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384: SupportedCipherSuite =
         common: CipherSuiteCommon {
             suite: CipherSuite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
             hash_provider: &super::hash::SHA384,
-            confidentiality_limit: 1 << 23,
-            integrity_limit: 1 << 52,
+            confidentiality_limit: 1 << 24,
         },
         kx: KeyExchangeAlgorithm::ECDHE,
         sign: TLS12_ECDSA_SCHEMES,
@@ -183,10 +179,16 @@ impl Tls12AeadAlgorithm for GcmAlgorithm {
         write_iv: &[u8],
         explicit: &[u8],
     ) -> Result<ConnectionTrafficSecrets, UnsupportedOperationError> {
-        Ok(ConnectionTrafficSecrets::Aes128Gcm {
-            key,
-            iv: gcm_iv(write_iv, explicit),
+        let iv = gcm_iv(write_iv, explicit);
+        Ok(match self.0.key_len() {
+            16 => ConnectionTrafficSecrets::Aes128Gcm { key, iv },
+            32 => ConnectionTrafficSecrets::Aes256Gcm { key, iv },
+            _ => unreachable!(),
         })
+    }
+
+    fn fips(&self) -> bool {
+        super::fips()
     }
 }
 
@@ -234,6 +236,10 @@ impl Tls12AeadAlgorithm for ChaCha20Poly1305 {
             iv: Iv::new(iv[..].try_into().unwrap()),
         })
     }
+
+    fn fips(&self) -> bool {
+        false // not FIPS approved
+    }
 }
 
 /// A `MessageEncrypter` for AES-GCM AEAD ciphersuites. TLS 1.2 only.
@@ -252,8 +258,12 @@ const GCM_EXPLICIT_NONCE_LEN: usize = 8;
 const GCM_OVERHEAD: usize = GCM_EXPLICIT_NONCE_LEN + 16;
 
 impl MessageDecrypter for GcmMessageDecrypter {
-    fn decrypt(&mut self, mut msg: OpaqueMessage, seq: u64) -> Result<PlainMessage, Error> {
-        let payload = msg.payload();
+    fn decrypt<'a>(
+        &mut self,
+        mut msg: InboundOpaqueMessage<'a>,
+        seq: u64,
+    ) -> Result<InboundPlainMessage<'a>, Error> {
+        let payload = &msg.payload;
         if payload.len() < GCM_OVERHEAD {
             return Err(Error::DecryptError);
         }
@@ -272,10 +282,10 @@ impl MessageDecrypter for GcmMessageDecrypter {
             payload.len() - GCM_OVERHEAD,
         ));
 
-        let payload = msg.payload_mut();
+        let payload = &mut msg.payload;
         let plain_len = self
             .dec_key
-            .open_within(nonce, aad, payload, GCM_EXPLICIT_NONCE_LEN..)
+            .open_in_place(nonce, aad, &mut payload[GCM_EXPLICIT_NONCE_LEN..])
             .map_err(|_| Error::DecryptError)?
             .len();
 
@@ -283,27 +293,34 @@ impl MessageDecrypter for GcmMessageDecrypter {
             return Err(Error::PeerSentOversizedRecord);
         }
 
-        payload.truncate(plain_len);
-        Ok(msg.into_plain_message())
+        Ok(
+            msg.into_plain_message_range(
+                GCM_EXPLICIT_NONCE_LEN..GCM_EXPLICIT_NONCE_LEN + plain_len,
+            ),
+        )
     }
 }
 
 impl MessageEncrypter for GcmMessageEncrypter {
-    fn encrypt(&mut self, msg: BorrowedPlainMessage, seq: u64) -> Result<OpaqueMessage, Error> {
+    fn encrypt(
+        &mut self,
+        msg: OutboundPlainMessage<'_>,
+        seq: u64,
+    ) -> Result<OutboundOpaqueMessage, Error> {
+        let total_len = self.encrypted_payload_len(msg.payload.len());
+        let mut payload = PrefixedPayload::with_capacity(total_len);
+
         let nonce = aead::Nonce::assume_unique_for_key(Nonce::new(&self.iv, seq).0);
         let aad = aead::Aad::from(make_tls12_aad(seq, msg.typ, msg.version, msg.payload.len()));
-
-        let total_len = self.encrypted_payload_len(msg.payload.len());
-        let mut payload = Vec::with_capacity(total_len);
         payload.extend_from_slice(&nonce.as_ref()[4..]);
-        payload.extend_from_slice(msg.payload);
+        payload.extend_from_chunks(&msg.payload);
 
         self.enc_key
-            .seal_in_place_separate_tag(nonce, aad, &mut payload[GCM_EXPLICIT_NONCE_LEN..])
-            .map(|tag| payload.extend(tag.as_ref()))
+            .seal_in_place_separate_tag(nonce, aad, &mut payload.as_mut()[GCM_EXPLICIT_NONCE_LEN..])
+            .map(|tag| payload.extend_from_slice(tag.as_ref()))
             .map_err(|_| Error::EncryptError)?;
 
-        Ok(OpaqueMessage::new(msg.typ, msg.version, payload))
+        Ok(OutboundOpaqueMessage::new(msg.typ, msg.version, payload))
     }
 
     fn encrypted_payload_len(&self, payload_len: usize) -> usize {
@@ -330,8 +347,12 @@ struct ChaCha20Poly1305MessageDecrypter {
 const CHACHAPOLY1305_OVERHEAD: usize = 16;
 
 impl MessageDecrypter for ChaCha20Poly1305MessageDecrypter {
-    fn decrypt(&mut self, mut msg: OpaqueMessage, seq: u64) -> Result<PlainMessage, Error> {
-        let payload = msg.payload();
+    fn decrypt<'a>(
+        &mut self,
+        mut msg: InboundOpaqueMessage<'a>,
+        seq: u64,
+    ) -> Result<InboundPlainMessage<'a>, Error> {
+        let payload = &msg.payload;
 
         if payload.len() < CHACHAPOLY1305_OVERHEAD {
             return Err(Error::DecryptError);
@@ -345,7 +366,7 @@ impl MessageDecrypter for ChaCha20Poly1305MessageDecrypter {
             payload.len() - CHACHAPOLY1305_OVERHEAD,
         ));
 
-        let payload = msg.payload_mut();
+        let payload = &mut msg.payload;
         let plain_len = self
             .dec_key
             .open_in_place(nonce, aad, payload)
@@ -362,19 +383,23 @@ impl MessageDecrypter for ChaCha20Poly1305MessageDecrypter {
 }
 
 impl MessageEncrypter for ChaCha20Poly1305MessageEncrypter {
-    fn encrypt(&mut self, msg: BorrowedPlainMessage, seq: u64) -> Result<OpaqueMessage, Error> {
+    fn encrypt(
+        &mut self,
+        msg: OutboundPlainMessage<'_>,
+        seq: u64,
+    ) -> Result<OutboundOpaqueMessage, Error> {
+        let total_len = self.encrypted_payload_len(msg.payload.len());
+        let mut payload = PrefixedPayload::with_capacity(total_len);
+
         let nonce = aead::Nonce::assume_unique_for_key(Nonce::new(&self.enc_offset, seq).0);
         let aad = aead::Aad::from(make_tls12_aad(seq, msg.typ, msg.version, msg.payload.len()));
-
-        let total_len = self.encrypted_payload_len(msg.payload.len());
-        let mut buf = Vec::with_capacity(total_len);
-        buf.extend_from_slice(msg.payload);
+        payload.extend_from_chunks(&msg.payload);
 
         self.enc_key
-            .seal_in_place_append_tag(nonce, aad, &mut buf)
+            .seal_in_place_append_tag(nonce, aad, &mut payload)
             .map_err(|_| Error::EncryptError)?;
 
-        Ok(OpaqueMessage::new(msg.typ, msg.version, buf))
+        Ok(OutboundOpaqueMessage::new(msg.typ, msg.version, payload))
     }
 
     fn encrypted_payload_len(&self, payload_len: usize) -> usize {
@@ -426,11 +451,15 @@ impl Prf for Tls12Prf {
     ) -> Result<(), Error> {
         self.for_secret(
             output,
-            kx.complete(peer_pub_key)?
+            kx.complete_for_tls_version(peer_pub_key, &TLS12)?
                 .secret_bytes(),
             label,
             seed,
         );
         Ok(())
+    }
+
+    fn fips(&self) -> bool {
+        super::fips()
     }
 }

@@ -20,8 +20,8 @@ use pki_types::{
 
 use crate::crl::RevocationOptions;
 use crate::error::Error;
-use crate::subject_name::{verify_dns_names, verify_ip_address_names, NameIterator};
-use crate::verify_cert::{self, KeyUsage, VerifiedPath};
+use crate::subject_name::{verify_dns_names, verify_ip_address_names};
+use crate::verify_cert::{self, ExtendedKeyUsageValidator, VerifiedPath};
 use crate::{cert, signed_data};
 
 /// An end-entity certificate.
@@ -29,21 +29,22 @@ use crate::{cert, signed_data};
 /// Server certificate processing in a TLS connection consists of several
 /// steps. All of these steps are necessary:
 ///
-/// * `EndEntityCert.verify_is_valid_tls_server_cert`: Verify that the server's
-///   certificate is currently valid *for use by a TLS server*.
-/// * `EndEntityCert.verify_is_valid_for_subject_name`: Verify that the server's
+/// * [`EndEntityCert::verify_for_usage()`]: Verify that the peer's certificate
+///   is valid for the current usage scenario. For server authentication, use
+///   [`crate::KeyUsage::server_auth()`].
+/// * [`EndEntityCert::verify_is_valid_for_subject_name()`]: Verify that the server's
 ///   certificate is valid for the host or IP address that is being connected to.
-///
-/// * `EndEntityCert.verify_signature`: Verify that the signature of server's
+/// * [`EndEntityCert::verify_signature()`]: Verify that the signature of server's
 ///   `ServerKeyExchange` message is valid for the server's certificate.
 ///
 /// Client certificate processing in a TLS connection consists of analogous
 /// steps. All of these steps are necessary:
 ///
-/// * `EndEntityCert.verify_is_valid_tls_client_cert`: Verify that the client's
-///   certificate is currently valid *for use by a TLS client*.
-/// * `EndEntityCert.verify_signature`: Verify that the client's signature in
-///   its `CertificateVerify` message is valid using the public key from the
+/// * [`EndEntityCert::verify_for_usage()`]: Verify that the peer's certificate
+///   is valid for the current usage scenario. For client authentication, use
+///   [`crate::KeyUsage::client_auth()`].
+/// * [`EndEntityCert::verify_signature()`]: Verify that the signature of client's
+///   `CertificateVerify` message is valid using the public key from the
 ///   client's certificate.
 ///
 /// Although it would be less error-prone to combine all these steps into a
@@ -51,10 +52,10 @@ use crate::{cert, signed_data};
 /// three steps are processed separately (in parallel). It does not matter much
 /// which order the steps are done in, but **all of these steps must completed
 /// before application data is sent and before received application data is
-/// processed**. `EndEntityCert::from` is an inexpensive operation and is
-/// deterministic, so if these tasks are done in multiple threads, it is
-/// probably best to just call `EndEntityCert::from` multiple times (before each
-/// operation) for the same DER-encoded ASN.1 certificate bytes.
+/// processed**. The [`TryFrom`] conversion from `&CertificateDer<'_>` is an
+/// inexpensive operation and is deterministic, so if these tasks are done in
+/// multiple threads, it is probably best to just create multiple [`EndEntityCert`]
+/// instances for the same DER-encoded ASN.1 certificate bytes.
 pub struct EndEntityCert<'a> {
     inner: cert::Cert<'a>,
 }
@@ -71,7 +72,7 @@ impl<'a> TryFrom<&'a CertificateDer<'a>> for EndEntityCert<'a> {
     }
 }
 
-impl<'a> EndEntityCert<'a> {
+impl EndEntityCert<'_> {
     /// Verifies that the end-entity certificate is valid for use against the
     /// specified Extended Key Usage (EKU).
     ///
@@ -84,7 +85,8 @@ impl<'a> EndEntityCert<'a> {
     /// * `time` is the time for which the validation is effective (usually the
     ///   current time).
     /// * `usage` is the intended usage of the certificate, indicating what kind
-    ///   of usage we're verifying the certificate for.
+    ///   of usage we're verifying the certificate for. The default [`ExtendedKeyUsageValidator`]
+    ///   implementation is [`KeyUsage`](crate::KeyUsage).
     /// * `crls` is the list of certificate revocation lists to check
     ///   the certificate against.
     /// * `verify_path` is an optional verification function for path candidates.
@@ -101,10 +103,10 @@ impl<'a> EndEntityCert<'a> {
     pub fn verify_for_usage<'p>(
         &'p self,
         supported_sig_algs: &[&dyn SignatureVerificationAlgorithm],
-        trust_anchors: &'p [TrustAnchor],
+        trust_anchors: &'p [TrustAnchor<'_>],
         intermediate_certs: &'p [CertificateDer<'p>],
         time: UnixTime,
-        usage: KeyUsage,
+        usage: impl ExtendedKeyUsageValidator,
         revocation: Option<RevocationOptions<'_>>,
         verify_path: Option<&dyn Fn(&VerifiedPath<'_>) -> Result<(), Error>>,
     ) -> Result<VerifiedPath<'p>, Error> {
@@ -114,6 +116,7 @@ impl<'a> EndEntityCert<'a> {
             trust_anchors,
             intermediate_certs,
             revocation,
+            distrusted_spkis: verify_cert::DISTRUSTED_SPKIS,
         }
         .build_chain(self, time, verify_path)
     }
@@ -124,16 +127,10 @@ impl<'a> EndEntityCert<'a> {
         server_name: &ServerName<'_>,
     ) -> Result<(), Error> {
         match server_name {
-            ServerName::DnsName(dns_name) => verify_dns_names(
-                dns_name,
-                NameIterator::new(Some(self.inner.subject), self.inner.subject_alt_name),
-            ),
+            ServerName::DnsName(dns_name) => verify_dns_names(dns_name, &self.inner),
             // IP addresses are not compared against the subject field;
             // only against Subject Alternative Names.
-            ServerName::IpAddress(ip_address) => verify_ip_address_names(
-                ip_address,
-                NameIterator::new(None, self.inner.subject_alt_name),
-            ),
+            ServerName::IpAddress(ip_address) => verify_ip_address_names(ip_address, &self.inner),
             _ => Err(Error::UnsupportedNameType),
         }
     }
@@ -184,8 +181,11 @@ impl<'a> Deref for EndEntityCert<'a> {
 #[cfg(feature = "alloc")]
 #[cfg(test)]
 mod tests {
+    use alloc::string::ToString;
+
     use super::*;
     use crate::test_utils;
+    use crate::test_utils::RCGEN_SIGNATURE_ALG;
 
     // This test reproduces https://github.com/rustls/webpki/issues/167 --- an
     // end-entity cert where the common name is a `PrintableString` rather than
@@ -196,23 +196,25 @@ mod tests {
 
         let issuer = test_utils::make_issuer("Test");
 
-        let ee_cert_der = {
+        let ee_cert = {
             let mut params = test_utils::end_entity_params(vec![DNS_NAME.to_string()]);
             // construct a certificate that uses `PrintableString` as the
             // common name value, rather than `UTF8String`.
             params.distinguished_name.push(
                 rcgen::DnType::CommonName,
-                rcgen::DnValue::PrintableString("example.com".to_string()),
+                rcgen::DnValue::PrintableString(
+                    rcgen::string::PrintableString::try_from("example.com").unwrap(),
+                ),
             );
-            let cert = rcgen::Certificate::from_params(params)
-                .expect("failed to make ee cert (this is a test bug)");
-            let bytes = cert
-                .serialize_der_with_signer(&issuer)
-                .expect("failed to serialize signed ee cert (this is a test bug)");
-            CertificateDer::from(bytes)
+            params
+                .signed_by(
+                    &rcgen::KeyPair::generate_for(RCGEN_SIGNATURE_ALG).unwrap(),
+                    &issuer,
+                )
+                .expect("failed to make ee cert (this is a test bug)")
         };
 
-        expect_dns_name(&ee_cert_der, DNS_NAME);
+        expect_dns_name(ee_cert.der(), DNS_NAME);
     }
 
     // This test reproduces https://github.com/rustls/webpki/issues/167 --- an

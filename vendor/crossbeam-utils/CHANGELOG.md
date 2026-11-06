@@ -1,3 +1,23 @@
+# Version 0.8.23
+
+- Fix SB violation when `ShardedLockWriteGuard` is leaked. (#1294)
+- Improve compatibility with ThreadSanitizer. (#1308)
+- Update MSRV policy to support 1 year instead of 6 months to meet rayon's MSRV policy. (#1284)
+
+# Version 0.8.22
+
+- Make `AtomicCell::{as_ptr,into_inner}` const. (#1237)
+- Make `CachePadded` `repr(C)`. (#1270)
+- Optimize `WaitGroup`. (#1195)
+
+# Version 0.8.21
+
+- Improve implementation of `CachePadded`. (#1152)
+
+# Version 0.8.20
+
+- Implement `Display` for `CachePadded`. (#1097)
+
 # Version 0.8.19
 
 - Remove dependency on `cfg-if`. (#1072)
@@ -25,7 +45,7 @@
 
 - Add `#[clippy::has_significant_drop]` to `ShardedLock{Read,Write}Guard`. (#958)
 - Improve handling of very large timeout. (#953)
-- Soft-deprecate `thread::scope()` in favor of the more efficient `std::thread::scope` that stabilized on Rust 1.63. (#954)
+- Soft-deprecate `thread::scope()` in favor of the more efficient `std::thread::scope` that stabilized in Rust 1.63. (#954)
 
 # Version 0.8.14
 

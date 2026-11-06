@@ -30,6 +30,12 @@ where
     pub fn into_inner(self) -> S {
         self.raw
     }
+
+    /// Get the wrapped [`std::io::Write`]
+    #[inline]
+    pub fn as_inner(&self) -> &S {
+        &self.raw
+    }
 }
 
 impl<S> StripStream<S>
@@ -37,6 +43,7 @@ where
     S: std::io::Write,
     S: IsTerminal,
 {
+    /// Returns `true` if the descriptor/handle refers to a terminal/tty.
     #[inline]
     pub fn is_terminal(&self) -> bool {
         self.raw.is_terminal()

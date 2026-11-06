@@ -26,8 +26,9 @@
 //! In order to use the interactive method, use the `Interactive` `InstalledFlowReturnMethod`;
 //! for the redirect method, use `HTTPRedirect`.
 //!
-//! You can implement your own `AuthenticatorDelegate` in order to customize the flow;
-//! the installed flow uses the `present_user_url` method.
+//! You can implement your own authenticator delegate in order to customize the flow;
+//! the installed flow uses the `present_user_url` method. See the `crate::authenticator_delegate`
+//! module.
 //!
 //! The returned `Token` will be stored in memory in order to authorize future
 //! API requests to the same scopes. The tokens can optionally be persisted to
@@ -70,13 +71,14 @@
 //! ```
 //!
 #![deny(missing_docs)]
-#![cfg_attr(yup_oauth2_docsrs, feature(doc_cfg))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub mod access_token;
 mod application_default_credentials;
 pub mod authenticator;
 pub mod authenticator_delegate;
 pub mod authorized_user;
+pub mod client;
 mod device;
 pub mod error;
 pub mod external_account;
@@ -85,7 +87,7 @@ mod installed;
 mod refresh;
 pub mod service_account_impersonator;
 
-#[cfg(feature = "service_account")]
+#[cfg(feature = "service-account")]
 mod service_account;
 
 /// Interface for storing tokens so that they can be re-used. There are built-in memory and
@@ -99,21 +101,29 @@ pub use hyper;
 #[cfg(feature = "hyper-rustls")]
 pub use hyper_rustls;
 
-#[cfg(feature = "service_account")]
+#[cfg(feature = "service-account")]
 #[doc(inline)]
 pub use crate::authenticator::ServiceAccountAuthenticator;
+
+#[cfg(any(feature = "hyper-rustls", feature = "hyper-tls"))]
+pub use crate::authenticator::AccessTokenAuthenticator;
+
+#[cfg(any(feature = "hyper-rustls", feature = "hyper-tls"))]
+pub use crate::client::DefaultHyperClientBuilder;
+pub use crate::client::{CustomHyperClientBuilder, HttpClient, HyperClientBuilder};
+
 #[doc(inline)]
 pub use crate::authenticator::{
-    AccessTokenAuthenticator, ApplicationDefaultCredentialsAuthenticator,
-    AuthorizedUserAuthenticator, DeviceFlowAuthenticator, ExternalAccountAuthenticator,
-    InstalledFlowAuthenticator, ServiceAccountImpersonationAuthenticator,
+    ApplicationDefaultCredentialsAuthenticator, AuthorizedUserAuthenticator,
+    DeviceFlowAuthenticator, ExternalAccountAuthenticator, InstalledFlowAuthenticator,
+    ServiceAccountImpersonationAuthenticator,
 };
 
 pub use crate::helper::*;
 pub use crate::installed::InstalledFlowReturnMethod;
 
 pub use crate::application_default_credentials::ApplicationDefaultCredentialsFlowOpts;
-#[cfg(feature = "service_account")]
+#[cfg(feature = "service-account")]
 pub use crate::service_account::ServiceAccountKey;
 
 #[doc(inline)]

@@ -1103,7 +1103,7 @@ pub mod deadlock {
     pub(super) use super::deadlock_impl::DeadlockData;
 
     /// Acquire a resource identified by key in the deadlock detector
-    /// Noop if deadlock_detection feature isn't enabled.
+    /// Noop if `deadlock_detection` feature isn't enabled.
     ///
     /// # Safety
     ///
@@ -1115,7 +1115,7 @@ pub mod deadlock {
     }
 
     /// Release a resource identified by key in the deadlock detector.
-    /// Noop if deadlock_detection feature isn't enabled.
+    /// Noop if `deadlock_detection` feature isn't enabled.
     ///
     /// # Panics
     ///
@@ -1157,17 +1157,17 @@ mod deadlock_impl {
     use std::collections::HashSet;
     use std::sync::atomic::Ordering;
     use std::sync::mpsc;
-    use thread_id;
+    use std::thread::ThreadId;
 
     /// Representation of a deadlocked thread
     pub struct DeadlockedThread {
-        thread_id: usize,
+        thread_id: ThreadId,
         backtrace: Backtrace,
     }
 
     impl DeadlockedThread {
         /// The system thread id
-        pub fn thread_id(&self) -> usize {
+        pub fn thread_id(&self) -> ThreadId {
             self.thread_id
         }
 
@@ -1188,7 +1188,7 @@ mod deadlock_impl {
         backtrace_sender: UnsafeCell<Option<mpsc::Sender<DeadlockedThread>>>,
 
         // System thread id
-        thread_id: usize,
+        thread_id: ThreadId,
     }
 
     impl DeadlockData {
@@ -1197,7 +1197,7 @@ mod deadlock_impl {
                 resources: UnsafeCell::new(Vec::new()),
                 deadlocked: Cell::new(false),
                 backtrace_sender: UnsafeCell::new(None),
-                thread_id: thread_id::get(),
+                thread_id: std::thread::current().id(),
             }
         }
     }

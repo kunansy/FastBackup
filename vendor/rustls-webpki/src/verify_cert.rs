@@ -12,7 +12,9 @@
 // ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 // OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
-use core::default::Default;
+#[cfg(feature = "alloc")]
+use alloc::vec::Vec;
+use core::fmt;
 use core::ops::ControlFlow;
 
 use pki_types::{CertificateDer, SignatureVerificationAlgorithm, TrustAnchor, UnixTime};
@@ -26,15 +28,16 @@ use crate::{public_values_eq, signed_data, subject_name};
 
 // Use `'a` for lifetimes that we don't care about, `'p` for lifetimes that become a part of
 // the `VerifiedPath`.
-pub(crate) struct ChainOptions<'a, 'p> {
-    pub(crate) eku: KeyUsage,
+pub(crate) struct ChainOptions<'a, 'p, V> {
+    pub(crate) eku: V,
     pub(crate) supported_sig_algs: &'a [&'a dyn SignatureVerificationAlgorithm],
     pub(crate) trust_anchors: &'p [TrustAnchor<'p>],
     pub(crate) intermediate_certs: &'p [CertificateDer<'p>],
     pub(crate) revocation: Option<RevocationOptions<'a>>,
+    pub(crate) distrusted_spkis: &'a [&'a [u8]],
 }
 
-impl<'a, 'p: 'a> ChainOptions<'a, 'p> {
+impl<'a, 'p: 'a, V: ExtendedKeyUsageValidator> ChainOptions<'a, 'p, V> {
     pub(crate) fn build_chain(
         &self,
         end_entity: &'p EndEntityCert<'p>,
@@ -56,25 +59,35 @@ impl<'a, 'p: 'a> ChainOptions<'a, 'p> {
         sub_ca_count: usize,
         budget: &mut Budget,
     ) -> Result<&'p TrustAnchor<'p>, ControlFlow<Error, Error>> {
+        if self
+            .distrusted_spkis
+            .contains(&path.head().spki.as_slice_less_safe())
+        {
+            return Err(Error::CertDistrusted.into());
+        }
+
         let role = path.node().role();
 
-        check_issuer_independent_properties(path.head(), time, role, sub_ca_count, self.eku.inner)?;
+        check_issuer_independent_properties(path.head(), time, role, sub_ca_count, &self.eku)?;
 
         // TODO: HPKP checks.
 
-        let result = loop_while_non_fatal_error(
-            Error::UnknownIssuer,
-            self.trust_anchors,
-            |trust_anchor: &TrustAnchor| {
+        let result =
+            loop_while_non_fatal_error(Error::UnknownIssuer, self.trust_anchors, |trust_anchor| {
                 let trust_anchor_subject = untrusted::Input::from(trust_anchor.subject.as_ref());
                 if !public_values_eq(path.head().issuer, trust_anchor_subject) {
                     return Err(Error::UnknownIssuer.into());
                 }
 
-                // TODO: check_distrust(trust_anchor_subject, trust_anchor_spki)?;
+                if self
+                    .distrusted_spkis
+                    .contains(&trust_anchor.subject_public_key_info.as_ref())
+                {
+                    return Err(Error::CertDistrusted.into());
+                }
 
                 let node = path.node();
-                self.check_signed_chain(&node, trust_anchor, budget)?;
+                self.check_signed_chain(&node, time, trust_anchor, budget)?;
                 check_signed_chain_name_constraints(&node, trust_anchor, budget)?;
 
                 let verify = match verify_path {
@@ -92,8 +105,7 @@ impl<'a, 'p: 'a> ChainOptions<'a, 'p> {
                     Ok(()) => Ok(trust_anchor),
                     Err(err) => Err(ControlFlow::Continue(err)),
                 }
-            },
-        );
+            });
 
         let err = match result {
             Ok(anchor) => return Ok(anchor),
@@ -138,7 +150,8 @@ impl<'a, 'p: 'a> ChainOptions<'a, 'p> {
     fn check_signed_chain(
         &self,
         path: &PathNode<'_>,
-        trust_anchor: &TrustAnchor,
+        time: UnixTime,
+        trust_anchor: &TrustAnchor<'_>,
         budget: &mut Budget,
     ) -> Result<(), ControlFlow<Error, Error>> {
         let mut spki_value = untrusted::Input::from(trust_anchor.subject_public_key_info.as_ref());
@@ -160,6 +173,7 @@ impl<'a, 'p: 'a> ChainOptions<'a, 'p> {
                     issuer_key_usage,
                     self.supported_sig_algs,
                     budget,
+                    time,
                 )?;
             }
 
@@ -237,7 +251,7 @@ impl<'a> Iterator for IntermediateIterator<'a> {
     }
 }
 
-impl<'a> DoubleEndedIterator for IntermediateIterator<'a> {
+impl DoubleEndedIterator for IntermediateIterator<'_> {
     fn next_back(&mut self) -> Option<Self::Item> {
         match self.intermediates.split_last() {
             Some((head, tail)) => {
@@ -269,7 +283,7 @@ impl<'a> AsRef<[Option<Cert<'a>>]> for Intermediates<'a> {
 
 fn check_signed_chain_name_constraints(
     path: &PathNode<'_>,
-    trust_anchor: &TrustAnchor,
+    trust_anchor: &TrustAnchor<'_>,
     budget: &mut Budget,
 ) -> Result<(), ControlFlow<Error, Error>> {
     let mut name_constraints = trust_anchor
@@ -344,11 +358,11 @@ impl Default for Budget {
 }
 
 fn check_issuer_independent_properties(
-    cert: &Cert,
+    cert: &Cert<'_>,
     time: UnixTime,
     role: Role,
     sub_ca_count: usize,
-    eku: ExtendedKeyUsage,
+    eku: &impl ExtendedKeyUsageValidator,
 ) -> Result<(), Error> {
     // TODO: check_distrust(trust_anchor_subject, trust_anchor_spki)?;
     // TODO: Check signature algorithm like mozilla::pkix.
@@ -366,13 +380,26 @@ fn check_issuer_independent_properties(
     untrusted::read_all_optional(cert.basic_constraints, Error::BadDer, |value| {
         check_basic_constraints(value, role, sub_ca_count)
     })?;
-    untrusted::read_all_optional(cert.eku, Error::BadDer, |value| eku.check(value))?;
+    untrusted::read_all_optional(cert.eku, Error::BadDer, |input| check_eku(input, eku))?;
 
     Ok(())
 }
 
+fn check_eku(
+    input: Option<&mut untrusted::Reader<'_>>,
+    eku: &impl ExtendedKeyUsageValidator,
+) -> Result<(), Error> {
+    match input {
+        Some(input) if input.at_end() => Err(Error::EmptyEkuExtension),
+        Some(input) => eku.validate(KeyPurposeIdIter { input }),
+        None => eku.validate(KeyPurposeIdIter {
+            input: &mut untrusted::Reader::new(untrusted::Input::from(&[])),
+        }),
+    }
+}
+
 // https://tools.ietf.org/html/rfc5280#section-4.1.2.5
-fn check_validity(input: &mut untrusted::Reader, time: UnixTime) -> Result<(), Error> {
+fn check_validity(input: &mut untrusted::Reader<'_>, time: UnixTime) -> Result<(), Error> {
     let not_before = UnixTime::from_der(input)?;
     let not_after = UnixTime::from_der(input)?;
 
@@ -380,10 +407,10 @@ fn check_validity(input: &mut untrusted::Reader, time: UnixTime) -> Result<(), E
         return Err(Error::InvalidCertValidity);
     }
     if time < not_before {
-        return Err(Error::CertNotValidYet);
+        return Err(Error::CertNotValidYet { time, not_before });
     }
     if time > not_after {
-        return Err(Error::CertExpired);
+        return Err(Error::CertExpired { time, not_after });
     }
 
     // TODO: mozilla::pkix allows the TrustDomain to check not_before and
@@ -395,7 +422,7 @@ fn check_validity(input: &mut untrusted::Reader, time: UnixTime) -> Result<(), E
 
 // https://tools.ietf.org/html/rfc5280#section-4.2.1.9
 fn check_basic_constraints(
-    input: Option<&mut untrusted::Reader>,
+    input: Option<&mut untrusted::Reader<'_>>,
     role: Role,
     sub_ca_count: usize,
 ) -> Result<(), Error> {
@@ -428,6 +455,61 @@ fn check_basic_constraints(
     }
 }
 
+/// Additional context for the `RequiredEkuNotFoundContext` error variant.
+///
+/// The contents of this type depend on whether the `alloc` feature is enabled.
+#[derive(Clone, PartialEq, Eq)]
+pub struct RequiredEkuNotFoundContext {
+    /// The required ExtendedKeyUsage.
+    #[cfg(feature = "alloc")]
+    pub required: KeyUsage,
+    /// The ExtendedKeyUsage OIDs present in the certificate.
+    #[cfg(feature = "alloc")]
+    pub present: Vec<Vec<usize>>,
+}
+
+impl fmt::Debug for RequiredEkuNotFoundContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut builder = f.debug_struct("RequiredEkuNotFoundContext");
+        #[cfg(feature = "alloc")]
+        builder.field(
+            "required",
+            match &self.required.inner {
+                ExtendedKeyUsage::Required(inner) => inner,
+                ExtendedKeyUsage::RequiredIfPresent(inner) => inner,
+            },
+        );
+        #[cfg(feature = "alloc")]
+        builder.field("present", &EkuListDebug(&self.present));
+        builder.finish()
+    }
+}
+
+#[cfg(feature = "alloc")]
+struct EkuListDebug<'a>(&'a [Vec<usize>]);
+
+#[cfg(feature = "alloc")]
+impl fmt::Debug for EkuListDebug<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[")?;
+        for (i, part) in self.0.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+
+            write!(f, "KeyPurposeId(")?;
+            for (j, part) in part.iter().enumerate() {
+                if j > 0 {
+                    write!(f, ".")?;
+                }
+                write!(f, "{part}")?;
+            }
+            write!(f, ")")?;
+        }
+        write!(f, "]")
+    }
+}
+
 /// The expected key usage of a certificate.
 ///
 /// This type represents the expected key usage of an end entity certificate. Although for most
@@ -436,7 +518,7 @@ fn check_basic_constraints(
 /// is present, the certificate MUST only be used for one of the purposes indicated.
 ///
 /// <https://www.rfc-editor.org/rfc/rfc5280#section-4.2.1.12>
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct KeyUsage {
     inner: ExtendedKeyUsage,
 }
@@ -446,18 +528,14 @@ impl KeyUsage {
     ///
     /// As specified in <https://www.rfc-editor.org/rfc/rfc5280#section-4.2.1.12>, this does not require the certificate to specify the eKU extension.
     pub const fn server_auth() -> Self {
-        Self {
-            inner: ExtendedKeyUsage::RequiredIfPresent(EKU_SERVER_AUTH),
-        }
+        Self::required_if_present(EKU_SERVER_AUTH)
     }
 
     /// Construct a new [`KeyUsage`] as appropriate for client certificate authentication.
     ///
     /// As specified in <>, this does not require the certificate to specify the eKU extension.
     pub const fn client_auth() -> Self {
-        Self {
-            inner: ExtendedKeyUsage::RequiredIfPresent(EKU_CLIENT_AUTH),
-        }
+        Self::required_if_present(EKU_CLIENT_AUTH)
     }
 
     /// Construct a new [`KeyUsage`] requiring a certificate to support the specified OID.
@@ -466,96 +544,234 @@ impl KeyUsage {
             inner: ExtendedKeyUsage::Required(KeyPurposeId::new(oid)),
         }
     }
+
+    /// Construct a new [`KeyUsage`] requiring a certificate to support the specified OID, if the certificate has EKUs.
+    pub const fn required_if_present(oid: &'static [u8]) -> Self {
+        Self {
+            inner: ExtendedKeyUsage::RequiredIfPresent(KeyPurposeId::new(oid)),
+        }
+    }
+
+    /// Yield the OID values of the required extended key usage.
+    pub fn oid_values(&self) -> impl Iterator<Item = usize> + '_ {
+        OidDecoder::new(
+            match &self.inner {
+                ExtendedKeyUsage::Required(eku) => eku,
+                ExtendedKeyUsage::RequiredIfPresent(eku) => eku,
+            }
+            .oid_value
+            .as_slice_less_safe(),
+        )
+    }
+
+    /// Human-readable representation of the server authentication OID.
+    pub const SERVER_AUTH_REPR: &[usize] = &[1, 3, 6, 1, 5, 5, 7, 3, 1];
+    /// Human-readable representation of the client authentication OID.
+    pub const CLIENT_AUTH_REPR: &[usize] = &[1, 3, 6, 1, 5, 5, 7, 3, 2];
+}
+
+impl ExtendedKeyUsageValidator for KeyUsage {
+    // https://tools.ietf.org/html/rfc5280#section-4.2.1.12
+    fn validate(&self, iter: KeyPurposeIdIter<'_, '_>) -> Result<(), Error> {
+        let mut empty = true;
+        #[cfg(feature = "alloc")]
+        let mut present = Vec::new();
+
+        for id in iter {
+            empty = false;
+            let id = id?;
+            if self.inner.id() == id {
+                return Ok(());
+            }
+
+            #[cfg(feature = "alloc")]
+            present.push(id.to_decoded_oid());
+        }
+
+        match (empty, self.inner) {
+            (true, ExtendedKeyUsage::RequiredIfPresent(_)) => Ok(()),
+            _ => Err(Error::RequiredEkuNotFoundContext(
+                RequiredEkuNotFoundContext {
+                    #[cfg(feature = "alloc")]
+                    required: Self { inner: self.inner },
+                    #[cfg(feature = "alloc")]
+                    present,
+                },
+            )),
+        }
+    }
+}
+
+impl<V: ExtendedKeyUsageValidator> ExtendedKeyUsageValidator for &V {
+    fn validate(&self, iter: KeyPurposeIdIter<'_, '_>) -> Result<(), Error> {
+        (*self).validate(iter)
+    }
+}
+
+/// A trait for validating the Extended Key Usage (EKU) extensions of a certificate.
+pub trait ExtendedKeyUsageValidator {
+    /// Validate the EKU values in a certificate.
+    ///
+    /// `iter` yields the EKU OIDs in the certificate, or an error if the EKU extension
+    /// is malformed. `validate()` should yield `Ok(())` if the EKU values match the
+    /// required policy, or an `Error` if they do not. Ideally the `Error` should be
+    /// `Error::RequiredEkuNotFoundContext` if the policy is not met.
+    fn validate(&self, iter: KeyPurposeIdIter<'_, '_>) -> Result<(), Error>;
 }
 
 /// Extended Key Usage (EKU) of a certificate.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ExtendedKeyUsage {
     /// The certificate must contain the specified [`KeyPurposeId`] as EKU.
-    Required(KeyPurposeId),
+    Required(KeyPurposeId<'static>),
 
     /// If the certificate has EKUs, then the specified [`KeyPurposeId`] must be included.
-    RequiredIfPresent(KeyPurposeId),
+    RequiredIfPresent(KeyPurposeId<'static>),
 }
 
 impl ExtendedKeyUsage {
-    // https://tools.ietf.org/html/rfc5280#section-4.2.1.12
-    fn check(&self, input: Option<&mut untrusted::Reader>) -> Result<(), Error> {
-        let input = match (input, self) {
-            (Some(input), _) => input,
-            (None, Self::RequiredIfPresent(_)) => return Ok(()),
-            (None, Self::Required(_)) => return Err(Error::RequiredEkuNotFound),
-        };
+    fn id(&self) -> KeyPurposeId<'static> {
+        match self {
+            Self::Required(id) => *id,
+            Self::RequiredIfPresent(id) => *id,
+        }
+    }
+}
 
-        loop {
-            let value = der::expect_tag(input, der::Tag::OID)?;
-            if self.key_purpose_id_equals(value) {
-                input.skip_to_end();
-                break;
-            }
+/// Iterator over [`KeyPurposeId`]s, for use in [`ExtendedKeyUsageValidator`].
+pub struct KeyPurposeIdIter<'a, 'r> {
+    input: &'r mut untrusted::Reader<'a>,
+}
 
-            if input.at_end() {
-                return Err(Error::RequiredEkuNotFound);
-            }
+impl<'a, 'r> Iterator for KeyPurposeIdIter<'a, 'r> {
+    type Item = Result<KeyPurposeId<'a>, Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.input.at_end() {
+            return None;
         }
 
-        Ok(())
+        Some(der::expect_tag(self.input, der::Tag::OID).map(|oid_value| KeyPurposeId { oid_value }))
     }
+}
 
-    fn key_purpose_id_equals(&self, value: untrusted::Input<'_>) -> bool {
-        public_values_eq(
-            match self {
-                ExtendedKeyUsage::Required(eku) => *eku,
-                ExtendedKeyUsage::RequiredIfPresent(eku) => *eku,
-            }
-            .oid_value,
-            value,
-        )
+impl Drop for KeyPurposeIdIter<'_, '_> {
+    fn drop(&mut self) {
+        self.input.skip_to_end();
     }
 }
 
 /// An OID value indicating an Extended Key Usage (EKU) key purpose.
 #[derive(Clone, Copy)]
-struct KeyPurposeId {
-    oid_value: untrusted::Input<'static>,
+pub struct KeyPurposeId<'a> {
+    oid_value: untrusted::Input<'a>,
 }
 
-impl KeyPurposeId {
+impl<'a> KeyPurposeId<'a> {
     /// Construct a new [`KeyPurposeId`].
     ///
     /// `oid` is the OBJECT IDENTIFIER in bytes.
-    const fn new(oid: &'static [u8]) -> Self {
+    pub const fn new(oid: &'a [u8]) -> Self {
         Self {
             oid_value: untrusted::Input::from(oid),
         }
     }
+
+    /// Yield the OID value as a sequence of `usize` components.
+    #[cfg(feature = "alloc")]
+    pub fn to_decoded_oid(&self) -> Vec<usize> {
+        OidDecoder::new(self.oid_value.as_slice_less_safe()).collect()
+    }
 }
 
-impl PartialEq<Self> for KeyPurposeId {
+impl fmt::Debug for KeyPurposeId<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "KeyPurposeId(")?;
+        let decoder = OidDecoder::new(self.oid_value.as_slice_less_safe());
+        for (i, part) in decoder.enumerate() {
+            if i > 0 {
+                write!(f, ".")?;
+            }
+            write!(f, "{part}")?;
+        }
+        write!(f, ")")
+    }
+}
+
+impl PartialEq<Self> for KeyPurposeId<'_> {
     fn eq(&self, other: &Self) -> bool {
         public_values_eq(self.oid_value, other.oid_value)
     }
 }
 
-impl Eq for KeyPurposeId {}
+impl Eq for KeyPurposeId<'_> {}
 
 // id-pkix            OBJECT IDENTIFIER ::= { 1 3 6 1 5 5 7 }
 // id-kp              OBJECT IDENTIFIER ::= { id-pkix 3 }
 
 // id-kp-serverAuth   OBJECT IDENTIFIER ::= { id-kp 1 }
-const EKU_SERVER_AUTH: KeyPurposeId = KeyPurposeId::new(&oid!(1, 3, 6, 1, 5, 5, 7, 3, 1));
+const EKU_SERVER_AUTH: &[u8] = &oid!(1, 3, 6, 1, 5, 5, 7, 3, 1);
 
 // id-kp-clientAuth   OBJECT IDENTIFIER ::= { id-kp 2 }
-const EKU_CLIENT_AUTH: KeyPurposeId = KeyPurposeId::new(&oid!(1, 3, 6, 1, 5, 5, 7, 3, 2));
+const EKU_CLIENT_AUTH: &[u8] = &oid!(1, 3, 6, 1, 5, 5, 7, 3, 2);
 
-fn loop_while_non_fatal_error<'a, V: 'a>(
+struct OidDecoder<'a> {
+    encoded: &'a [u8],
+    left: Option<usize>,
+    first: bool,
+}
+
+impl<'a> OidDecoder<'a> {
+    fn new(encoded: &'a [u8]) -> Self {
+        Self {
+            encoded,
+            left: None,
+            first: true,
+        }
+    }
+}
+
+impl Iterator for OidDecoder<'_> {
+    type Item = usize;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(next) = self.left.take() {
+            return Some(next);
+        }
+
+        let mut cur = 0;
+        for (i, &byte) in self.encoded.iter().enumerate() {
+            cur = (cur << 8) + usize::from(byte & 0x7f);
+            if byte & 0x80 > 0 {
+                continue;
+            }
+
+            if !self.first {
+                self.encoded = &self.encoded[i + 1..];
+                return Some(cur);
+            }
+
+            let (cur, next) = match cur {
+                ..=39 => (0, cur),
+                40..=79 => (1, cur - 40),
+                _ => (2, cur - 80),
+            };
+
+            self.encoded = &self.encoded[i + 1..];
+            self.first = false;
+            self.left = Some(next);
+            return Some(cur);
+        }
+
+        None
+    }
+}
+
+fn loop_while_non_fatal_error<'a, V: IntoIterator + 'a>(
     default_error: Error,
     values: V,
     mut f: impl FnMut(V::Item) -> Result<&'a TrustAnchor<'a>, ControlFlow<Error, Error>>,
-) -> Result<&'a TrustAnchor<'a>, ControlFlow<Error, Error>>
-where
-    V: IntoIterator,
-{
+) -> Result<&'a TrustAnchor<'a>, ControlFlow<Error, Error>> {
     let mut error = default_error;
     for v in values {
         match f(v) {
@@ -697,69 +913,91 @@ pub(crate) enum Role {
     EndEntity,
 }
 
-#[cfg(all(test, feature = "alloc", any(feature = "ring", feature = "aws_lc_rs")))]
+// SPKI SEQUENCE contents (without tag/length) that should invalidate any path containing them.
+pub(crate) const DISTRUSTED_SPKIS: &[&[u8]] = &[
+    include_bytes!("data/distrusted/EMDVTLSCAG3B.spki.der"),
+    include_bytes!("data/distrusted/EMDVTLSCAG3C.spki.der"),
+    include_bytes!("data/distrusted/EMEVTLSCAG3B.spki.der"),
+    include_bytes!("data/distrusted/EMEVTLSCAG3C.spki.der"),
+    include_bytes!("data/distrusted/EMOVTLSCAG3B.spki.der"),
+    include_bytes!("data/distrusted/EMOVTLSCAG3C.spki.der"),
+    include_bytes!("data/distrusted/EMOVCSCAG3B.spki.der"),
+    include_bytes!("data/distrusted/EMOVCSCAG3C.spki.der"),
+];
+
+#[cfg(all(test, feature = "alloc", any(feature = "ring", feature = "aws-lc-rs")))]
 mod tests {
+    use alloc::borrow::ToOwned;
+    use alloc::string::{String, ToString};
+    use std::dbg;
+    use std::slice;
+
     use super::*;
+    use crate::test_utils;
     use crate::test_utils::{issuer_params, make_end_entity, make_issuer};
     use crate::trust_anchor::anchor_from_trusted_cert;
+    use rcgen::{CertifiedIssuer, Issuer, KeyPair, SigningKey};
+
+    #[test]
+    fn roundtrip() {
+        // 2.999.3 -> 1079.3 -> [0x84, 0x37, 0x3]
+        const ENCODED: &[u8] = &[0x84, 0x37, 0x3];
+        let decoded = OidDecoder::new(ENCODED);
+        assert_eq!(decoded.collect::<Vec<_>>(), [2, 999, 3]);
+    }
+
+    #[test]
+    fn oid_decoding() {
+        assert_eq!(
+            KeyUsage::server_auth().oid_values().collect::<Vec<_>>(),
+            KeyUsage::SERVER_AUTH_REPR
+        );
+        assert_eq!(
+            KeyUsage::client_auth().oid_values().collect::<Vec<_>>(),
+            KeyUsage::CLIENT_AUTH_REPR
+        );
+    }
+
+    #[test]
+    fn eku_fail_empty() {
+        let err = KeyUsage::required(EKU_SERVER_AUTH)
+            .validate(KeyPurposeIdIter {
+                input: &mut untrusted::Reader::new(untrusted::Input::from(&[])),
+            })
+            .unwrap_err();
+        assert_eq!(
+            err,
+            Error::RequiredEkuNotFoundContext(RequiredEkuNotFoundContext {
+                #[cfg(feature = "alloc")]
+                required: dbg!(KeyUsage::required(EKU_SERVER_AUTH)), // Cover Debug impl
+                #[cfg(feature = "alloc")]
+                present: Vec::new(),
+            })
+        );
+    }
+
+    #[test]
+    fn eku_fail_empty_with_optional() {
+        let mut empty_eku = untrusted::Reader::new(untrusted::Input::from(&[]));
+        let validator = KeyUsage::required_if_present(EKU_SERVER_AUTH);
+        assert_eq!(
+            check_eku(Some(&mut empty_eku), &validator).unwrap_err(),
+            Error::EmptyEkuExtension,
+        );
+    }
 
     #[test]
     fn eku_key_purpose_id() {
-        assert!(ExtendedKeyUsage::RequiredIfPresent(EKU_SERVER_AUTH)
-            .key_purpose_id_equals(EKU_SERVER_AUTH.oid_value))
-    }
-
-    #[cfg(feature = "alloc")]
-    enum ChainTrustAnchor {
-        NotInChain,
-        InChain,
-    }
-
-    fn build_degenerate_chain(
-        intermediate_count: usize,
-        trust_anchor: ChainTrustAnchor,
-    ) -> ControlFlow<Error, Error> {
-        let ca_cert = make_issuer("Bogus Subject");
-        let ca_cert_der = CertificateDer::from(ca_cert.serialize_der().unwrap());
-
-        let mut intermediates = Vec::with_capacity(intermediate_count + 1);
-        if let ChainTrustAnchor::InChain = trust_anchor {
-            intermediates.push(CertificateDer::from(ca_cert_der.to_vec()));
-        }
-
-        let mut issuer = ca_cert;
-        for _ in 0..intermediate_count {
-            let intermediate = make_issuer("Bogus Subject");
-            let intermediate_der = intermediate.serialize_der_with_signer(&issuer).unwrap();
-            intermediates.push(CertificateDer::from(intermediate_der));
-            issuer = intermediate;
-        }
-
-        let trust_anchor = match trust_anchor {
-            ChainTrustAnchor::InChain => {
-                let unused_anchor = make_issuer("Bogus Trust Anchor");
-                CertificateDer::from(unused_anchor.serialize_der().unwrap())
-            }
-            ChainTrustAnchor::NotInChain => ca_cert_der,
-        };
-
-        let ee_der = make_end_entity(&issuer);
-        let ee_cert = EndEntityCert::try_from(&ee_der).unwrap();
-        verify_chain(
-            &[anchor_from_trusted_cert(&trust_anchor).unwrap()],
-            &intermediates,
-            &ee_cert,
-            None,
-            None,
+        assert!(
+            ExtendedKeyUsage::RequiredIfPresent(KeyPurposeId::new(EKU_SERVER_AUTH)).id()
+                == KeyPurposeId::new(EKU_SERVER_AUTH)
         )
-        .map(|_| ())
-        .unwrap_err()
     }
 
     #[test]
     fn test_too_many_signatures() {
         assert!(matches!(
-            build_degenerate_chain(5, ChainTrustAnchor::NotInChain),
+            build_and_verify_degenerate_chain(5, ChainTrustAnchor::NotInChain),
             ControlFlow::Break(Error::MaximumSignatureChecksExceeded)
         ));
     }
@@ -767,83 +1005,28 @@ mod tests {
     #[test]
     fn test_too_many_path_calls() {
         assert!(matches!(
-            dbg!(build_degenerate_chain(10, ChainTrustAnchor::InChain)),
+            dbg!(build_and_verify_degenerate_chain(
+                10,
+                ChainTrustAnchor::InChain
+            )),
             ControlFlow::Break(Error::MaximumPathBuildCallsExceeded)
         ));
     }
 
-    fn build_linear_chain(chain_length: usize) -> Result<(), ControlFlow<Error, Error>> {
-        let ca_cert = make_issuer(format!("Bogus Subject {chain_length}"));
-        let ca_cert_der = CertificateDer::from(ca_cert.serialize_der().unwrap());
-        let anchor = anchor_from_trusted_cert(&ca_cert_der).unwrap();
-        let anchors = &[anchor.clone()];
-
-        let mut intermediates = Vec::with_capacity(chain_length);
-        let mut issuer = ca_cert;
-        for i in 0..chain_length {
-            let intermediate = make_issuer(format!("Bogus Subject {i}"));
-            let intermediate_der = intermediate.serialize_der_with_signer(&issuer).unwrap();
-            intermediates.push(CertificateDer::from(intermediate_der));
-            issuer = intermediate;
-        }
-
-        let ee_der = make_end_entity(&issuer);
-        let ee_cert = EndEntityCert::try_from(&ee_der).unwrap();
-
-        let expected_chain = |path: &VerifiedPath<'_>| {
-            assert_eq!(path.anchor().subject, anchor.subject);
-            assert!(public_values_eq(path.end_entity().subject, ee_cert.subject));
-            assert_eq!(path.intermediate_certificates().count(), chain_length);
-
-            let intermediate_certs = intermediates
-                .iter()
-                .map(|der| Cert::from_der(untrusted::Input::from(der.as_ref())).unwrap())
-                .collect::<Vec<_>>();
-
-            for (cert, expected) in path
-                .intermediate_certificates()
-                .rev()
-                .zip(intermediate_certs.iter())
-            {
-                assert!(public_values_eq(cert.subject, expected.subject));
-                assert_eq!(cert.der(), expected.der());
-            }
-
-            for (cert, expected) in path
-                .intermediate_certificates()
-                .zip(intermediate_certs.iter().rev())
-            {
-                assert!(public_values_eq(cert.subject, expected.subject));
-                assert_eq!(cert.der(), expected.der());
-            }
-
-            Ok(())
-        };
-
-        verify_chain(
-            anchors,
-            &intermediates,
-            &ee_cert,
-            Some(&expected_chain),
-            None,
-        )
-        .map(|_| ())
-    }
-
     #[test]
     fn longest_allowed_path() {
-        assert!(build_linear_chain(1).is_ok());
-        assert!(build_linear_chain(2).is_ok());
-        assert!(build_linear_chain(3).is_ok());
-        assert!(build_linear_chain(4).is_ok());
-        assert!(build_linear_chain(5).is_ok());
-        assert!(build_linear_chain(6).is_ok());
+        assert!(build_and_verify_linear_chain(1).is_ok());
+        assert!(build_and_verify_linear_chain(2).is_ok());
+        assert!(build_and_verify_linear_chain(3).is_ok());
+        assert!(build_and_verify_linear_chain(4).is_ok());
+        assert!(build_and_verify_linear_chain(5).is_ok());
+        assert!(build_and_verify_linear_chain(6).is_ok());
     }
 
     #[test]
     fn path_too_long() {
         assert!(matches!(
-            build_linear_chain(7),
+            build_and_verify_linear_chain(7),
             Err(ControlFlow::Continue(Error::MaximumPathDepthExceeded))
         ));
     }
@@ -857,30 +1040,26 @@ mod tests {
             permitted_subtrees: vec![rcgen::GeneralSubtree::DnsName(".com".into())],
             excluded_subtrees: vec![],
         });
-        let ca_cert = rcgen::Certificate::from_params(ca_cert_params).unwrap();
-        let ca_cert_der = CertificateDer::from(ca_cert.serialize_der().unwrap());
-        let anchors = &[anchor_from_trusted_cert(&ca_cert_der).unwrap()];
+        let ca_key_pair = KeyPair::generate_for(test_utils::RCGEN_SIGNATURE_ALG).unwrap();
+        let ca = CertifiedIssuer::self_signed(ca_cert_params, ca_key_pair).unwrap();
 
         // Create a series of intermediate issuers. We'll only use one in the actual built path,
         // helping demonstrate that the name constraint budget is not expended checking certificates
         // that are not part of the path we compute.
-        const NUM_INTERMEDIATES: usize = 5;
-        let mut intermediates = Vec::with_capacity(NUM_INTERMEDIATES);
-        for i in 0..NUM_INTERMEDIATES {
-            intermediates.push(make_issuer(format!("Intermediate {i}")));
-        }
-
-        // Each intermediate should be issued by the trust anchor.
-        let mut intermediates_der = Vec::with_capacity(NUM_INTERMEDIATES);
-        for intermediate in &intermediates {
-            intermediates_der.push(CertificateDer::from(
-                intermediate.serialize_der_with_signer(&ca_cert).unwrap(),
-            ));
+        let mut intermediates = Vec::with_capacity(5);
+        for i in 0..5 {
+            let intermediate = issuer_params(format!("Intermediate {i}"));
+            let intermediate_key_pair =
+                KeyPair::generate_for(test_utils::RCGEN_SIGNATURE_ALG).unwrap();
+            // Each intermediate should be issued by the trust anchor.
+            intermediates.push(
+                CertifiedIssuer::signed_by(intermediate, intermediate_key_pair, &ca).unwrap(),
+            );
         }
 
         // Create an end-entity cert that is issued by the last of the intermediates.
-        let ee_der = make_end_entity(intermediates.last().unwrap());
-        let ee_cert = EndEntityCert::try_from(&ee_der).unwrap();
+        let ee_cert = make_end_entity(intermediates.last().unwrap());
+        let ee_cert = EndEntityCert::try_from(ee_cert.cert.der()).unwrap();
 
         // We use a custom budget to make it easier to write a test, otherwise it is tricky to
         // stuff enough names/constraints into the potential chains while staying within the path
@@ -893,6 +1072,12 @@ mod tests {
             name_constraint_comparisons: 3,
             ..Budget::default()
         };
+
+        let anchors = &[anchor_from_trusted_cert(ca.der()).unwrap()];
+        let intermediates_der = intermediates
+            .iter()
+            .map(|issuer| issuer.der().clone())
+            .collect::<Vec<_>>();
 
         // Validation should succeed with the name constraint comparison budget allocated above.
         // This shows that we're not consuming budget on unused intermediates: we didn't budget
@@ -931,96 +1116,69 @@ mod tests {
         ));
     }
 
+    /// This test builds a PKI like the following diagram depicts. We first verify
+    /// that we can build a path EE -> B -> A -> TA. Next we supply a custom path verification
+    /// function that rejects the B->A path, and verify that we build a path EE -> B -> C -> TA.
+    ///
+    ///        ┌───────────┐
+    ///        │           │
+    ///        │     TA    │
+    ///        │           │
+    ///        └───┬───┬───┘
+    ///            │   │
+    ///            │   │
+    /// ┌────────┐◄┘   └──►┌────────┐
+    /// │        │         │        │
+    /// │   A    │         │   C    │
+    /// │        │         │        │
+    /// └────┬───┘         └───┬────┘
+    ///      │                 │
+    ///      │                 │
+    ///      │   ┌─────────┐   │
+    ///      └──►│         │◄──┘
+    ///          │    B    │
+    ///          │         │
+    ///          └────┬────┘
+    ///               │
+    ///               │
+    ///               │
+    ///          ┌────▼────┐
+    ///          │         │
+    ///          │    EE   │
+    ///          │         │
+    ///          └─────────┘
     #[test]
     fn test_reject_candidate_path() {
-        /*
-         This test builds a PKI like the following diagram depicts. We first verify
-         that we can build a path EE -> B -> A -> TA. Next we supply a custom path verification
-         function that rejects the B->A path, and verify that we build a path EE -> B -> C -> TA.
-
-               ┌───────────┐
-               │           │
-               │     TA    │
-               │           │
-               └───┬───┬───┘
-                   │   │
-                   │   │
-        ┌────────┐◄┘   └──►┌────────┐
-        │        │         │        │
-        │   A    │         │   C    │
-        │        │         │        │
-        └────┬───┘         └───┬────┘
-             │                 │
-             │                 │
-             │   ┌─────────┐   │
-             └──►│         │◄──┘
-                 │    B    │
-                 │         │
-                 └────┬────┘
-                      │
-                      │
-                      │
-                 ┌────▼────┐
-                 │         │
-                 │    EE   │
-                 │         │
-                 └─────────┘
-          */
-
         // Create a trust anchor, and use it to issue two distinct intermediate certificates, each
         // with a unique subject and keypair.
         let trust_anchor = make_issuer("Trust Anchor");
-        let trust_anchor_der = CertificateDer::from(trust_anchor.serialize_der().unwrap());
-        let trust_anchor_cert =
-            Cert::from_der(untrusted::Input::from(trust_anchor_der.as_ref())).unwrap();
-        let trust_anchors = &[anchor_from_trusted_cert(&trust_anchor_der).unwrap()];
+        let trust_anchor_cert = Cert::from_der(untrusted::Input::from(trust_anchor.der())).unwrap();
+        let trust_anchors = &[anchor_from_trusted_cert(trust_anchor.der()).unwrap()];
 
-        let intermediate_a = make_issuer("Intermediate A");
-        let intermediate_a_der = CertificateDer::from(
-            intermediate_a
-                .serialize_der_with_signer(&trust_anchor)
-                .unwrap(),
-        );
-        let intermediate_a_cert =
-            Cert::from_der(untrusted::Input::from(intermediate_a_der.as_ref())).unwrap();
-
-        let intermediate_c = make_issuer("Intermediate C");
-        let intermediate_c_der = CertificateDer::from(
-            intermediate_c
-                .serialize_der_with_signer(&trust_anchor)
-                .unwrap(),
-        );
-        let intermediate_c_cert =
-            Cert::from_der(untrusted::Input::from(intermediate_c_der.as_ref())).unwrap();
+        let intermediate_a = make_intermediate("Intermediate A", &trust_anchor);
+        let intermediate_c = make_intermediate("Intermediate C", &trust_anchor);
 
         // Next, create an intermediate that is issued by both of the intermediates above.
         // Both should share the same subject, and key pair, but will differ in the issuer.
-        let intermediate_b_key = rcgen::KeyPair::generate(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
-        let mut intermediate_b_params = issuer_params("Intermediate");
-        intermediate_b_params.key_pair = Some(intermediate_b_key);
-        let intermediate_b = rcgen::Certificate::from_params(intermediate_b_params).unwrap();
-
-        let intermediate_b_a_der = CertificateDer::from(
-            intermediate_b
-                .serialize_der_with_signer(&intermediate_a)
-                .unwrap(),
-        );
-        let intermediate_b_c_der = CertificateDer::from(
-            intermediate_b
-                .serialize_der_with_signer(&intermediate_c)
-                .unwrap(),
-        );
+        let (intermediate_b, intermediate_b_a_cert, intermediate_b_c_cert) = {
+            let key = KeyPair::generate_for(test_utils::RCGEN_SIGNATURE_ALG).unwrap();
+            let params = issuer_params("Intermediate");
+            let intermediate_b_a_cert = params.signed_by(&key, &intermediate_a).unwrap();
+            let intermediate_b_c_cert = params.signed_by(&key, &intermediate_c).unwrap();
+            let issuer = Issuer::new(params, key);
+            (issuer, intermediate_b_a_cert, intermediate_b_c_cert)
+        };
 
         let intermediates = &[
-            intermediate_a_der.clone(),
-            intermediate_c_der.clone(),
-            intermediate_b_a_der.clone(),
-            intermediate_b_c_der.clone(),
+            intermediate_a.der().clone(),
+            intermediate_c.der().clone(),
+            intermediate_b_a_cert.der().clone(),
+            intermediate_b_c_cert.der().clone(),
         ];
 
         // Create an end entity certificate signed by the keypair of the intermediates created above.
         let ee = make_end_entity(&intermediate_b);
-        let ee_cert = &EndEntityCert::try_from(&ee).unwrap();
+        let ee_cert = &EndEntityCert::try_from(ee.cert.der()).unwrap();
 
         // We should be able to create a valid path from EE to trust anchor.
         let path = verify_chain(trust_anchors, intermediates, ee_cert, None, None).unwrap();
@@ -1028,6 +1186,8 @@ mod tests {
 
         // We expect that without applying any additional constraints, that the path will be
         // EE -> intermediate_b_a -> intermediate_a -> trust_anchor.
+        let intermediate_a_cert =
+            Cert::from_der(untrusted::Input::from(intermediate_a.der())).unwrap();
         assert_eq!(path_intermediates.len(), 2);
         assert_eq!(
             path_intermediates[0].issuer(),
@@ -1060,12 +1220,273 @@ mod tests {
 
         // We expect that the path will now be
         // EE -> intermediate_b_c -> intermediate_c -> trust_anchor.
+        let intermediate_c_cert =
+            Cert::from_der(untrusted::Input::from(intermediate_c.der())).unwrap();
         assert_eq!(path_intermediates.len(), 2);
         assert_eq!(
             path_intermediates[0].issuer(),
             intermediate_c_cert.subject()
         );
         assert_eq!(path_intermediates[1].issuer(), trust_anchor_cert.subject());
+    }
+
+    #[test]
+    fn distrusted_spki() {
+        fn verify(
+            ee_cert: &EndEntityCert<'_>,
+            intermediates: &[CertificateDer<'_>],
+            trust_anchors: &[TrustAnchor<'_>],
+            distrusted_spkis: &[&[u8]],
+        ) -> Result<usize, Error> {
+            use core::time::Duration;
+
+            ChainOptions {
+                eku: KeyUsage::server_auth(),
+                supported_sig_algs: crate::ALL_VERIFICATION_ALGS,
+                trust_anchors,
+                intermediate_certs: intermediates,
+                revocation: None,
+                distrusted_spkis,
+            }
+            .build_chain(
+                ee_cert,
+                UnixTime::since_unix_epoch(Duration::from_secs(0x1fed_f00d)),
+                None,
+            )
+            .map(|path| path.intermediate_certificates().count())
+        }
+
+        let root = make_issuer("Root");
+        let trust_anchors = &[anchor_from_trusted_cert(root.der()).unwrap()];
+        let issuing_intermediate = make_intermediate("Issuing Intermediate", &root);
+        let unrelated = make_intermediate("Intermediate", &root);
+
+        let params = issuer_params("Intermediate");
+        let key = KeyPair::generate_for(test_utils::RCGEN_SIGNATURE_ALG).unwrap();
+        // Issue the same SPKI under two different issuers to test cross-signing.
+        let intermediate = params.signed_by(&key, &issuing_intermediate).unwrap();
+        let cross_signed = params.signed_by(&key, &root).unwrap();
+        let ee = make_end_entity(&Issuer::new(params, key));
+        let ee_cert = EndEntityCert::try_from(ee.cert.der()).unwrap();
+        let intermediates = &[
+            unrelated.der().clone(),
+            intermediate.der().clone(),
+            issuing_intermediate.der().clone(),
+        ];
+        assert_eq!(
+            verify(&ee_cert, intermediates, trust_anchors, DISTRUSTED_SPKIS),
+            Ok(2)
+        );
+
+        // Distrusting any certificate in the path, including the root or leaf, rejects the chain.
+        for cert in [
+            root.der(),
+            issuing_intermediate.der(),
+            intermediate.der(),
+            ee.cert.der(),
+        ] {
+            assert_eq!(
+                verify(
+                    &ee_cert,
+                    intermediates,
+                    trust_anchors,
+                    &[anchor_from_trusted_cert(cert)
+                        .unwrap()
+                        .subject_public_key_info
+                        .as_ref()]
+                ),
+                Err(Error::CertDistrusted)
+            );
+        }
+
+        // Distrusting an unused intermediate leaves the valid path usable.
+        assert_eq!(
+            verify(
+                &ee_cert,
+                intermediates,
+                trust_anchors,
+                &[anchor_from_trusted_cert(unrelated.der())
+                    .unwrap()
+                    .subject_public_key_info
+                    .as_ref()]
+            ),
+            Ok(2)
+        );
+
+        // A different cross-sign provides a valid path around the distrusted issuer.
+        let intermediates = &[
+            intermediate.der().clone(),
+            issuing_intermediate.der().clone(),
+            cross_signed.der().clone(),
+        ];
+        let issuer_spki = anchor_from_trusted_cert(issuing_intermediate.der()).unwrap();
+        assert_eq!(
+            verify(
+                &ee_cert,
+                intermediates,
+                trust_anchors,
+                &[issuer_spki.subject_public_key_info.as_ref()]
+            ),
+            Ok(1)
+        );
+
+        // Distrusting the shared SPKI rejects the original certificate and its cross-sign.
+        let intermediate_spki = anchor_from_trusted_cert(intermediate.der()).unwrap();
+        assert_eq!(
+            verify(
+                &ee_cert,
+                intermediates,
+                trust_anchors,
+                &[intermediate_spki.subject_public_key_info.as_ref()]
+            ),
+            Err(Error::CertDistrusted)
+        );
+
+        // Reject a distrusted intermediate before searching for its issuer.
+        assert_eq!(
+            verify(
+                &ee_cert,
+                &[intermediate.der().clone()],
+                &[],
+                &[intermediate_spki.subject_public_key_info.as_ref()]
+            ),
+            Err(Error::CertDistrusted)
+        );
+    }
+
+    fn make_intermediate(
+        org_name: impl Into<String>,
+        issuer: &Issuer<'_, impl SigningKey>,
+    ) -> CertifiedIssuer<'static, KeyPair> {
+        let params = issuer_params(org_name);
+        let key = KeyPair::generate_for(test_utils::RCGEN_SIGNATURE_ALG).unwrap();
+        CertifiedIssuer::signed_by(params, key, issuer).unwrap()
+    }
+
+    fn build_and_verify_degenerate_chain(
+        intermediate_count: usize,
+        trust_anchor: ChainTrustAnchor,
+    ) -> ControlFlow<Error, Error> {
+        let ca = make_issuer("Bogus Subject");
+        let mut intermediate_chain = IntermediateChain::new(intermediate_count, true, &ca);
+
+        let verify_trust_anchor = match trust_anchor {
+            ChainTrustAnchor::InChain => make_issuer("Bogus Trust Anchor"),
+            ChainTrustAnchor::NotInChain => ca,
+        };
+
+        let ee_cert = make_end_entity(&intermediate_chain.last_issuer);
+        let ee_cert = EndEntityCert::try_from(ee_cert.cert.der()).unwrap();
+        let webpki_ta = anchor_from_trusted_cert(verify_trust_anchor.der()).unwrap();
+        if matches!(trust_anchor, ChainTrustAnchor::InChain) {
+            // Note: we clone the trust anchor DER here because we can't move it into the chain
+            // as it's loaned to webpki_ta above.
+            intermediate_chain
+                .chain
+                .insert(0, verify_trust_anchor.der().to_owned())
+        }
+
+        verify_chain(
+            &[webpki_ta],
+            &intermediate_chain.chain,
+            &ee_cert,
+            None,
+            None,
+        )
+        .map(|_| ())
+        .unwrap_err()
+    }
+
+    #[cfg(feature = "alloc")]
+    enum ChainTrustAnchor {
+        NotInChain,
+        InChain,
+    }
+
+    fn build_and_verify_linear_chain(chain_length: usize) -> Result<(), ControlFlow<Error, Error>> {
+        let ca = make_issuer(format!("Bogus Subject {chain_length}"));
+        let intermediate_chain = IntermediateChain::new(chain_length, false, &ca);
+
+        let anchor = anchor_from_trusted_cert(ca.der()).unwrap();
+        let anchors = slice::from_ref(&anchor);
+
+        let ee_cert = make_end_entity(&intermediate_chain.last_issuer);
+        let ee_cert = EndEntityCert::try_from(ee_cert.cert.der()).unwrap();
+
+        let expected_chain = |path: &VerifiedPath<'_>| {
+            assert_eq!(path.anchor().subject, anchor.subject);
+            assert!(public_values_eq(path.end_entity().subject, ee_cert.subject));
+            assert_eq!(path.intermediate_certificates().count(), chain_length);
+
+            let intermediate_certs = intermediate_chain
+                .chain
+                .iter()
+                .map(|der| Cert::from_der(untrusted::Input::from(der)).unwrap())
+                .collect::<Vec<_>>();
+
+            for (cert, expected) in path
+                .intermediate_certificates()
+                .rev()
+                .zip(intermediate_certs.iter())
+            {
+                assert!(public_values_eq(cert.subject, expected.subject));
+                assert_eq!(cert.der(), expected.der());
+            }
+
+            for (cert, expected) in path
+                .intermediate_certificates()
+                .zip(intermediate_certs.iter().rev())
+            {
+                assert!(public_values_eq(cert.subject, expected.subject));
+                assert_eq!(cert.der(), expected.der());
+            }
+
+            Ok(())
+        };
+
+        verify_chain(
+            anchors,
+            &intermediate_chain.chain,
+            &ee_cert,
+            Some(&expected_chain),
+            None,
+        )
+        .map(|_| ())
+    }
+
+    struct IntermediateChain {
+        last_issuer: Issuer<'static, KeyPair>,
+        chain: Vec<CertificateDer<'static>>,
+    }
+
+    impl IntermediateChain {
+        fn new(chain_length: usize, all_same_subject: bool, ca_cert: &Issuer<'_, KeyPair>) -> Self {
+            let mut chain = Vec::with_capacity(chain_length);
+
+            let mut prev = None;
+            for i in 0..chain_length {
+                let issuer = match &prev {
+                    Some(prev) => prev,
+                    None => ca_cert,
+                };
+
+                let intermediate = issuer_params(match all_same_subject {
+                    true => "Bogus Subject".to_string(),
+                    false => format!("Bogus Subject {i}"),
+                });
+
+                let key_pair = KeyPair::generate_for(test_utils::RCGEN_SIGNATURE_ALG).unwrap();
+                let cert = intermediate.signed_by(&key_pair, issuer).unwrap();
+
+                chain.push(cert.der().clone());
+                prev = Some(Issuer::new(intermediate, key_pair));
+            }
+
+            Self {
+                last_issuer: prev.unwrap(),
+                chain,
+            }
+        }
     }
 
     fn verify_chain<'a>(
@@ -1085,6 +1506,7 @@ mod tests {
             trust_anchors,
             intermediate_certs,
             revocation: None,
+            distrusted_spkis: DISTRUSTED_SPKIS,
         };
 
         match opts.build_chain_inner(

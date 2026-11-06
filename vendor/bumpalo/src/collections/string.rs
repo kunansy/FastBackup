@@ -679,9 +679,21 @@ impl<'bump> String<'bump> {
     /// let s = String::from_str_in("hello", &b);
     /// assert_eq!(s, "hello");
     /// ```
+    #[inline]
     pub fn from_str_in(s: &str, bump: &'bump Bump) -> String<'bump> {
-        let mut t = String::with_capacity_in(s.len(), bump);
-        t.push_str(s);
+        let len = s.len();
+        let mut t = String::with_capacity_in(len, bump);
+        // SAFETY:
+        // * `src` is valid for reads of `s.len()` bytes by virtue of being an allocated `&str`.
+        // * `dst` is valid for writes of `s.len()` bytes as `String::with_capacity_in(s.len(), bump)`
+        //   above guarantees that.
+        // * Alignment is not relevant as `u8` has no alignment requirements.
+        // * Source and destination ranges cannot overlap as we just reserved the destination
+        //   range from the bump.
+        unsafe { ptr::copy_nonoverlapping(s.as_ptr(), t.vec.as_mut_ptr(), len) };
+        // SAFETY: We reserved sufficent capacity for the string above.
+        // The elements at `0..len` were initialized by `copy_nonoverlapping` above.
+        unsafe { t.vec.set_len(len) };
         t
     }
 
@@ -925,7 +937,7 @@ impl<'bump> String<'bump> {
     /// ```
     #[inline]
     pub fn push_str(&mut self, string: &str) {
-        self.vec.extend_from_slice(string.as_bytes())
+        self.vec.extend_from_slice_copy(string.as_bytes())
     }
 
     /// Returns this `String`'s capacity, in bytes.
@@ -1280,35 +1292,57 @@ impl<'bump> String<'bump> {
     where
         F: FnMut(char) -> bool,
     {
-        let len = self.len();
-        let mut del_bytes = 0;
-        let mut idx = 0;
+        struct SetLenOnDrop<'a, 'bump> {
+            s: &'a mut String<'bump>,
+            idx: usize,
+            del_bytes: usize,
+        }
 
-        while idx < len {
-            let ch = unsafe { self.get_unchecked(idx..len).chars().next().unwrap() };
+        impl<'a, 'bump> Drop for SetLenOnDrop<'a, 'bump> {
+            fn drop(&mut self) {
+                let new_len = self.idx - self.del_bytes;
+                debug_assert!(new_len <= self.s.len());
+                unsafe { self.s.vec.set_len(new_len) };
+            }
+        }
+
+        let len = self.len();
+        let mut guard = SetLenOnDrop {
+            s: self,
+            idx: 0,
+            del_bytes: 0,
+        };
+
+        while guard.idx < len {
+            let ch =
+                // SAFETY: `guard.idx` is positive-or-zero and less that len so the `get_unchecked`
+                // is in bound. `self` is valid UTF-8 like string and the returned slice starts at
+                // a unicode code point so the `Chars` always return one character.
+                unsafe { guard.s.get_unchecked(guard.idx..len).chars().next().unwrap_unchecked() };
             let ch_len = ch.len_utf8();
 
             if !f(ch) {
-                del_bytes += ch_len;
-            } else if del_bytes > 0 {
-                unsafe {
-                    ptr::copy(
-                        self.vec.as_ptr().add(idx),
-                        self.vec.as_mut_ptr().add(idx - del_bytes),
-                        ch_len,
-                    );
-                }
+                guard.del_bytes += ch_len;
+            } else if guard.del_bytes > 0 {
+                // SAFETY: `guard.idx` is in bound and `guard.del_bytes` represent the number of
+                // bytes that are erased from the string so the resulting `guard.idx -
+                // guard.del_bytes` always represent a valid unicode code point.
+                //
+                // `guard.del_bytes` >= `ch.len_utf8()`, so taking a slice with `ch.len_utf8()` len
+                // is safe.
+                ch.encode_utf8(unsafe {
+                    core::slice::from_raw_parts_mut(
+                        guard.s.as_mut_ptr().add(guard.idx - guard.del_bytes),
+                        ch.len_utf8(),
+                    )
+                });
             }
 
             // Point idx to the next char
-            idx += ch_len;
+            guard.idx += ch_len;
         }
 
-        if del_bytes > 0 {
-            unsafe {
-                self.vec.set_len(len - del_bytes);
-            }
-        }
+        drop(guard);
     }
 
     /// Inserts a character into this `String` at a byte position.
@@ -2139,3 +2173,19 @@ impl<'a, 'bump> DoubleEndedIterator for Drain<'a, 'bump> {
 }
 
 impl<'a, 'bump> FusedIterator for Drain<'a, 'bump> {}
+
+#[cfg(feature = "serde")]
+mod serialize {
+    use super::*;
+
+    use serde::{Serialize, Serializer};
+
+    impl<'bump> Serialize for String<'bump> {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            serializer.serialize_str(&self)
+        }
+    }
+}

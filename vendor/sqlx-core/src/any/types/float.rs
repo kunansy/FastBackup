@@ -1,5 +1,5 @@
 use crate::any::{Any, AnyArgumentBuffer, AnyTypeInfo, AnyTypeInfoKind, AnyValueKind, AnyValueRef};
-use crate::database::{HasArguments, HasValueRef};
+use crate::database::Database;
 use crate::decode::Decode;
 use crate::encode::{Encode, IsNull};
 use crate::error::BoxDynError;
@@ -13,17 +13,17 @@ impl Type<Any> for f32 {
     }
 }
 
-impl<'q> Encode<'q, Any> for f32 {
-    fn encode_by_ref(&self, buf: &mut AnyArgumentBuffer<'q>) -> IsNull {
+impl Encode<'_, Any> for f32 {
+    fn encode_by_ref(&self, buf: &mut AnyArgumentBuffer) -> Result<IsNull, BoxDynError> {
         buf.0.push(AnyValueKind::Real(*self));
-        IsNull::No
+        Ok(IsNull::No)
     }
 }
 
 impl<'r> Decode<'r, Any> for f32 {
     fn decode(value: AnyValueRef<'r>) -> Result<Self, BoxDynError> {
         match value.kind {
-            AnyValueKind::Real(r) => Ok(r),
+            AnyValueKind::Real(r) => Ok(*r),
             other => other.unexpected(),
         }
     }
@@ -37,19 +37,22 @@ impl Type<Any> for f64 {
     }
 }
 
-impl<'q> Encode<'q, Any> for f64 {
-    fn encode_by_ref(&self, buf: &mut <Any as HasArguments<'q>>::ArgumentBuffer) -> IsNull {
+impl Encode<'_, Any> for f64 {
+    fn encode_by_ref(
+        &self,
+        buf: &mut <Any as Database>::ArgumentBuffer,
+    ) -> Result<IsNull, BoxDynError> {
         buf.0.push(AnyValueKind::Double(*self));
-        IsNull::No
+        Ok(IsNull::No)
     }
 }
 
 impl<'r> Decode<'r, Any> for f64 {
-    fn decode(value: <Any as HasValueRef<'r>>::ValueRef) -> Result<Self, BoxDynError> {
+    fn decode(value: <Any as Database>::ValueRef<'r>) -> Result<Self, BoxDynError> {
         match value.kind {
             // Widening is safe
-            AnyValueKind::Real(r) => Ok(r as f64),
-            AnyValueKind::Double(d) => Ok(d),
+            AnyValueKind::Real(r) => Ok(*r as f64),
+            AnyValueKind::Double(d) => Ok(*d),
             other => other.unexpected(),
         }
     }

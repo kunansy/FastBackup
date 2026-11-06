@@ -8,6 +8,24 @@ use tokio::io::{AsyncBufRead, Lines};
 pin_project! {
     /// A wrapper around [`tokio::io::Lines`] that implements [`Stream`].
     ///
+    /// # Example
+    ///
+    /// ```
+    /// use tokio::io::AsyncBufReadExt;
+    /// use tokio_stream::wrappers::LinesStream;
+    /// use tokio_stream::StreamExt;
+    ///
+    /// # #[tokio::main(flavor = "current_thread")]
+    /// # async fn main() -> std::io::Result<()> {
+    /// let input = b"Hello\nWorld\n";
+    /// let mut stream = LinesStream::new(input.lines());
+    /// while let Some(line) = stream.next().await {
+    ///     println!("{}", line?);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
     /// [`tokio::io::Lines`]: struct@tokio::io::Lines
     /// [`Stream`]: trait@crate::Stream
     #[derive(Debug)]
@@ -30,7 +48,6 @@ impl<R> LinesStream<R> {
     }
 
     /// Obtain a pinned reference to the inner `Lines<R>`.
-    #[allow(clippy::wrong_self_convention)] // https://github.com/rust-lang/rust-clippy/issues/4546
     pub fn as_pin_mut(self: Pin<&mut Self>) -> Pin<&mut Lines<R>> {
         self.project().inner
     }

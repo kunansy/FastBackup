@@ -12,24 +12,24 @@ use std::{cell::RefCell, collections::hash_map, env, fs, hash::Hasher, time::Sys
 
 use super::tz_info::TimeZone;
 use super::{FixedOffset, NaiveDateTime};
-use crate::{Datelike, LocalResult};
+use crate::MappedLocalTime;
 
-pub(super) fn offset_from_utc_datetime(utc: &NaiveDateTime) -> LocalResult<FixedOffset> {
+pub(super) fn offset_from_utc_datetime(utc: &NaiveDateTime) -> MappedLocalTime<FixedOffset> {
     offset(utc, false)
 }
 
-pub(super) fn offset_from_local_datetime(local: &NaiveDateTime) -> LocalResult<FixedOffset> {
+pub(super) fn offset_from_local_datetime(local: &NaiveDateTime) -> MappedLocalTime<FixedOffset> {
     offset(local, true)
 }
 
-fn offset(d: &NaiveDateTime, local: bool) -> LocalResult<FixedOffset> {
+fn offset(d: &NaiveDateTime, local: bool) -> MappedLocalTime<FixedOffset> {
     TZ_INFO.with(|maybe_cache| {
         maybe_cache.borrow_mut().get_or_insert_with(Cache::default).offset(*d, local)
     })
 }
 
 // we have to store the `Cache` in an option as it can't
-// be initalized in a static context.
+// be initialized in a static context.
 thread_local! {
     static TZ_INFO: RefCell<Option<Cache>> = Default::default();
 }
@@ -74,15 +74,15 @@ struct Cache {
 #[cfg(target_os = "aix")]
 const TZDB_LOCATION: &str = "/usr/share/lib/zoneinfo";
 
-#[cfg(not(any(target_os = "android", target_os = "aix")))]
+#[cfg(not(any(target_os = "android", target_os = "aix", target_env = "ohos")))]
 const TZDB_LOCATION: &str = "/usr/share/zoneinfo";
 
 fn fallback_timezone() -> Option<TimeZone> {
     let tz_name = iana_time_zone::get_timezone().ok()?;
-    #[cfg(not(target_os = "android"))]
-    let bytes = fs::read(format!("{}/{}", TZDB_LOCATION, tz_name)).ok()?;
-    #[cfg(target_os = "android")]
-    let bytes = android_tzdata::find_tz_data(&tz_name).ok()?;
+    #[cfg(not(any(target_os = "android", target_env = "ohos")))]
+    let bytes = fs::read(format!("{TZDB_LOCATION}/{tz_name}")).ok()?;
+    #[cfg(any(target_os = "android", target_env = "ohos"))]
+    let bytes = crate::offset::local::tz_data::for_zone(&tz_name).ok()??;
     TimeZone::from_tz_data(&bytes).ok()
 }
 
@@ -104,7 +104,7 @@ fn current_zone(var: Option<&str>) -> TimeZone {
 }
 
 impl Cache {
-    fn offset(&mut self, d: NaiveDateTime, local: bool) -> LocalResult<FixedOffset> {
+    fn offset(&mut self, d: NaiveDateTime, local: bool) -> MappedLocalTime<FixedOffset> {
         let now = SystemTime::now();
 
         match now.duration_since(self.last_checked) {
@@ -151,21 +151,21 @@ impl Cache {
         if !local {
             let offset = self
                 .zone
-                .find_local_time_type(d.timestamp())
+                .find_local_time_type(d.and_utc().timestamp())
                 .expect("unable to select local time type")
                 .offset();
 
             return match FixedOffset::east_opt(offset) {
-                Some(offset) => LocalResult::Single(offset),
-                None => LocalResult::None,
+                Some(offset) => MappedLocalTime::Single(offset),
+                None => MappedLocalTime::None,
             };
         }
 
         // we pass through the year as the year of a local point in time must either be valid in that locale, or
-        // the entire time was skipped in which case we will return LocalResult::None anyway.
+        // the entire time was skipped in which case we will return MappedLocalTime::None anyway.
         self.zone
-            .find_local_time_type_from_local(d.timestamp(), d.year())
+            .find_local_time_type_from_local(d)
             .expect("unable to select local time type")
-            .map(|o| FixedOffset::east_opt(o.offset()).unwrap())
+            .and_then(|o| FixedOffset::east_opt(o.offset()))
     }
 }

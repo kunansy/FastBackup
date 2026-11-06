@@ -3,12 +3,12 @@ use std::borrow::Cow;
 use crate::ast::Fields;
 use crate::codegen;
 use crate::options::{Core, InputField, ParseAttribute};
-use crate::util::SpannedValue;
+use crate::util::{Flag, SpannedValue};
 use crate::{Error, FromMeta, Result};
 
 #[derive(Debug, Clone)]
 pub struct InputVariant {
-    ident: syn::Ident,
+    pub ident: syn::Ident,
     attr_name: Option<String>,
     data: Fields<InputField>,
     skip: Option<bool>,
@@ -17,21 +17,30 @@ pub struct InputVariant {
     pub word: Option<SpannedValue<bool>>,
     /// Whether or not unknown fields are acceptable in this
     allow_unknown_fields: Option<bool>,
+    pub transparent: Flag,
 }
 
 impl InputVariant {
+    pub fn is_unit_variant(&self) -> bool {
+        self.data.is_unit()
+    }
+
+    pub fn is_skipped(&self) -> bool {
+        self.skip.unwrap_or_default()
+    }
+
     pub fn as_codegen_variant<'a>(&'a self, ty_ident: &'a syn::Ident) -> codegen::Variant<'a> {
         codegen::Variant {
             ty_ident,
             variant_ident: &self.ident,
             name_in_attr: self
                 .attr_name
-                .as_ref()
+                .as_deref()
                 .map_or_else(|| Cow::Owned(self.ident.to_string()), Cow::Borrowed),
             data: self.data.as_ref().map(InputField::as_codegen_field),
-            skip: self.skip.unwrap_or_default(),
-            word: *self.word.unwrap_or_default(),
+            skip: self.is_skipped(),
             allow_unknown_fields: self.allow_unknown_fields.unwrap_or_default(),
+            transparent: self.transparent.is_present(),
         }
     }
 
@@ -43,6 +52,7 @@ impl InputVariant {
             skip: Default::default(),
             word: Default::default(),
             allow_unknown_fields: None,
+            transparent: Flag::default(),
         })
         .parse_attributes(&v.attrs)?;
 
@@ -101,6 +111,12 @@ impl ParseAttribute for InputVariant {
             }
 
             self.skip = FromMeta::from_meta(mi)?;
+        } else if path.is_ident("transparent") {
+            if self.transparent.is_present() {
+                return Err(Error::duplicate_field_path(path).with_span(mi));
+            }
+
+            self.transparent = FromMeta::from_meta(mi)?;
         } else if path.is_ident("word") {
             if self.word.is_some() {
                 return Err(Error::duplicate_field_path(path).with_span(mi));

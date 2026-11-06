@@ -1,5 +1,8 @@
-use sqlx::any::AnyRow;
+use sqlx::any::{install_default_drivers, AnyRow};
 use sqlx::{Any, Connection, Executor, Row};
+use sqlx_core::error::BoxDynError;
+use sqlx_core::sql_str::AssertSqlSafe;
+use sqlx_core::Error;
 use sqlx_test::new;
 
 #[sqlx_macros::test]
@@ -46,7 +49,7 @@ async fn it_executes_with_pool() -> anyhow::Result<()> {
 
 #[sqlx_macros::test]
 async fn it_does_not_stop_stream_after_decoding_error() -> anyhow::Result<()> {
-    use futures::stream::StreamExt;
+    use futures_util::stream::StreamExt;
 
     sqlx::any::install_default_drivers();
 
@@ -106,7 +109,7 @@ async fn it_can_fail_and_recover() -> anyhow::Result<()> {
 
         // now try and use the connection
         let val: i32 = conn
-            .fetch_one(&*format!("SELECT {i}"))
+            .fetch_one(AssertSqlSafe(format!("SELECT {i}")))
             .await?
             .get_unchecked(0);
 
@@ -132,11 +135,75 @@ async fn it_can_fail_and_recover_with_pool() -> anyhow::Result<()> {
 
         // now try and use the connection
         let val: i32 = pool
-            .fetch_one(&*format!("SELECT {i}"))
+            .fetch_one(AssertSqlSafe(format!("SELECT {i}")))
             .await?
             .get_unchecked(0);
 
         assert_eq!(val, i);
+    }
+
+    Ok(())
+}
+
+#[sqlx_macros::test]
+async fn it_can_query_by_string_args() -> sqlx::Result<()> {
+    install_default_drivers();
+
+    let mut conn = new::<Any>().await?;
+
+    let string = "Hello, world!".to_string();
+    let ref tuple = ("Hello, world!".to_string(),);
+
+    #[cfg(feature = "postgres")]
+    const SQL: &str = "SELECT 'Hello, world!' \
+        FROM (SELECT 1) AS t \
+        WHERE 'Hello, world!' IN ($1, $2, $3, $4, $5, $6, $7)";
+
+    #[cfg(not(feature = "postgres"))]
+    const SQL: &str = "SELECT 'Hello, world!' \
+        FROM (SELECT 1) AS t \
+        WHERE 'Hello, world!' IN (?, ?, ?, ?, ?, ?, ?)";
+
+    {
+        let query = sqlx::query(SQL)
+            // validate flexibility of lifetimes
+            .bind(&string)
+            .bind(&string[..])
+            .bind(Some(&string))
+            .bind(Some(&string[..]))
+            .bind(&Option::<String>::None)
+            .bind(&string.clone())
+            .bind(&tuple.0); // should not get "temporary value is freed at the end of this statement" here
+
+        let result = query.fetch_one(&mut conn).await?;
+
+        let column_0: String = result.try_get(0)?;
+
+        assert_eq!(column_0, string);
+    }
+
+    {
+        let mut query = sqlx::query(SQL);
+
+        let query = || -> Result<_, BoxDynError> {
+            // validate flexibility of lifetimes
+            query.try_bind(&string)?;
+            query.try_bind(&string[..])?;
+            query.try_bind(Some(&string))?;
+            query.try_bind(Some(&string[..]))?;
+            query.try_bind(&Option::<String>::None)?;
+            query.try_bind(&string.clone())?;
+            query.try_bind(&tuple.0)?;
+
+            Ok(query)
+        }()
+        .map_err(Error::Encode)?;
+
+        let result = query.fetch_one(&mut conn).await?;
+
+        let column_0: String = result.try_get(0)?;
+
+        assert_eq!(column_0, string);
     }
 
     Ok(())

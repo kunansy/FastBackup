@@ -4,7 +4,7 @@ use tokio::time::{sleep, Sleep};
 
 use core::future::Future;
 use core::pin::Pin;
-use core::task::{Context, Poll};
+use core::task::{ready, Context, Poll};
 use pin_project_lite::pin_project;
 use std::time::Duration;
 
@@ -32,6 +32,12 @@ impl<S: Stream> ChunksTimeout<S> {
             items: Vec::with_capacity(max_size),
             cap: max_size,
         }
+    }
+
+    /// Consumes the [`ChunksTimeout`] and then returns all buffered items.
+    pub fn into_remainder(mut self: Pin<&mut Self>) -> Vec<S::Item> {
+        let me = self.as_mut().project();
+        std::mem::take(me.items)
     }
 }
 

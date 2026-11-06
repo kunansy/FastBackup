@@ -10,9 +10,9 @@
 //! | Database | Version | Driver |
 //! | - | - | - |
 //! | [MariaDB] | 10.1+ | [`mysql`] |
-//! | [Microsoft SQL Server] | 2019 | [`mssql`] |
+//! | [Microsoft SQL Server] | 2019 | [`mssql`] (Pending a full rewrite) |
 //! | [MySQL] | 5.6, 5.7, 8.0 | [`mysql`] |
-//! | [PostgreSQL] | 9.5+ | [`postgres`] |
+//! | [PostgreSQL] | 13+ | [`postgres`] |
 //! | [SQLite] | 3.20.1+ | [`sqlite`] |
 //!
 //! [MariaDB]: https://mariadb.com/
@@ -69,15 +69,7 @@ use crate::value::{Value, ValueRef};
 ///
 /// This trait encapsulates a complete set of traits that implement a driver for a
 /// specific database (e.g., MySQL, PostgreSQL).
-pub trait Database:
-    'static
-    + Sized
-    + Send
-    + Debug
-    + for<'r> HasValueRef<'r, Database = Self>
-    + for<'q> HasArguments<'q, Database = Self>
-    + for<'q> HasStatement<'q, Database = Self>
-{
+pub trait Database: 'static + Sized + Send + Debug {
     /// The concrete `Connection` implementation for this database.
     type Connection: Connection<Database = Self>;
 
@@ -99,61 +91,23 @@ pub trait Database:
     /// The concrete type used to hold an owned copy of the not-yet-decoded value that was
     /// received from the database.
     type Value: Value<Database = Self> + 'static;
+    /// The concrete type used to hold a reference to the not-yet-decoded value that has just been
+    /// received from the database.
+    type ValueRef<'r>: ValueRef<'r, Database = Self>;
+
+    /// The concrete `Arguments` implementation for this database.
+    type Arguments: Arguments<Database = Self>;
+    /// The concrete type used as a buffer for arguments while encoding.
+    type ArgumentBuffer;
+
+    /// The concrete `Statement` implementation for this database.
+    type Statement: Statement<Database = Self>;
 
     /// The display name for this database driver.
     const NAME: &'static str;
 
     /// The schemes for database URLs that should match this driver.
     const URL_SCHEMES: &'static [&'static str];
-}
-
-/// Associate [`Database`] with a [`ValueRef`](crate::value::ValueRef) of a generic lifetime.
-///
-/// ---
-///
-/// The upcoming Rust feature, [Generic Associated Types], should obviate
-/// the need for this trait.
-///
-/// [Generic Associated Types]: https://github.com/rust-lang/rust/issues/44265
-pub trait HasValueRef<'r> {
-    type Database: Database;
-
-    /// The concrete type used to hold a reference to the not-yet-decoded value that has just been
-    /// received from the database.
-    type ValueRef: ValueRef<'r, Database = Self::Database>;
-}
-
-/// Associate [`Database`] with an [`Arguments`](crate::arguments::Arguments) of a generic lifetime.
-///
-/// ---
-///
-/// The upcoming Rust feature, [Generic Associated Types], should obviate
-/// the need for this trait.
-///
-/// [Generic Associated Types]: https://github.com/rust-lang/rust/issues/44265
-pub trait HasArguments<'q> {
-    type Database: Database;
-
-    /// The concrete `Arguments` implementation for this database.
-    type Arguments: Arguments<'q, Database = Self::Database>;
-
-    /// The concrete type used as a buffer for arguments while encoding.
-    type ArgumentBuffer;
-}
-
-/// Associate [`Database`] with a [`Statement`](crate::statement::Statement) of a generic lifetime.
-///
-/// ---
-///
-/// The upcoming Rust feature, [Generic Associated Types], should obviate
-/// the need for this trait.
-///
-/// [Generic Associated Types]: https://github.com/rust-lang/rust/issues/44265
-pub trait HasStatement<'q> {
-    type Database: Database;
-
-    /// The concrete `Statement` implementation for this database.
-    type Statement: Statement<'q, Database = Self::Database>;
 }
 
 /// A [`Database`] that maintains a client-side cache of prepared statements.

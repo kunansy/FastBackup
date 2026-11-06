@@ -1,6 +1,6 @@
 use proc_macro2::TokenStream;
 use quote::{quote, ToTokens, TokenStreamExt};
-use syn::{GenericParam, Generics, Path, TraitBound, TraitBoundModifier, TypeParamBound};
+use syn::{GenericParam, Generics, Path, TraitBound, TraitBoundModifiers, TypeParamBound};
 
 use crate::codegen::TraitImpl;
 use crate::usage::IdentSet;
@@ -25,14 +25,19 @@ pub trait OuterFromImpl<'a> {
         let used = base.used_type_params();
         let generics = compute_impl_bounds(self.trait_bound(), base.generics.clone(), &used);
         let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
-
-        tokens.append_all(quote!(
+        let impl_ = quote! {
+            #[automatically_derived]
+            #[allow(clippy::manual_unwrap_or_default)]
+            #[allow(clippy::needless_continue)]
+            #[allow(unused_qualifications)]
             impl #impl_generics #trayt for #ty_ident #ty_generics
                 #where_clause
             {
                 #body
             }
-        ));
+        };
+
+        tokens.append_all(crate::codegen::wrap_in_const(&impl_, base.krate));
     }
 }
 
@@ -43,8 +48,9 @@ fn compute_impl_bounds(bound: Path, mut generics: Generics, applies_to: &IdentSe
 
     let added_bound = TypeParamBound::Trait(TraitBound {
         paren_token: None,
-        modifier: TraitBoundModifier::None,
         lifetimes: None,
+        modifiers: TraitBoundModifiers::default(),
+        maybe: None,
         path: bound,
     });
 

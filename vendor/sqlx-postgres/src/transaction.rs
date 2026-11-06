@@ -1,4 +1,5 @@
-use futures_core::future::BoxFuture;
+use sqlx_core::database::Database;
+use sqlx_core::sql_str::SqlStr;
 
 use crate::error::Error;
 use crate::executor::Executor;
@@ -13,51 +14,64 @@ pub struct PgTransactionManager;
 impl TransactionManager for PgTransactionManager {
     type Database = Postgres;
 
-    fn begin(conn: &mut PgConnection) -> BoxFuture<'_, Result<(), Error>> {
-        Box::pin(async move {
-            let rollback = Rollback::new(conn);
-            let query = begin_ansi_transaction_sql(rollback.conn.transaction_depth);
-            rollback.conn.queue_simple_query(&query);
-            rollback.conn.transaction_depth += 1;
-            rollback.conn.wait_until_ready().await?;
-            rollback.defuse();
+    async fn begin(conn: &mut PgConnection, statement: Option<SqlStr>) -> Result<(), Error> {
+        let depth = conn.inner.transaction_depth;
 
-            Ok(())
-        })
+        let statement = match statement {
+            // custom `BEGIN` statements are not allowed if we're already in
+            // a transaction (we need to issue a `SAVEPOINT` instead)
+            Some(_) if depth > 0 => return Err(Error::InvalidSavePointStatement),
+            Some(statement) => statement,
+            None => begin_ansi_transaction_sql(depth),
+        };
+
+        let rollback = Rollback::new(conn);
+        rollback.conn.queue_simple_query(statement.as_str())?;
+        rollback.conn.wait_until_ready().await?;
+        if !rollback.conn.in_transaction() {
+            return Err(Error::BeginFailed);
+        }
+        rollback.conn.inner.transaction_depth += 1;
+        rollback.defuse();
+
+        Ok(())
     }
 
-    fn commit(conn: &mut PgConnection) -> BoxFuture<'_, Result<(), Error>> {
-        Box::pin(async move {
-            if conn.transaction_depth > 0 {
-                conn.execute(&*commit_ansi_transaction_sql(conn.transaction_depth))
-                    .await?;
+    async fn commit(conn: &mut PgConnection) -> Result<(), Error> {
+        if conn.inner.transaction_depth > 0 {
+            conn.execute(commit_ansi_transaction_sql(conn.inner.transaction_depth))
+                .await?;
 
-                conn.transaction_depth -= 1;
-            }
+            conn.inner.transaction_depth -= 1;
+        }
 
-            Ok(())
-        })
+        Ok(())
     }
 
-    fn rollback(conn: &mut PgConnection) -> BoxFuture<'_, Result<(), Error>> {
-        Box::pin(async move {
-            if conn.transaction_depth > 0 {
-                conn.execute(&*rollback_ansi_transaction_sql(conn.transaction_depth))
-                    .await?;
+    async fn rollback(conn: &mut PgConnection) -> Result<(), Error> {
+        if conn.inner.transaction_depth > 0 {
+            conn.execute(rollback_ansi_transaction_sql(conn.inner.transaction_depth))
+                .await?;
 
-                conn.transaction_depth -= 1;
-            }
+            conn.inner.transaction_depth -= 1;
+        }
 
-            Ok(())
-        })
+        Ok(())
     }
 
     fn start_rollback(conn: &mut PgConnection) {
-        if conn.transaction_depth > 0 {
-            conn.queue_simple_query(&rollback_ansi_transaction_sql(conn.transaction_depth));
+        if conn.inner.transaction_depth > 0 {
+            conn.queue_simple_query(
+                rollback_ansi_transaction_sql(conn.inner.transaction_depth).as_str(),
+            )
+            .expect("BUG: Rollback query somehow too large for protocol");
 
-            conn.transaction_depth -= 1;
+            conn.inner.transaction_depth -= 1;
         }
+    }
+
+    fn get_transaction_depth(conn: &<Self::Database as Database>::Connection) -> usize {
+        conn.inner.transaction_depth
     }
 }
 

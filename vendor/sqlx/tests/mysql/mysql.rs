@@ -1,14 +1,40 @@
-use futures::TryStreamExt;
+use anyhow::Context;
+use futures_util::TryStreamExt;
 use sqlx::mysql::{MySql, MySqlConnection, MySqlPool, MySqlPoolOptions, MySqlRow};
-use sqlx::{Column, Connection, Executor, Row, Statement, TypeInfo};
+use sqlx::{Column, Connection, Executor, Row, SqlSafeStr, Statement, TypeInfo};
+use sqlx_core::connection::ConnectOptions;
+use sqlx_core::types::Type;
+use sqlx_mysql::MySqlConnectOptions;
 use sqlx_test::{new, setup_if_needed};
 use std::env;
+use url::Url;
 
 #[sqlx_macros::test]
 async fn it_connects() -> anyhow::Result<()> {
     let mut conn = new::<MySql>().await?;
 
     conn.ping().await?;
+    conn.close().await?;
+
+    Ok(())
+}
+
+#[sqlx_macros::test]
+async fn it_connects_without_password() -> anyhow::Result<()> {
+    setup_if_needed();
+
+    let mut url = Url::parse(&env::var("DATABASE_URL").context("expected DATABASE_URL")?)
+        .context("error parsing DATABASE_URL")?;
+
+    url.set_username("no_password").unwrap();
+    url.set_password(None).unwrap();
+
+    let mut conn = MySqlConnectOptions::from_url(&url)?.connect().await?;
+
+    let vars = sqlx::raw_sql("SHOW VARIABLES").fetch_all(&mut conn).await?;
+
+    assert!(!vars.is_empty());
+
     conn.close().await?;
 
     Ok(())
@@ -238,6 +264,57 @@ async fn it_caches_statements() -> anyhow::Result<()> {
 }
 
 #[sqlx_macros::test]
+async fn it_closes_statements_with_persistent_disabled() -> anyhow::Result<()> {
+    let mut conn = new::<MySql>().await?;
+
+    let old_statement_count = select_statement_count(&mut conn).await.unwrap_or_default();
+
+    for i in 0..2 {
+        let row = sqlx::query("SELECT ? AS val")
+            .bind(i)
+            .persistent(false)
+            .fetch_one(&mut conn)
+            .await?;
+
+        let val: i32 = row.get("val");
+
+        assert_eq!(i, val);
+    }
+
+    let new_statement_count = select_statement_count(&mut conn).await.unwrap_or_default();
+
+    assert_eq!(old_statement_count, new_statement_count);
+
+    Ok(())
+}
+
+#[sqlx_macros::test]
+async fn it_closes_statements_with_cache_disabled() -> anyhow::Result<()> {
+    setup_if_needed();
+
+    let mut url = url::Url::parse(&env::var("DATABASE_URL")?)?;
+    url.query_pairs_mut()
+        .append_pair("statement-cache-capacity", "0");
+
+    let mut conn = MySqlConnection::connect(url.as_ref()).await?;
+
+    let old_statement_count = select_statement_count(&mut conn).await.unwrap_or_default();
+
+    for index in 1..=10_i32 {
+        let _ = sqlx::query("SELECT ?")
+            .bind(index)
+            .execute(&mut conn)
+            .await?;
+    }
+
+    let new_statement_count = select_statement_count(&mut conn).await.unwrap_or_default();
+
+    assert_eq!(old_statement_count, new_statement_count);
+
+    Ok(())
+}
+
+#[sqlx_macros::test]
 async fn it_can_bind_null_and_non_null_issue_540() -> anyhow::Result<()> {
     let mut conn = new::<MySql>().await?;
 
@@ -276,7 +353,7 @@ async fn it_can_bind_only_null_issue_540() -> anyhow::Result<()> {
 async fn it_can_bind_and_return_years() -> anyhow::Result<()> {
     let mut conn = new::<MySql>().await?;
 
-    conn.execute(
+    sqlx::raw_sql(
         r#"
 CREATE TEMPORARY TABLE too_many_years (
     id INT PRIMARY KEY AUTO_INCREMENT,
@@ -284,6 +361,7 @@ CREATE TEMPORARY TABLE too_many_years (
 );
     "#,
     )
+    .execute(&mut conn)
     .await?;
 
     sqlx::query(
@@ -314,7 +392,9 @@ async fn it_can_prepare_then_execute() -> anyhow::Result<()> {
         .await?
         .last_insert_id();
 
-    let statement = tx.prepare("SELECT * FROM tweet WHERE id = ?").await?;
+    let statement = tx
+        .prepare("SELECT * FROM tweet WHERE id = ?".into_sql_str())
+        .await?;
 
     assert_eq!(statement.column(0).name(), "id");
     assert_eq!(statement.column(1).name(), "created_at");
@@ -383,7 +463,7 @@ async fn test_issue_622() -> anyhow::Result<()> {
         }));
     }
 
-    futures::future::try_join_all(handles).await?;
+    futures_util::future::try_join_all(handles).await?;
 
     Ok(())
 }
@@ -391,7 +471,8 @@ async fn test_issue_622() -> anyhow::Result<()> {
 #[sqlx_macros::test]
 async fn it_can_work_with_transactions() -> anyhow::Result<()> {
     let mut conn = new::<MySql>().await?;
-    conn.execute("CREATE TEMPORARY TABLE users (id INTEGER PRIMARY KEY);")
+    sqlx::raw_sql("CREATE TEMPORARY TABLE users (id INTEGER PRIMARY KEY);")
+        .execute(&mut conn)
         .await?;
 
     // begin .. rollback
@@ -502,11 +583,147 @@ async fn test_shrink_buffers() -> anyhow::Result<()> {
     conn.shrink_buffers();
 
     let ret: i64 = sqlx::query_scalar("SELECT ?")
-        .bind(&12345678i64)
+        .bind(12345678i64)
         .fetch_one(&mut conn)
         .await?;
 
     assert_eq!(ret, 12345678i64);
+
+    Ok(())
+}
+
+async fn select_statement_count(conn: &mut MySqlConnection) -> Result<i64, sqlx::Error> {
+    // Fails if performance schema does not exist
+    sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM performance_schema.threads AS t
+        INNER JOIN performance_schema.prepared_statements_instances AS psi
+            ON psi.OWNER_THREAD_ID = t.THREAD_ID 
+        WHERE t.processlist_id = CONNECTION_ID()
+        "#,
+    )
+    .fetch_one(conn)
+    .await
+}
+
+#[sqlx_macros::test]
+async fn issue_3200() -> anyhow::Result<()> {
+    let mut conn = new::<MySql>().await?;
+
+    sqlx::raw_sql(
+        "\
+        CREATE TABLE IF NOT EXISTS users
+        (
+            `id`                     BIGINT AUTO_INCREMENT,
+            `username`               VARCHAR(128) NOT NULL,
+            PRIMARY KEY (id)
+        );
+    ",
+    )
+    .execute(&mut conn)
+    .await?;
+
+    let result = sqlx::raw_sql(
+        "\
+        SET @myvar := 'test@test.com';
+        select id from users where username = @myvar;
+    ",
+    )
+    .fetch_optional(&mut conn)
+    .await?;
+
+    assert!(result.is_none(), "{result:?}");
+
+    Ok(())
+}
+
+#[cfg(mariadb)]
+#[sqlx_macros::test]
+async fn it_can_name_columns_issue_2206() -> anyhow::Result<()> {
+    let mut conn = new::<MySql>().await?;
+
+    sqlx::raw_sql(
+        "\
+        CREATE TABLE IF NOT EXISTS issue_2206
+        (
+            `id`                     BIGINT AUTO_INCREMENT,
+            `name`                   VARCHAR(128) NOT NULL,
+            PRIMARY KEY (id)
+        );
+    ",
+    )
+    .execute(&mut conn)
+    .await?;
+
+    let row = sqlx::query("INSERT INTO issue_2206 (name) VALUES (?) RETURNING *")
+        .bind("Alice")
+        .fetch_one(&mut conn)
+        .await?;
+    let _id: i64 = row.get("id");
+    let name: String = row.get("name");
+
+    assert_eq!(&name, "Alice");
+
+    Ok(())
+}
+
+#[cfg(feature = "any")]
+#[sqlx_macros::test]
+async fn any_blob_conversions() -> anyhow::Result<()> {
+    use sqlx::Any;
+    use sqlx::Decode;
+    use sqlx::ValueRef;
+
+    sqlx::any::install_default_drivers();
+
+    let mut conn = new::<Any>().await?;
+
+    sqlx::raw_sql(
+        r#"
+        CREATE TEMPORARY TABLE any_blob_conversions(
+            id INTEGER PRIMARY KEY,
+            regular_text TEXT NOT NULL,
+            text_binary TEXT COLLATE "utf8mb4_bin" NOT NULL,
+            binary_blob BLOB NOT NULL
+        );
+
+        INSERT INTO any_blob_conversions(id, regular_text, text_binary, binary_blob)
+        VALUES (1, 'Hello, world!', 'Lorem ipsum dolor sit amet', X'01020304DEADBEEF');
+   "#,
+    )
+    .execute(&mut conn)
+    .await?;
+
+    let row = sqlx::query("SELECT * FROM any_blob_conversions")
+        .fetch_one(&mut conn)
+        .await?;
+
+    let id = row.try_get_raw("id")?;
+    let regular_text = row.try_get_raw("regular_text")?;
+    let text_binary = row.try_get_raw("text_binary")?;
+    let binary_blob = row.try_get_raw("binary_blob")?;
+
+    assert_eq!(*id.type_info(), <i32 as Type<Any>>::type_info());
+    assert_eq!(<i32 as Decode<Any>>::decode(id).unwrap(), 1);
+
+    assert_eq!(*regular_text.type_info(), <str as Type<Any>>::type_info());
+    assert_eq!(
+        <&str as Decode<Any>>::decode(regular_text).unwrap(),
+        "Hello, world!"
+    );
+
+    assert_eq!(*text_binary.type_info(), <str as Type<Any>>::type_info());
+    assert_eq!(
+        <&str as Decode<Any>>::decode(text_binary).unwrap(),
+        "Lorem ipsum dolor sit amet"
+    );
+
+    assert_eq!(*binary_blob.type_info(), <[u8] as Type<Any>>::type_info());
+    assert_eq!(
+        <&[u8] as Decode<Any>>::decode(binary_blob).unwrap(),
+        [0x01, 0x02, 0x03, 0x04, 0xDE, 0xAD, 0xBE, 0xEF],
+    );
 
     Ok(())
 }

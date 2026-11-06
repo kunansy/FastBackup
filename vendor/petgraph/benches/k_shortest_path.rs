@@ -3,17 +3,18 @@
 extern crate petgraph;
 extern crate test;
 
+use core::cmp::{max, min};
 use petgraph::prelude::*;
-use std::cmp::{max, min};
 use test::Bencher;
 
 use petgraph::algo::k_shortest_path;
 
 #[bench]
+#[allow(clippy::needless_range_loop)]
 fn k_shortest_path_bench(bench: &mut Bencher) {
     static NODE_COUNT: usize = 10_000;
     let mut g = Graph::new_undirected();
-    let nodes: Vec<NodeIndex<_>> = (0..NODE_COUNT).into_iter().map(|i| g.add_node(i)).collect();
+    let nodes: Vec<NodeIndex<_>> = (0..NODE_COUNT).map(|i| g.add_node(i)).collect();
     for i in 0..NODE_COUNT {
         let n1 = nodes[i];
         let neighbour_count = i % 8 + 3;

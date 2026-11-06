@@ -11,34 +11,79 @@
 
 [package]
 edition = "2021"
+rust-version = "1.94.0"
 name = "sqlx-mysql"
-version = "0.7.3"
+version = "0.9.0"
 authors = [
     "Ryan Leckey <leckey.ryan@gmail.com>",
     "Austin Bonander <austin.bonander@gmail.com>",
     "Chloe Ross <orangesnowfox@gmail.com>",
     "Daniel Akhterov <akhterovd@gmail.com>",
 ]
+build = false
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
 description = "MySQL driver implementation for SQLx. Not for direct use; see the `sqlx` crate for details."
 documentation = "https://docs.rs/sqlx"
+readme = false
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/launchbadge/sqlx"
 
-[dependencies.atoi]
-version = "2.0"
+[features]
+any = ["sqlx-core/any"]
+bigdecimal = [
+    "dep:bigdecimal",
+    "sqlx-core/bigdecimal",
+]
+chrono = [
+    "dep:chrono",
+    "sqlx-core/chrono",
+]
+default = []
+json = [
+    "sqlx-core/json",
+    "serde",
+]
+migrate = [
+    "sqlx-core/migrate",
+    "dep:crc",
+]
+offline = [
+    "sqlx-core/offline",
+    "serde/derive",
+    "bitflags/serde",
+]
+rsa = [
+    "dep:rand",
+    "dep:rsa",
+]
+rust_decimal = [
+    "dep:rust_decimal",
+    "rust_decimal/maths",
+    "sqlx-core/rust_decimal",
+]
+time = [
+    "dep:time",
+    "sqlx-core/time",
+]
+uuid = [
+    "dep:uuid",
+    "sqlx-core/uuid",
+]
 
-[dependencies.base64]
-version = "0.21.0"
-features = ["std"]
-default-features = false
+[lib]
+name = "sqlx_mysql"
+path = "src/lib.rs"
 
 [dependencies.bigdecimal]
-version = "0.3.0"
+version = "0.4.0"
 optional = true
 
 [dependencies.bitflags]
-version = "2"
-features = ["serde"]
+version = "2.4"
 default-features = false
 
 [dependencies.byteorder]
@@ -47,45 +92,39 @@ features = ["std"]
 default-features = false
 
 [dependencies.bytes]
-version = "1.1.0"
+version = "1.2.0"
 
 [dependencies.chrono]
-version = "0.4.22"
+version = "0.4.34"
+features = [
+    "std",
+    "clock",
+]
 optional = true
 default-features = false
 
 [dependencies.crc]
 version = "3.0.0"
+optional = true
 
 [dependencies.digest]
-version = "0.10.0"
-features = ["std"]
+version = "0.11.2"
+features = ["alloc"]
 default-features = false
 
 [dependencies.dotenvy]
-version = "0.15.5"
+version = "0.15.7"
+default-features = false
 
 [dependencies.either]
 version = "1.6.1"
 
-[dependencies.futures-channel]
-version = "0.3.19"
-features = [
-    "sink",
-    "alloc",
-    "std",
-]
-default-features = false
-
 [dependencies.futures-core]
-version = "0.3.19"
+version = "0.3.32"
 default-features = false
-
-[dependencies.futures-io]
-version = "0.3.24"
 
 [dependencies.futures-util]
-version = "0.3.19"
+version = "0.3.32"
 features = [
     "alloc",
     "sink",
@@ -97,77 +136,50 @@ default-features = false
 version = "0.14.4"
 default-features = false
 
-[dependencies.hex]
-version = "0.4.3"
-
-[dependencies.hkdf]
-version = "0.12.0"
-
-[dependencies.hmac]
-version = "0.12.0"
-default-features = false
-
-[dependencies.itoa]
-version = "1.0.1"
-
 [dependencies.log]
-version = "0.4.17"
-
-[dependencies.md-5]
-version = "0.10.0"
-default-features = false
-
-[dependencies.memchr]
-version = "2.4.1"
-default-features = false
-
-[dependencies.once_cell]
-version = "1.9.0"
+version = "0.4.18"
 
 [dependencies.percent-encoding]
-version = "2.1.0"
+version = "2.3.0"
 
 [dependencies.rand]
-version = "0.8.4"
-features = [
-    "std",
-    "std_rng",
-]
+version = "0.10.1"
+features = ["thread_rng"]
+optional = true
 default-features = false
 
 [dependencies.rsa]
-version = "0.9"
-
-[dependencies.rust_decimal]
-version = "1.26.1"
+version = "0.10.0-rc.18"
 optional = true
 
+[dependencies.rust_decimal]
+version = "1.36.0"
+features = ["std"]
+optional = true
+default-features = false
+
 [dependencies.serde]
-version = "1.0.144"
+version = "1.0.219"
 optional = true
 
 [dependencies.sha1]
-version = "0.10.1"
+version = "0.11.0"
 default-features = false
 
 [dependencies.sha2]
-version = "0.10.0"
+version = "0.11.0"
 default-features = false
 
-[dependencies.smallvec]
-version = "1.7.0"
-
 [dependencies.sqlx-core]
-version = "=0.7.3"
-
-[dependencies.stringprep]
-version = "0.1.2"
+version = "=0.9.0"
 
 [dependencies.thiserror]
-version = "1.0.35"
+version = "2.0.18"
+features = ["std"]
+default-features = false
 
 [dependencies.time]
-version = "0.3.14"
+version = "0.3.47"
 features = [
     "formatting",
     "parsing",
@@ -180,21 +192,13 @@ version = "0.1.37"
 features = ["log"]
 
 [dependencies.uuid]
-version = "1.1.2"
+version = "1.12.1"
 optional = true
 
-[dependencies.whoami]
-version = "1.2.1"
-default-features = false
+[dev-dependencies]
 
-[features]
-any = ["sqlx-core/any"]
-json = [
-    "sqlx-core/json",
-    "serde",
-]
-migrate = ["sqlx-core/migrate"]
-offline = [
-    "sqlx-core/offline",
-    "serde/derive",
-]
+[lints.clippy]
+cast_possible_truncation = "deny"
+cast_possible_wrap = "deny"
+cast_sign_loss = "deny"
+disallowed_methods = "deny"

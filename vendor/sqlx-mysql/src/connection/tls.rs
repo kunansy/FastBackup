@@ -1,4 +1,3 @@
-use crate::collation::{CharSet, Collation};
 use crate::connection::{MySqlStream, Waiting};
 use crate::error::Error;
 use crate::net::tls::TlsConfig;
@@ -13,8 +12,6 @@ struct MapStream {
     capabilities: Capabilities,
     sequence_id: u8,
     waiting: VecDeque<Waiting>,
-    charset: CharSet,
-    collation: Collation,
 }
 
 pub(super) async fn maybe_upgrade<S: Socket>(
@@ -71,8 +68,8 @@ pub(super) async fn maybe_upgrade<S: Socket>(
     // Request TLS upgrade
     stream.write_packet(SslRequest {
         max_packet_size: super::MAX_PACKET_SIZE,
-        collation: stream.collation as u8,
-    });
+        charset: super::INITIAL_CHARSET,
+    })?;
 
     stream.flush().await?;
 
@@ -84,8 +81,6 @@ pub(super) async fn maybe_upgrade<S: Socket>(
             capabilities: stream.capabilities,
             sequence_id: stream.sequence_id,
             waiting: stream.waiting,
-            charset: stream.charset,
-            collation: stream.collation,
         },
     )
     .await
@@ -94,15 +89,13 @@ pub(super) async fn maybe_upgrade<S: Socket>(
 impl WithSocket for MapStream {
     type Output = MySqlStream;
 
-    fn with_socket<S: Socket>(self, socket: S) -> Self::Output {
+    async fn with_socket<S: Socket>(self, socket: S) -> Self::Output {
         MySqlStream {
             socket: BufferedSocket::new(Box::new(socket)),
             server_version: self.server_version,
             capabilities: self.capabilities,
             sequence_id: self.sequence_id,
             waiting: self.waiting,
-            charset: self.charset,
-            collation: self.collation,
             is_tls: true,
         }
     }

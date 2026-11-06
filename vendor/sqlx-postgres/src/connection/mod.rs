@@ -1,16 +1,17 @@
+use std::collections::BTreeMap;
 use std::fmt::{self, Debug, Formatter};
+use std::future::Future;
 use std::sync::Arc;
 
 use crate::HashMap;
-use futures_core::future::BoxFuture;
-use futures_util::FutureExt;
 
 use crate::common::StatementCache;
 use crate::error::Error;
 use crate::ext::ustr::UStr;
-use crate::io::Decode;
+use crate::io::StatementId;
 use crate::message::{
-    Close, Message, MessageFormat, Query, ReadyForQuery, Terminate, TransactionStatus,
+    BackendMessageFormat, Close, Query, ReadyForQuery, ReceivedMessage, Terminate,
+    TransactionStatus,
 };
 use crate::statement::PgStatementMetadata;
 use crate::transaction::Transaction;
@@ -18,18 +19,27 @@ use crate::types::Oid;
 use crate::{PgConnectOptions, PgTypeInfo, Postgres};
 
 pub(crate) use sqlx_core::connection::*;
+use sqlx_core::sql_str::SqlSafeStr;
 
 pub use self::stream::PgStream;
 
-pub(crate) mod describe;
+#[cfg(feature = "offline")]
+mod describe;
 mod establish;
 mod executor;
+mod resolve;
 mod sasl;
 mod stream;
 mod tls;
 
 /// A connection to a PostgreSQL database.
+///
+/// See [`PgConnectOptions`] for connection URL reference.
 pub struct PgConnection {
+    pub(crate) inner: Box<PgConnectionInner>,
+}
+
+pub struct PgConnectionInner {
     // underlying TCP or UDS stream,
     // wrapped in a potentially TLS stream,
     // wrapped in a buffered stream
@@ -47,14 +57,16 @@ pub struct PgConnection {
 
     // sequence of statement IDs for use in preparing statements
     // in PostgreSQL, the statement is prepared to a user-supplied identifier
-    next_statement_id: Oid,
+    next_statement_id: StatementId,
 
     // cache statement by query string to the id and columns
-    cache_statement: StatementCache<(Oid, Arc<PgStatementMetadata>)>,
+    cache_statement: StatementCache<(StatementId, Arc<PgStatementMetadata>)>,
 
     // cache user-defined types by id <-> info
     cache_type_info: HashMap<Oid, PgTypeInfo>,
     cache_type_oid: HashMap<UStr, Oid>,
+    cache_elem_type_to_array: HashMap<Oid, Oid>,
+    cache_table_data: HashMap<Oid, TableData>,
 
     // number of ReadyForQuery messages that we are currently expecting
     pub(crate) pending_ready_for_query_count: usize,
@@ -66,22 +78,28 @@ pub struct PgConnection {
     log_settings: LogSettings,
 }
 
+pub(crate) struct TableData {
+    table_name: Arc<str>,
+    /// Attribute number -> name.
+    columns: BTreeMap<i16, Arc<str>>,
+}
+
 impl PgConnection {
     /// the version number of the server in `libpq` format
     pub fn server_version_num(&self) -> Option<u32> {
-        self.stream.server_version_num
+        self.inner.stream.server_version_num
     }
 
     // will return when the connection is ready for another query
     pub(crate) async fn wait_until_ready(&mut self) -> Result<(), Error> {
-        if !self.stream.write_buffer_mut().is_empty() {
-            self.stream.flush().await?;
+        if !self.inner.stream.write_buffer_mut().is_empty() {
+            self.inner.stream.flush().await?;
         }
 
-        while self.pending_ready_for_query_count > 0 {
-            let message = self.stream.recv().await?;
+        while self.inner.pending_ready_for_query_count > 0 {
+            let message = self.inner.stream.recv().await?;
 
-            if let MessageFormat::ReadyForQuery = message.format {
+            if let BackendMessageFormat::ReadyForQuery = message.format {
                 self.handle_ready_for_query(message)?;
             }
         }
@@ -90,20 +108,23 @@ impl PgConnection {
     }
 
     async fn recv_ready_for_query(&mut self) -> Result<(), Error> {
-        let r: ReadyForQuery = self
-            .stream
-            .recv_expect(MessageFormat::ReadyForQuery)
-            .await?;
+        let r: ReadyForQuery = self.inner.stream.recv_expect().await?;
 
-        self.pending_ready_for_query_count -= 1;
-        self.transaction_status = r.transaction_status;
+        self.inner.pending_ready_for_query_count -= 1;
+        self.inner.transaction_status = r.transaction_status;
 
         Ok(())
     }
 
-    fn handle_ready_for_query(&mut self, message: Message) -> Result<(), Error> {
-        self.pending_ready_for_query_count -= 1;
-        self.transaction_status = ReadyForQuery::decode(message.contents)?.transaction_status;
+    #[inline(always)]
+    fn handle_ready_for_query(&mut self, message: ReceivedMessage) -> Result<(), Error> {
+        self.inner.pending_ready_for_query_count = self
+            .inner
+            .pending_ready_for_query_count
+            .checked_sub(1)
+            .ok_or_else(|| err_protocol!("received more ReadyForQuery messages than expected"))?;
+
+        self.inner.transaction_status = message.decode::<ReadyForQuery>()?.transaction_status;
 
         Ok(())
     }
@@ -111,9 +132,19 @@ impl PgConnection {
     /// Queue a simple query (not prepared) to execute the next time this connection is used.
     ///
     /// Used for rolling back transactions and releasing advisory locks.
-    pub(crate) fn queue_simple_query(&mut self, query: &str) {
-        self.pending_ready_for_query_count += 1;
-        self.stream.write(Query(query));
+    #[inline(always)]
+    pub(crate) fn queue_simple_query(&mut self, query: &str) -> Result<(), Error> {
+        self.inner.stream.write_msg(Query(query))?;
+        self.inner.pending_ready_for_query_count += 1;
+
+        Ok(())
+    }
+
+    pub(crate) fn in_transaction(&self) -> bool {
+        match self.inner.transaction_status {
+            TransactionStatus::Transaction => true,
+            TransactionStatus::Error | TransactionStatus::Idle => false,
+        }
     }
 }
 
@@ -128,89 +159,89 @@ impl Connection for PgConnection {
 
     type Options = PgConnectOptions;
 
-    fn close(mut self) -> BoxFuture<'static, Result<(), Error>> {
+    async fn close(mut self) -> Result<(), Error> {
         // The normal, graceful termination procedure is that the frontend sends a Terminate
         // message and immediately closes the connection.
 
         // On receipt of this message, the backend closes the
         // connection and terminates.
+        self.inner.stream.send(Terminate).await?;
+        self.inner.stream.shutdown().await?;
 
-        Box::pin(async move {
-            self.stream.send(Terminate).await?;
-            self.stream.shutdown().await?;
-
-            Ok(())
-        })
+        Ok(())
     }
 
-    fn close_hard(mut self) -> BoxFuture<'static, Result<(), Error>> {
-        Box::pin(async move {
-            self.stream.shutdown().await?;
+    async fn close_hard(mut self) -> Result<(), Error> {
+        self.inner.stream.shutdown().await?;
 
-            Ok(())
-        })
+        Ok(())
     }
 
-    fn ping(&mut self) -> BoxFuture<'_, Result<(), Error>> {
+    async fn ping(&mut self) -> Result<(), Error> {
         // Users were complaining about this showing up in query statistics on the server.
         // By sending a comment we avoid an error if the connection was in the middle of a rowset
         // self.execute("/* SQLx ping */").map_ok(|_| ()).boxed()
 
-        Box::pin(async move {
-            // The simplest call-and-response that's possible.
-            self.write_sync();
-            self.wait_until_ready().await
-        })
+        // The simplest call-and-response that's possible.
+        self.write_sync();
+        self.wait_until_ready().await
     }
 
-    fn begin(&mut self) -> BoxFuture<'_, Result<Transaction<'_, Self::Database>, Error>>
+    fn begin(
+        &mut self,
+    ) -> impl Future<Output = Result<Transaction<'_, Self::Database>, Error>> + Send + '_ {
+        Transaction::begin(self, None)
+    }
+
+    fn begin_with(
+        &mut self,
+        statement: impl SqlSafeStr,
+    ) -> impl Future<Output = Result<Transaction<'_, Self::Database>, Error>> + Send + '_
     where
         Self: Sized,
     {
-        Transaction::begin(self)
+        Transaction::begin(self, Some(statement.into_sql_str()))
     }
 
     fn cached_statements_size(&self) -> usize {
-        self.cache_statement.len()
+        self.inner.cache_statement.len()
     }
 
-    fn clear_cached_statements(&mut self) -> BoxFuture<'_, Result<(), Error>> {
-        Box::pin(async move {
-            self.cache_type_oid.clear();
+    async fn clear_cached_statements(&mut self) -> Result<(), Error> {
+        self.inner.cache_type_oid.clear();
 
-            let mut cleared = 0_usize;
+        let mut cleared = 0_usize;
 
-            self.wait_until_ready().await?;
+        self.wait_until_ready().await?;
 
-            while let Some((id, _)) = self.cache_statement.remove_lru() {
-                self.stream.write(Close::Statement(id));
-                cleared += 1;
-            }
+        while let Some((id, _)) = self.inner.cache_statement.remove_lru() {
+            self.inner.stream.write_msg(Close::Statement(id))?;
+            cleared += 1;
+        }
 
-            if cleared > 0 {
-                self.write_sync();
-                self.stream.flush().await?;
+        if cleared > 0 {
+            self.write_sync();
+            self.inner.stream.flush().await?;
 
-                self.wait_for_close_complete(cleared).await?;
-                self.recv_ready_for_query().await?;
-            }
+            self.wait_for_close_complete(cleared).await?;
+            self.recv_ready_for_query().await?;
+        }
 
-            Ok(())
-        })
+        Ok(())
     }
 
     fn shrink_buffers(&mut self) {
-        self.stream.shrink_buffers();
+        self.inner.stream.shrink_buffers();
     }
 
     #[doc(hidden)]
-    fn flush(&mut self) -> BoxFuture<'_, Result<(), Error>> {
-        self.wait_until_ready().boxed()
+    fn flush(&mut self) -> impl Future<Output = Result<(), Error>> + Send + '_ {
+        self.wait_until_ready()
     }
 
     #[doc(hidden)]
     fn should_flush(&self) -> bool {
-        !self.stream.write_buffer().is_empty()
+        !self.inner.stream.write_buffer().is_empty()
     }
 }
 

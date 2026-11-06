@@ -1,4 +1,8 @@
-use std::hash::Hash;
+extern crate std;
+
+use core::hash::Hash;
+use std::prelude::rust_2021::*;
+use std::{format, panic};
 
 use crate::{
     IntErrorKind, OptionRangedI128, OptionRangedI16, OptionRangedI32, OptionRangedI64,
@@ -7,6 +11,48 @@ use crate::{
     RangedI32, RangedI64, RangedI8, RangedIsize, RangedU128, RangedU16, RangedU32, RangedU64,
     RangedU8, RangedUsize, TryFromIntError,
 };
+
+#[test]
+fn test_ranged_conversion() {
+    // equal range
+    let _: RangedI8<-5, 5> = RangedI16::<-5, 5>::new_static::<3>().into();
+
+    // wider range
+    let _: RangedI8<-6, 6> = RangedI16::<-5, 5>::new_static::<3>().into();
+
+    // the following fails to compile because the source range is wider than the destination range
+    // let _ : RangedI8<-4, 4> = RangedI16::<-5, 5>::new_static::<3>().into();
+}
+
+#[test]
+fn optional_cross_range_equality() {
+    let none = OptionRangedU8::<0, 10>::None;
+    let some_max = OptionRangedU8::<5, { u8::MAX }>::Some(RangedU8::<5, { u8::MAX }>::MAX);
+    assert_ne!(none, some_max);
+    assert_eq!(none.partial_cmp(&some_max), Some(core::cmp::Ordering::Less));
+
+    let other_none = OptionRangedU8::<5, 10>::None;
+    assert_eq!(none, other_none);
+    assert_eq!(
+        none.partial_cmp(&other_none),
+        Some(core::cmp::Ordering::Equal)
+    );
+}
+
+#[cfg(feature = "quickcheck")]
+#[test]
+fn quickcheck_full_width_ranges() {
+    let mut generator = quickcheck::Gen::new(100);
+
+    for _ in 0..100 {
+        let _: RangedU8<0, 255> = quickcheck::Arbitrary::arbitrary(&mut generator);
+        let _: RangedI8<{ i8::MIN }, { i8::MAX }> =
+            quickcheck::Arbitrary::arbitrary(&mut generator);
+        let _: RangedU128<0, { u128::MAX }> = quickcheck::Arbitrary::arbitrary(&mut generator);
+        let _: RangedI128<{ i128::MIN }, { i128::MAX }> =
+            quickcheck::Arbitrary::arbitrary(&mut generator);
+    }
+}
 
 macro_rules! if_signed {
     (signed $($x:tt)*) => { $($x)* };
@@ -98,7 +144,7 @@ macro_rules! tests {
             $t::<5, 10>::MIN.hash(&mut hasher);
             assert_eq!(
                 $t::<5, 10>::MIN.cmp(&$t::<5, 10>::MAX),
-                std::cmp::Ordering::Less
+                core::cmp::Ordering::Less
             );
 
             assert_eq!($opt::<5, 10>::None.clone(), $opt::<5, 10>::None);
@@ -145,6 +191,18 @@ macro_rules! tests {
         #[test]
         fn is_none() {$(
             assert!($opt::<5, 10>::None.is_none());
+        )*}
+
+        #[test]
+        fn is_some_by_ref() {$(
+            let value = $opt::<5, 10>::Some($t::<5, 10>::MAX);
+            assert!($opt::is_some(&value));
+        )*}
+
+        #[test]
+        fn is_none_by_ref() {$(
+            let value = $opt::<5, 10>::None;
+            assert!($opt::is_none(&value));
         )*}
 
         #[test]
@@ -469,6 +527,18 @@ macro_rules! tests {
         }
 
         #[test]
+        fn overflowing_add() {$(
+            assert_eq!($t::<5, 10>::MAX.overflowing_add(0), ($t::<5, 10>::MAX, false));
+            assert_eq!($t::<5, 10>::MAX.overflowing_add(1), ($t::<5, 10>::MIN, true));
+        )*}
+
+        #[test]
+        fn overflowing_sub() {$(
+            assert_eq!($t::<5, 10>::MIN.overflowing_sub(0), ($t::<5, 10>::MIN, false));
+            assert_eq!($t::<5, 10>::MIN.overflowing_sub(1), ($t::<5, 10>::MAX, true));
+        )*}
+
+        #[test]
         fn saturating_sub() {$(
             assert_eq!($t::<5, 10>::MIN.saturating_sub(0), $t::<5, 10>::MIN);
             assert_eq!($t::<5, 10>::MIN.saturating_sub(1), $t::<5, 10>::MIN);
@@ -514,7 +584,7 @@ macro_rules! tests {
 
         #[test]
         fn borrow() {
-            use std::borrow::Borrow;
+            use core::borrow::Borrow;
             $(
             assert_eq!(Borrow::<$inner>::borrow(&$t::<5, 10>::MIN), &5);
             assert_eq!(Borrow::<$inner>::borrow(&$t::<5, 10>::MAX), &10);
@@ -548,23 +618,23 @@ macro_rules! tests {
             let five = $opt::Some($t::<5, 10>::MIN);
             let ten = $opt::Some($t::<5, 10>::MAX);
 
-            assert_eq!(none.cmp(&none), std::cmp::Ordering::Equal);
-            assert_eq!(five.cmp(&five), std::cmp::Ordering::Equal);
-            assert_eq!(ten.cmp(&ten), std::cmp::Ordering::Equal);
-            assert_eq!(none.cmp(&five), std::cmp::Ordering::Less);
-            assert_eq!(five.cmp(&ten), std::cmp::Ordering::Less);
-            assert_eq!(none.cmp(&ten), std::cmp::Ordering::Less);
-            assert_eq!(ten.cmp(&none), std::cmp::Ordering::Greater);
+            assert_eq!(none.cmp(&none), core::cmp::Ordering::Equal);
+            assert_eq!(five.cmp(&five), core::cmp::Ordering::Equal);
+            assert_eq!(ten.cmp(&ten), core::cmp::Ordering::Equal);
+            assert_eq!(none.cmp(&five), core::cmp::Ordering::Less);
+            assert_eq!(five.cmp(&ten), core::cmp::Ordering::Less);
+            assert_eq!(none.cmp(&ten), core::cmp::Ordering::Less);
+            assert_eq!(ten.cmp(&none), core::cmp::Ordering::Greater);
 
             let none = $opt::<0, 10>::None;
             let zero = $opt::Some($t::<0, 10>::MIN);
             let ten = $opt::Some($t::<0, 10>::MAX);
 
-            assert_eq!(none.partial_cmp(&none), Some(std::cmp::Ordering::Equal));
-            assert_eq!(none.partial_cmp(&zero), Some(std::cmp::Ordering::Less));
-            assert_eq!(zero.partial_cmp(&ten), Some(std::cmp::Ordering::Less));
-            assert_eq!(none.partial_cmp(&ten), Some(std::cmp::Ordering::Less));
-            assert_eq!(ten.partial_cmp(&none), Some(std::cmp::Ordering::Greater));
+            assert_eq!(none.partial_cmp(&none), Some(core::cmp::Ordering::Equal));
+            assert_eq!(none.partial_cmp(&zero), Some(core::cmp::Ordering::Less));
+            assert_eq!(zero.partial_cmp(&ten), Some(core::cmp::Ordering::Less));
+            assert_eq!(none.partial_cmp(&ten), Some(core::cmp::Ordering::Less));
+            assert_eq!(ten.partial_cmp(&none), Some(core::cmp::Ordering::Greater));
         )*}
 
         #[test]
@@ -623,6 +693,8 @@ macro_rules! tests {
             let val = $opt::<5, 10>::None;
             let serialized = serde_json::to_string(&val)?;
             assert_eq!(serialized, "null");
+            let deserialized: $opt<5, 10> = serde_json::from_str(&serialized)?;
+            assert_eq!(deserialized, val);
 
             assert!(serde_json::from_str::<$opt<5, 10>>("").is_err());
             assert!(serde_json::from_str::<$opt<5, 10>>("4").is_err());
@@ -631,14 +703,57 @@ macro_rules! tests {
             Ok(())
         }
 
-        #[cfg(feature = "rand")]
+        #[cfg(feature = "serde")]
         #[test]
-        fn rand() {$(
-            let rand_val: $t<5, 10> = rand::random();
+        fn serde_option_tokens() {
+            use serde_test2::{assert_tokens, Token};
+
+            assert_tokens(
+                &OptionRangedU8::<5, 10>::Some(RangedU8::<5, 10>::MAX),
+                &[Token::Some, Token::U8(10)],
+            );
+            assert_tokens(
+                &OptionRangedU8::<5, 10>::None,
+                &[Token::None],
+            );
+        }
+
+        #[cfg(feature = "rand08")]
+        #[test]
+        fn rand08() {$(
+            let rand_val: $t<5, 10> = rand08::random();
             assert!(rand_val >= $t::<5, 10>::MIN);
             assert!(rand_val <= $t::<5, 10>::MAX);
 
-            let rand: $opt<5, 10> = rand::random();
+            let rand: $opt<5, 10> = rand08::random();
+            if let Some(rand) = rand.get() {
+                assert!(rand >= $t::<5, 10>::MIN);
+                assert!(rand <= $t::<5, 10>::MAX);
+            }
+        )*}
+
+        #[cfg(feature = "rand09")]
+        #[test]
+        fn rand09() {$(
+            let rand_val: $t<5, 10> = rand09::random();
+            assert!(rand_val >= $t::<5, 10>::MIN);
+            assert!(rand_val <= $t::<5, 10>::MAX);
+
+            let rand: $opt<5, 10> = rand09::random();
+            if let Some(rand) = rand.get() {
+                assert!(rand >= $t::<5, 10>::MIN);
+                assert!(rand <= $t::<5, 10>::MAX);
+            }
+        )*}
+
+        #[cfg(feature = "rand010")]
+        #[test]
+        fn rand010() {$(
+            let rand_val: $t<5, 10> = rand010::random();
+            assert!(rand_val >= $t::<5, 10>::MIN);
+            assert!(rand_val <= $t::<5, 10>::MAX);
+
+            let rand: $opt<5, 10> = rand010::random();
             if let Some(rand) = rand.get() {
                 assert!(rand >= $t::<5, 10>::MIN);
                 assert!(rand <= $t::<5, 10>::MAX);

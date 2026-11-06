@@ -1,9 +1,33 @@
+/*
+ *
+ * Copyright 2025 gRPC authors.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to
+ * deal in the Software without restriction, including without limitation the
+ * rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+ * sell copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+ * IN THE SOFTWARE.
+ *
+ */
+
 use std::collections::HashSet;
 
 use super::{Attributes, Method, Service};
 use crate::{
-    format_method_name, format_method_path, format_service_name, generate_doc_comments,
-    naive_snake_case,
+    format_method_name, format_method_path, format_service_name, generate_deprecated,
+    generate_doc_comments, naive_snake_case,
 };
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
@@ -49,6 +73,7 @@ pub(crate) fn generate_internal<T: Service>(
                 unused_variables,
                 dead_code,
                 missing_docs,
+                clippy::wildcard_imports,
                 // will trigger if compression is disabled
                 clippy::let_unit_value,
             )]
@@ -66,10 +91,10 @@ pub(crate) fn generate_internal<T: Service>(
 
             impl<T> #service_ident<T>
             where
-                T: tonic::client::GrpcService<tonic::body::BoxBody>,
+                T: tonic::client::GrpcService<tonic::body::Body>,
                 T::Error: Into<StdError>,
-                T::ResponseBody: Body<Data = Bytes> + Send  + 'static,
-                <T::ResponseBody as Body>::Error: Into<StdError> + Send,
+                T::ResponseBody: Body<Data = Bytes> + std::marker::Send  + 'static,
+                <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
             {
                 pub fn new(inner: T) -> Self {
                     let inner = tonic::client::Grpc::new(inner);
@@ -86,10 +111,10 @@ pub(crate) fn generate_internal<T: Service>(
                     F: tonic::service::Interceptor,
                     T::ResponseBody: Default,
                     T: tonic::codegen::Service<
-                        http::Request<tonic::body::BoxBody>,
-                        Response = http::Response<<T as tonic::client::GrpcService<tonic::body::BoxBody>>::ResponseBody>
+                        http::Request<tonic::body::Body>,
+                        Response = http::Response<<T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody>
                     >,
-                    <T as tonic::codegen::Service<http::Request<tonic::body::BoxBody>>>::Error: Into<StdError> + Send + Sync,
+                    <T as tonic::codegen::Service<http::Request<tonic::body::Body>>>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
                 {
                     #service_ident::new(InterceptedService::new(inner, interceptor))
                 }
@@ -176,6 +201,9 @@ fn generate_methods<T: Service>(
         if !disable_comments.contains(&format_method_name(service, method, emit_package)) {
             stream.extend(generate_doc_comments(method.comment()));
         }
+        if method.deprecated() {
+            stream.extend(generate_deprecated());
+        }
 
         let method = match (method.client_streaming(), method.server_streaming()) {
             (false, false) => generate_unary(
@@ -234,7 +262,7 @@ fn generate_unary<T: Service>(
             request: impl tonic::IntoRequest<#request>,
         ) -> std::result::Result<tonic::Response<#response>, tonic::Status> {
            self.inner.ready().await.map_err(|e| {
-               tonic::Status::new(tonic::Code::Unknown, format!("Service was not ready: {}", e.into()))
+               tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
            })?;
            let codec = #codec_name::default();
            let path = http::uri::PathAndQuery::from_static(#path);
@@ -265,7 +293,7 @@ fn generate_server_streaming<T: Service>(
             request: impl tonic::IntoRequest<#request>,
         ) -> std::result::Result<tonic::Response<tonic::codec::Streaming<#response>>, tonic::Status> {
             self.inner.ready().await.map_err(|e| {
-                        tonic::Status::new(tonic::Code::Unknown, format!("Service was not ready: {}", e.into()))
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
             })?;
             let codec = #codec_name::default();
             let path = http::uri::PathAndQuery::from_static(#path);
@@ -296,7 +324,7 @@ fn generate_client_streaming<T: Service>(
             request: impl tonic::IntoStreamingRequest<Message = #request>
         ) -> std::result::Result<tonic::Response<#response>, tonic::Status> {
             self.inner.ready().await.map_err(|e| {
-                        tonic::Status::new(tonic::Code::Unknown, format!("Service was not ready: {}", e.into()))
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
             })?;
             let codec = #codec_name::default();
             let path = http::uri::PathAndQuery::from_static(#path);
@@ -327,7 +355,7 @@ fn generate_streaming<T: Service>(
             request: impl tonic::IntoStreamingRequest<Message = #request>
         ) -> std::result::Result<tonic::Response<tonic::codec::Streaming<#response>>, tonic::Status> {
             self.inner.ready().await.map_err(|e| {
-                        tonic::Status::new(tonic::Code::Unknown, format!("Service was not ready: {}", e.into()))
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
             })?;
             let codec = #codec_name::default();
             let path = http::uri::PathAndQuery::from_static(#path);

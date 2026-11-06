@@ -495,6 +495,31 @@ async fn test_from_row_json_attr() -> anyhow::Result<()> {
 }
 
 #[sqlx_macros::test]
+async fn test_from_row_json_attr_nullable() -> anyhow::Result<()> {
+    #[derive(serde::Deserialize)]
+    #[allow(dead_code)]
+    struct J {
+        a: u32,
+        b: u32,
+    }
+
+    #[derive(sqlx::FromRow)]
+    struct Record {
+        #[sqlx(json(nullable))]
+        j: Option<J>,
+    }
+
+    let mut conn = new::<MySql>().await?;
+
+    let record = sqlx::query_as::<_, Record>("select NULL as j")
+        .fetch_one(&mut conn)
+        .await?;
+
+    assert!(record.j.is_none());
+    Ok(())
+}
+
+#[sqlx_macros::test]
 async fn test_from_row_json_try_from_attr() -> anyhow::Result<()> {
     #[derive(serde::Deserialize)]
     struct J {
@@ -526,6 +551,36 @@ async fn test_from_row_json_try_from_attr() -> anyhow::Result<()> {
         .await?;
 
     assert_eq!(record.j.sum, 3);
+
+    Ok(())
+}
+
+#[cfg(all(mariadb, not(mariadb = "10_6"), feature = "time"))]
+#[sqlx_macros::test]
+async fn test_uuid_is_compatible_mariadb() -> anyhow::Result<()> {
+    use sqlx::types::time::OffsetDateTime;
+    use sqlx::types::Uuid;
+
+    struct Tweet {
+        id: Uuid,
+        text: String,
+        created_at: OffsetDateTime,
+        owner_id: Option<Uuid>,
+    }
+
+    let mut conn = new::<MySql>().await?;
+
+    sqlx::query!("INSERT INTO tweet_with_uuid(text) VALUES ('Hello, world!')")
+        .execute(&mut conn)
+        .await?;
+
+    let tweets: Vec<Tweet> = sqlx::query_as!(Tweet, "SELECT * FROM tweet_with_uuid")
+        .fetch_all(&mut conn)
+        .await?;
+
+    assert_eq!(tweets.len(), 1);
+
+    assert_eq!(tweets[0].text, "Hello, world!");
 
     Ok(())
 }

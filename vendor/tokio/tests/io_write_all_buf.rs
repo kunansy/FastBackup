@@ -1,7 +1,16 @@
 #![warn(rust_2018_idioms)]
-#![cfg(feature = "full")]
+#![cfg(any(
+    feature = "full",
+    all(
+        target_os = "emscripten",
+        feature = "rt",
+        feature = "macros",
+        feature = "io-util"
+    )
+))]
 
 use tokio::io::{AsyncWrite, AsyncWriteExt};
+use tokio_test::io::Builder;
 use tokio_test::{assert_err, assert_ok};
 
 use bytes::{Buf, Bytes, BytesMut};
@@ -70,7 +79,7 @@ async fn write_buf_err() {
         ) -> Poll<io::Result<usize>> {
             self.cnt += 1;
             if self.cnt == 2 {
-                return Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, "whoops")));
+                return Poll::Ready(Err(io::Error::other("whoops")));
             }
             Poll::Ready(Ok(4))
         }
@@ -93,4 +102,73 @@ async fn write_buf_err() {
         buf.copy_to_bytes(buf.remaining()),
         Bytes::from_static(b"oworld")
     );
+}
+
+#[tokio::test]
+async fn write_all_buf_vectored() {
+    struct Wr {
+        buf: BytesMut,
+        interrupted: bool,
+    }
+    impl AsyncWrite for Wr {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            // When executing `write_all_buf` with this writer,
+            // `poll_write` is not called.
+            panic!("shouldn't be called")
+        }
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Ok(()).into()
+        }
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Ok(()).into()
+        }
+        fn poll_write_vectored(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            bufs: &[io::IoSlice<'_>],
+        ) -> Poll<Result<usize, io::Error>> {
+            if !self.interrupted {
+                self.interrupted = true;
+                return Poll::Ready(Err(io::Error::from(io::ErrorKind::Interrupted)));
+            }
+
+            for buf in bufs {
+                self.buf.extend_from_slice(buf);
+            }
+            let n = self.buf.len();
+            Ok(n).into()
+        }
+        fn is_write_vectored(&self) -> bool {
+            // Enable vectored write.
+            true
+        }
+    }
+
+    let mut wr = Wr {
+        buf: BytesMut::with_capacity(64),
+        interrupted: false,
+    };
+    let mut buf = Bytes::from_static(b"hello")
+        .chain(Bytes::from_static(b" "))
+        .chain(Bytes::from_static(b"world"));
+
+    wr.write_all_buf(&mut buf).await.unwrap();
+    assert_eq!(&wr.buf[..], b"hello world");
+}
+
+#[tokio::test]
+async fn write_all_buf_retries_interrupted() {
+    let mut mock = Builder::new()
+        .write(b"he")
+        .write_error(io::Error::from(io::ErrorKind::Interrupted))
+        .write(b"llo")
+        .build();
+    let mut buf = Bytes::from_static(b"hello");
+
+    mock.write_all_buf(&mut buf).await.unwrap();
+    assert!(!buf.has_remaining());
 }

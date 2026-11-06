@@ -148,7 +148,6 @@ use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
-use std::usize;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tracing::Instrument;
 
@@ -312,9 +311,11 @@ pub struct Builder {
     reset_stream_duration: Duration,
 
     /// Initial maximum number of locally initiated (send) streams.
-    /// After receiving a Settings frame from the remote peer,
+    /// After receiving a SETTINGS frame from the remote peer,
     /// the connection will overwrite this value with the
     /// MAX_CONCURRENT_STREAMS specified in the frame.
+    /// If no value is advertised by the remote peer in the initial SETTINGS
+    /// frame, it will be set to usize::MAX.
     initial_max_send_streams: usize,
 
     /// Initial target window size for new connections.
@@ -342,6 +343,11 @@ pub struct Builder {
     ///
     /// When this gets exceeded, we issue GOAWAYs.
     local_max_error_reset_streams: Option<usize>,
+
+    /// connection-level budget for DATA framing overhead.
+    ///
+    /// When this gets exhausted, we issue a GOAWAY with `ENHANCE_YOUR_CALM`.
+    data_frame_budget: proto::DataFrameBudget,
 }
 
 #[derive(Debug)]
@@ -546,6 +552,16 @@ where
     pub fn is_extended_connect_protocol_enabled(&self) -> bool {
         self.inner.is_extended_connect_protocol_enabled()
     }
+
+    /// Returns the current max send streams
+    pub fn current_max_send_streams(&self) -> usize {
+        self.inner.current_max_send_streams()
+    }
+
+    /// Returns the current max recv streams
+    pub fn current_max_recv_streams(&self) -> usize {
+        self.inner.current_max_recv_streams()
+    }
 }
 
 impl<B> fmt::Debug for SendRequest<B>
@@ -652,6 +668,7 @@ impl Builder {
             settings: Default::default(),
             stream_id: 1.into(),
             local_max_error_reset_streams: Some(proto::DEFAULT_LOCAL_RESET_COUNT_MAX),
+            data_frame_budget: proto::DataFrameBudget::Auto,
         }
     }
 
@@ -811,9 +828,10 @@ impl Builder {
     /// 0. If `max` is set to 0, then the remote will not be permitted to
     /// initiate streams.
     ///
-    /// Note that streams in the reserved state, i.e., push promises that have
-    /// been reserved but the stream has not started, do not count against this
-    /// setting.
+    /// Although the HTTP/2 specification excludes streams in the reserved state
+    /// from this limit, `h2` counts reserved push streams against this setting
+    /// to protect resources. This includes push promises whose response streams
+    /// have not yet started.
     ///
     /// Also note that if the remote *does* exceed the value set here, it is not
     /// a protocol level error. Instead, the `h2` library will immediately reset
@@ -851,8 +869,10 @@ impl Builder {
     /// Sets the initial maximum of locally initiated (send) streams.
     ///
     /// The initial settings will be overwritten by the remote peer when
-    /// the Settings frame is received. The new value will be set to the
-    /// `max_concurrent_streams()` from the frame.
+    /// the SETTINGS frame is received. The new value will be set to the
+    /// `max_concurrent_streams()` from the frame. If no value is advertised in
+    /// the initial SETTINGS frame from the remote peer as part of
+    /// [HTTP/2 Connection Preface], `usize::MAX` will be set.
     ///
     /// This setting prevents the caller from exceeding this number of
     /// streams that are counted towards the concurrency limit.
@@ -862,7 +882,10 @@ impl Builder {
     ///
     /// See [Section 5.1.2] in the HTTP/2 spec for more details.
     ///
-    /// [Section 5.1.2]: https://http2.github.io/http2-spec/#rfc.section.5.1.2
+    /// The default value is `usize::MAX`.
+    ///
+    /// [HTTP/2 Connection Preface]: https://httpwg.org/specs/rfc9113.html#preface
+    /// [Section 5.1.2]: https://httpwg.org/specs/rfc9113.html#rfc.section.5.1.2
     ///
     /// # Examples
     ///
@@ -907,7 +930,7 @@ impl Builder {
     /// received for that stream will result in a connection level protocol
     /// error, forcing the connection to terminate.
     ///
-    /// The default value is 10.
+    /// The default value is currently 50.
     ///
     /// # Examples
     ///
@@ -952,7 +975,7 @@ impl Builder {
     /// received for that stream will result in a connection level protocol
     /// error, forcing the connection to terminate.
     ///
-    /// The default value is 30 seconds.
+    /// The default value is currently 1 second.
     ///
     /// # Examples
     ///
@@ -1053,7 +1076,7 @@ impl Builder {
     ///
     /// This function panics if `max` is larger than `u32::MAX`.
     pub fn max_send_buffer_size(&mut self, max: usize) -> &mut Self {
-        assert!(max <= std::u32::MAX as usize);
+        assert!(max <= u32::MAX as usize);
         self.max_send_buffer_size = max;
         self
     }
@@ -1126,6 +1149,29 @@ impl Builder {
     /// ```
     pub fn header_table_size(&mut self, size: u32) -> &mut Self {
         self.settings.set_header_table_size(Some(size));
+        self
+    }
+
+    /// Sets a connection-level budget for limiting memory overhead from
+    /// received small DATA frames.
+    ///
+    /// HTTP/2 flow control accounts for DATA payload bytes, but not the
+    /// additional memory required to buffer each DATA frame. An excessive
+    /// number of small frames may therefore consume disproportionate memory.
+    ///
+    /// Small DATA frames consume this budget. The budget is restored when
+    /// buffered frames are consumed by the application, while sufficiently
+    /// large frames may also restore budget. Empty DATA frames are limited
+    /// separately and do not consume this budget.
+    ///
+    /// When this budget is exhausted, the connection is closed with
+    /// `ENHANCE_YOUR_CALM`.
+    ///
+    /// By default, the budget is half the target connection window, with a
+    /// minimum of 25,600 bytes. Changing the target window at runtime also
+    /// updates the permitted framing overhead.
+    pub fn data_frame_budget(&mut self, budget: usize) -> &mut Self {
+        self.data_frame_budget = proto::DataFrameBudget::Configured(budget);
         self
     }
 
@@ -1318,7 +1364,8 @@ where
                 reset_stream_max: builder.reset_stream_max,
                 remote_reset_stream_max: builder.pending_accept_reset_stream_max,
                 local_error_reset_streams_max: builder.local_max_error_reset_streams,
-                settings: builder.settings.clone(),
+                settings: builder.settings,
+                data_frame_budget: builder.data_frame_budget,
             },
         );
         let send_request = SendRequest {
@@ -1345,7 +1392,8 @@ where
     /// [`FlowControl`] instances, no `WINDOW_UPDATE` frames will be sent
     /// out until the number of "in flight" bytes drops below `size`.
     ///
-    /// The default value is 65,535.
+    /// The default value is 65,535. The automatic small-DATA-frame budget is
+    /// updated to match this target.
     ///
     /// See [`FlowControl`] documentation for more details.
     ///
@@ -1420,8 +1468,23 @@ where
     type Output = Result<(), crate::Error>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        // Snapshot before checking for shutdown: the last reference may be
+        // dropped after the shutdown check, before inner.poll registers a
+        // waker. A snapshot taken after that drop would be false and skip the
+        // self-wake below, leaving the connection pending without closing.
+        let had_streams_or_refs = self.inner.has_streams_or_other_references();
         self.inner.maybe_close_connection_if_no_streams();
-        self.inner.poll(cx).map_err(Into::into)
+        let result = self.inner.poll(cx).map_err(Into::into);
+        // if we had streams/refs, and don't anymore, wake up one more time to
+        // ensure proper shutdown
+        if result.is_pending()
+            && had_streams_or_refs
+            && !self.inner.has_streams_or_other_references()
+        {
+            tracing::trace!("last stream closed during poll, wake again");
+            cx.waker().wake_by_ref();
+        }
+        result
     }
 }
 
@@ -1458,6 +1521,22 @@ impl ResponseFuture {
     pub fn stream_id(&self) -> crate::StreamId {
         crate::StreamId::from_internal(self.inner.stream_id())
     }
+
+    /// Polls for informational responses (1xx status codes).
+    ///
+    /// This method should be called before polling the main response future
+    /// to check for any informational responses that have been received.
+    ///
+    /// Returns `Poll::Ready(Some(response))` if an informational response is available,
+    /// `Poll::Ready(None)` if no more informational responses are expected,
+    /// or `Poll::Pending` if no informational response is currently available.
+    pub fn poll_informational(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Response<()>, crate::Error>>> {
+        self.inner.poll_informational(cx).map_err(Into::into)
+    }
+
     /// Returns a stream of PushPromises
     ///
     /// # Panics
@@ -1480,7 +1559,7 @@ impl ResponseFuture {
 impl PushPromises {
     /// Get the next `PushPromise`.
     pub async fn push_promise(&mut self) -> Option<Result<PushPromise, crate::Error>> {
-        futures_util::future::poll_fn(move |cx| self.poll_push_promise(cx)).await
+        crate::poll_fn(move |cx| self.poll_push_promise(cx)).await
     }
 
     #[doc(hidden)]
@@ -1631,9 +1710,11 @@ impl proto::Peer for Peer {
         proto::DynPeer::Client
     }
 
+    /*
     fn is_server() -> bool {
         false
     }
+    */
 
     fn convert_poll_message(
         pseudo: Pseudo,
@@ -1646,6 +1727,11 @@ impl proto::Peer for Peer {
 
         if let Some(status) = pseudo.status {
             b = b.status(status);
+        } else {
+            // Every response must include :status (RFC 9113, section 8.3.2).
+            // https://www.rfc-editor.org/rfc/rfc9113.html#section-8.3.2
+            proto_err!(stream: "missing :status; stream={:?}", stream_id);
+            return Err(Error::library_reset(stream_id, Reason::PROTOCOL_ERROR));
         }
 
         let mut response = match b.body(()) {

@@ -1,21 +1,22 @@
-use crate::enums::{CipherSuite, ProtocolVersion};
-use crate::error::InvalidMessage;
-use crate::msgs::base::{PayloadU16, PayloadU8};
-use crate::msgs::codec::{Codec, Reader};
-use crate::msgs::handshake::CertificateChain;
-#[cfg(feature = "tls12")]
-use crate::msgs::handshake::SessionId;
-#[cfg(feature = "tls12")]
-use crate::tls12::Tls12CipherSuite;
-use crate::tls13::Tls13CipherSuite;
+use alloc::vec::Vec;
+use core::{cmp, fmt};
 
 use pki_types::{DnsName, UnixTime};
 use zeroize::Zeroizing;
 
-use alloc::vec::Vec;
-use core::cmp;
+use crate::client::ResolvesClientCert;
+use crate::enums::{CipherSuite, ProtocolVersion};
+use crate::error::InvalidMessage;
+use crate::msgs::base::{MaybeEmpty, PayloadU8, PayloadU16};
+use crate::msgs::codec::{Codec, Reader};
 #[cfg(feature = "tls12")]
-use core::mem;
+use crate::msgs::handshake::SessionId;
+use crate::msgs::handshake::{CertificateChain, ProtocolName};
+use crate::sync::{Arc, Weak};
+#[cfg(feature = "tls12")]
+use crate::tls12::Tls12CipherSuite;
+use crate::tls13::Tls13CipherSuite;
+use crate::verify::ServerCertVerifier;
 
 pub(crate) struct Retrieved<T> {
     pub(crate) value: T,
@@ -44,7 +45,10 @@ impl Retrieved<&Tls13ClientSessionValue> {
             .retrieved_at
             .as_secs()
             .saturating_sub(self.value.common.epoch);
-        let age_millis = age_secs as u32 * 1000;
+        // nb. tickets have an upper age limit of ~7 days, well short of the 49 days here
+        let age_millis = u32::try_from(age_secs)
+            .unwrap_or(u32::MAX)
+            .saturating_mul(1000);
         age_millis.wrapping_add(self.value.age_add)
     }
 }
@@ -68,7 +72,6 @@ impl<T> core::ops::Deref for Retrieved<T> {
     }
 }
 
-#[derive(Debug)]
 pub struct Tls13ClientSessionValue {
     suite: &'static Tls13CipherSuite,
     age_add: u32,
@@ -80,9 +83,11 @@ pub struct Tls13ClientSessionValue {
 impl Tls13ClientSessionValue {
     pub(crate) fn new(
         suite: &'static Tls13CipherSuite,
-        ticket: Vec<u8>,
+        ticket: Arc<PayloadU16>,
         secret: &[u8],
-        server_cert_chain: CertificateChain,
+        server_cert_chain: CertificateChain<'static>,
+        server_cert_verifier: &Arc<dyn ServerCertVerifier>,
+        client_creds: &Arc<dyn ResolvesClientCert>,
         time_now: UnixTime,
         lifetime_secs: u32,
         age_add: u32,
@@ -98,8 +103,10 @@ impl Tls13ClientSessionValue {
                 time_now,
                 lifetime_secs,
                 server_cert_chain,
+                server_cert_verifier,
+                client_creds,
             ),
-            quic_params: PayloadU16(Vec::new()),
+            quic_params: PayloadU16::new(Vec::new()),
         }
     }
 
@@ -117,8 +124,14 @@ impl Tls13ClientSessionValue {
         self.common.epoch -= delta as u64;
     }
 
+    #[doc(hidden)]
+    /// Test only: replace `max_early_data_size` with `new`
+    pub fn _private_set_max_early_data_size(&mut self, new: u32) {
+        self.max_early_data_size = new;
+    }
+
     pub fn set_quic_params(&mut self, quic_params: &[u8]) {
-        self.quic_params = PayloadU16(quic_params.to_vec());
+        self.quic_params = PayloadU16::new(quic_params.to_vec());
     }
 
     pub fn quic_params(&self) -> Vec<u8> {
@@ -131,6 +144,26 @@ impl core::ops::Deref for Tls13ClientSessionValue {
 
     fn deref(&self) -> &Self::Target {
         &self.common
+    }
+}
+
+impl fmt::Debug for Tls13ClientSessionValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self {
+            suite,
+            age_add,
+            max_early_data_size,
+            common,
+            quic_params,
+        } = self;
+
+        f.debug_struct("Tls13ClientSessionValue")
+            .field("suite", suite)
+            .field("age_add", age_add)
+            .field("max_early_data_size", max_early_data_size)
+            .field("common", common)
+            .field("quic_params", quic_params)
+            .finish()
     }
 }
 
@@ -152,9 +185,11 @@ impl Tls12ClientSessionValue {
     pub(crate) fn new(
         suite: &'static Tls12CipherSuite,
         session_id: SessionId,
-        ticket: Vec<u8>,
+        ticket: Arc<PayloadU16>,
         master_secret: &[u8],
-        server_cert_chain: CertificateChain,
+        server_cert_chain: CertificateChain<'static>,
+        server_cert_verifier: &Arc<dyn ServerCertVerifier>,
+        client_creds: &Arc<dyn ResolvesClientCert>,
         time_now: UnixTime,
         lifetime_secs: u32,
         extended_ms: bool,
@@ -169,12 +204,14 @@ impl Tls12ClientSessionValue {
                 time_now,
                 lifetime_secs,
                 server_cert_chain,
+                server_cert_verifier,
+                client_creds,
             ),
         }
     }
 
-    pub(crate) fn take_ticket(&mut self) -> Vec<u8> {
-        mem::take(&mut self.common.ticket.0)
+    pub(crate) fn ticket(&mut self) -> Arc<PayloadU16> {
+        self.common.ticket.clone()
     }
 
     pub(crate) fn extended_ms(&self) -> bool {
@@ -201,33 +238,65 @@ impl core::ops::Deref for Tls12ClientSessionValue {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ClientSessionCommon {
-    ticket: PayloadU16,
+    ticket: Arc<PayloadU16>,
     secret: Zeroizing<PayloadU8>,
     epoch: u64,
     lifetime_secs: u32,
-    server_cert_chain: CertificateChain,
+    server_cert_chain: Arc<CertificateChain<'static>>,
+    server_cert_verifier: Weak<dyn ServerCertVerifier>,
+    client_creds: Weak<dyn ResolvesClientCert>,
 }
 
 impl ClientSessionCommon {
     fn new(
-        ticket: Vec<u8>,
+        ticket: Arc<PayloadU16>,
         secret: &[u8],
         time_now: UnixTime,
         lifetime_secs: u32,
-        server_cert_chain: CertificateChain,
+        server_cert_chain: CertificateChain<'static>,
+        server_cert_verifier: &Arc<dyn ServerCertVerifier>,
+        client_creds: &Arc<dyn ResolvesClientCert>,
     ) -> Self {
         Self {
-            ticket: PayloadU16(ticket),
-            secret: Zeroizing::new(PayloadU8(secret.to_vec())),
+            ticket,
+            secret: Zeroizing::new(PayloadU8::new(secret.to_vec())),
             epoch: time_now.as_secs(),
             lifetime_secs: cmp::min(lifetime_secs, MAX_TICKET_LIFETIME),
-            server_cert_chain,
+            server_cert_chain: Arc::new(server_cert_chain),
+            server_cert_verifier: Arc::downgrade(server_cert_verifier),
+            client_creds: Arc::downgrade(client_creds),
         }
     }
 
-    pub(crate) fn server_cert_chain(&self) -> &CertificateChain {
+    pub(crate) fn compatible_config(
+        &self,
+        server_cert_verifier: &Arc<dyn ServerCertVerifier>,
+        client_creds: &Arc<dyn ResolvesClientCert>,
+    ) -> bool {
+        let same_verifier = Weak::ptr_eq(
+            &Arc::downgrade(server_cert_verifier),
+            &self.server_cert_verifier,
+        );
+        let same_creds = Weak::ptr_eq(&Arc::downgrade(client_creds), &self.client_creds);
+
+        match (same_verifier, same_creds) {
+            (true, true) => true,
+            (false, _) => {
+                crate::log::trace!("resumption not allowed between different ServerCertVerifiers");
+                false
+            }
+            (_, _) => {
+                crate::log::trace!(
+                    "resumption not allowed between different ResolvesClientCert values"
+                );
+                false
+            }
+        }
+    }
+
+    pub(crate) fn server_cert_chain(&self) -> &CertificateChain<'static> {
         &self.server_cert_chain
     }
 
@@ -240,6 +309,28 @@ impl ClientSessionCommon {
     }
 }
 
+impl fmt::Debug for ClientSessionCommon {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self {
+            ticket,
+            secret: _,
+            epoch,
+            lifetime_secs,
+            server_cert_chain,
+            server_cert_verifier,
+            client_creds,
+        } = self;
+        f.debug_struct("ClientSessionCommon")
+            .field("ticket", ticket)
+            .field("epoch", epoch)
+            .field("lifetime_secs", lifetime_secs)
+            .field("server_cert_chain", server_cert_chain)
+            .field("server_cert_verifier", server_cert_verifier)
+            .field("client_creds", client_creds)
+            .finish_non_exhaustive()
+    }
+}
+
 static MAX_TICKET_LIFETIME: u32 = 7 * 24 * 60 * 60;
 
 /// This is the maximum allowed skew between server and client clocks, over
@@ -249,14 +340,13 @@ static MAX_TICKET_LIFETIME: u32 = 7 * 24 * 60 * 60;
 static MAX_FRESHNESS_SKEW_MS: u32 = 60 * 1000;
 
 // --- Server types ---
-#[derive(Debug)]
 pub struct ServerSessionValue {
     pub(crate) sni: Option<DnsName<'static>>,
     pub(crate) version: ProtocolVersion,
     pub(crate) cipher_suite: CipherSuite,
     pub(crate) master_secret: Zeroizing<PayloadU8>,
     pub(crate) extended_ms: bool,
-    pub(crate) client_cert_chain: Option<CertificateChain>,
+    pub(crate) client_cert_chain: Option<CertificateChain<'static>>,
     pub(crate) alpn: Option<PayloadU8>,
     pub(crate) application_data: PayloadU16,
     pub creation_time_sec: u64,
@@ -264,12 +354,42 @@ pub struct ServerSessionValue {
     freshness: Option<bool>,
 }
 
-impl Codec for ServerSessionValue {
+impl fmt::Debug for ServerSessionValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self {
+            sni,
+            version,
+            cipher_suite,
+            master_secret: _,
+            extended_ms,
+            client_cert_chain,
+            alpn,
+            application_data,
+            creation_time_sec,
+            age_obfuscation_offset,
+            freshness,
+        } = self;
+        f.debug_struct("ServerSessionValue")
+            .field("sni", sni)
+            .field("version", version)
+            .field("cipher_suite", cipher_suite)
+            .field("extended_ms", extended_ms)
+            .field("client_cert_chain", client_cert_chain)
+            .field("alpn", alpn)
+            .field("application_data", application_data)
+            .field("creation_time_sec", creation_time_sec)
+            .field("age_obfuscation_offset", age_obfuscation_offset)
+            .field("freshness", freshness)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Codec<'_> for ServerSessionValue {
     fn encode(&self, bytes: &mut Vec<u8>) {
-        if let Some(ref sni) = self.sni {
+        if let Some(sni) = &self.sni {
             1u8.encode(bytes);
             let sni_bytes: &str = sni.as_ref();
-            PayloadU8::new(Vec::from(sni_bytes)).encode(bytes);
+            PayloadU8::<MaybeEmpty>::encode_slice(sni_bytes.as_bytes(), bytes);
         } else {
             0u8.encode(bytes);
         }
@@ -277,13 +397,13 @@ impl Codec for ServerSessionValue {
         self.cipher_suite.encode(bytes);
         self.master_secret.encode(bytes);
         (u8::from(self.extended_ms)).encode(bytes);
-        if let Some(ref chain) = self.client_cert_chain {
+        if let Some(chain) = &self.client_cert_chain {
             1u8.encode(bytes);
             chain.encode(bytes);
         } else {
             0u8.encode(bytes);
         }
-        if let Some(ref alpn) = self.alpn {
+        if let Some(alpn) = &self.alpn {
             1u8.encode(bytes);
             alpn.encode(bytes);
         } else {
@@ -295,10 +415,10 @@ impl Codec for ServerSessionValue {
             .encode(bytes);
     }
 
-    fn read(r: &mut Reader) -> Result<Self, InvalidMessage> {
+    fn read(r: &mut Reader<'_>) -> Result<Self, InvalidMessage> {
         let has_sni = u8::read(r)?;
         let sni = if has_sni == 1 {
-            let dns_name = PayloadU8::read(r)?;
+            let dns_name = PayloadU8::<MaybeEmpty>::read(r)?;
             let dns_name = match DnsName::try_from(dns_name.0.as_slice()) {
                 Ok(dns_name) => dns_name.to_owned(),
                 Err(_) => return Err(InvalidMessage::InvalidServerName),
@@ -315,7 +435,7 @@ impl Codec for ServerSessionValue {
         let ems = u8::read(r)?;
         let has_ccert = u8::read(r)? == 1;
         let ccert = if has_ccert {
-            Some(CertificateChain::read(r)?)
+            Some(CertificateChain::read(r)?.into_owned())
         } else {
             None
         };
@@ -351,8 +471,8 @@ impl ServerSessionValue {
         v: ProtocolVersion,
         cs: CipherSuite,
         ms: &[u8],
-        client_cert_chain: Option<CertificateChain>,
-        alpn: Option<Vec<u8>>,
+        client_cert_chain: Option<CertificateChain<'static>>,
+        alpn: Option<ProtocolName>,
         application_data: Vec<u8>,
         creation_time: UnixTime,
         age_obfuscation_offset: u32,
@@ -364,7 +484,7 @@ impl ServerSessionValue {
             master_secret: Zeroizing::new(PayloadU8::new(ms.to_vec())),
             extended_ms: false,
             client_cert_chain,
-            alpn: alpn.map(PayloadU8::new),
+            alpn: alpn.map(|p| PayloadU8::new(p.as_ref().to_vec())),
             application_data: PayloadU16::new(application_data),
             creation_time_sec: creation_time.as_secs(),
             age_obfuscation_offset,
@@ -388,11 +508,7 @@ impl ServerSessionValue {
             .saturating_sub(self.creation_time_sec) as u32)
             .saturating_mul(1000);
 
-        let age_difference = if client_age_ms < server_age_ms {
-            server_age_ms - client_age_ms
-        } else {
-            client_age_ms - server_age_ms
-        };
+        let age_difference = server_age_ms.abs_diff(client_age_ms);
 
         self.freshness = Some(age_difference <= MAX_FRESHNESS_SKEW_MS);
         self
@@ -406,23 +522,26 @@ impl ServerSessionValue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::enums::*;
-    use crate::msgs::codec::{Codec, Reader};
 
+    #[cfg(feature = "std")] // for UnixTime::now
     #[test]
     fn serversessionvalue_is_debug() {
+        use std::{format, println, vec};
         let ssv = ServerSessionValue::new(
             None,
             ProtocolVersion::TLSv1_3,
             CipherSuite::TLS13_AES_128_GCM_SHA256,
-            &[1, 2, 3],
+            &[0xa5; 48],
             None,
             None,
             vec![4, 5, 6],
             UnixTime::now(),
             0x12345678,
         );
-        println!("{:?}", ssv);
+        let debug = format!("{ssv:?}");
+        println!("{debug}");
+        assert!(debug.contains("application_data: 040506"));
+        assert!(!debug.contains("a5a5"), "{debug}");
     }
 
     #[test]

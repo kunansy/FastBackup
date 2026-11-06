@@ -9,11 +9,11 @@ fn bytes_debug_readable(bytes: &[u8]) -> String {
     for &byte in bytes {
         match byte {
             non_printable if !(0x20..0x7f).contains(&non_printable) => {
-                write!(result, "\\x{byte:02x}").unwrap();
+                result.write_fmt(format_args!("\\x{byte:02x}")).unwrap();
             }
             b'\\' => result.push_str("\\\\"),
             _ => {
-                result.push(byte as char);
+                result.push(char::from(byte));
             }
         }
     }
@@ -105,7 +105,7 @@ fn ron_serialize() {
         ],
     };
 
-    let pretty_config = ron::ser::PrettyConfig::new().new_line("\n".into());
+    let pretty_config = ron::ser::PrettyConfig::new().new_line("\n");
     let ron = ron::ser::to_string_pretty(&values, pretty_config).unwrap();
     expect_test::expect![[r#"
             (
@@ -127,78 +127,78 @@ fn ron_serialize() {
     // TODO deserializing a Strings as an Identifier seems unsupported
     let deser_values: ron::Value = ron::de::from_str(&ron).unwrap();
     expect_test::expect![[r#"
+        Map(
             Map(
-                Map(
-                    {
-                        String(
-                            "vec",
-                        ): Map(
-                            Map(
-                                {
-                                    String(
-                                        "Int",
-                                    ): Number(
-                                        Integer(
-                                            456,
-                                        ),
+                {
+                    String(
+                        "vec",
+                    ): Map(
+                        Map(
+                            {
+                                String(
+                                    "Int",
+                                ): Number(
+                                    U16(
+                                        456,
                                     ),
-                                    String(
-                                        "String",
-                                    ): String(
-                                        "XXX",
-                                    ),
-                                    String(
-                                        "Struct",
-                                    ): Map(
-                                        Map(
-                                            {
-                                                String(
-                                                    "a",
-                                                ): Number(
-                                                    Integer(
-                                                        666,
-                                                    ),
-                                                ),
-                                                String(
-                                                    "b",
-                                                ): String(
-                                                    "BBB",
-                                                ),
-                                                String(
-                                                    "c",
-                                                ): Bool(
-                                                    true,
-                                                ),
-                                            },
-                                        ),
-                                    ),
-                                    String(
-                                        "Tuple",
-                                    ): Seq(
-                                        [
-                                            Number(
-                                                Integer(
-                                                    1,
+                                ),
+                                String(
+                                    "String",
+                                ): String(
+                                    "XXX",
+                                ),
+                                String(
+                                    "Struct",
+                                ): Map(
+                                    Map(
+                                        {
+                                            String(
+                                                "a",
+                                            ): Number(
+                                                U16(
+                                                    666,
                                                 ),
                                             ),
                                             String(
-                                                "Middle",
+                                                "b",
+                                            ): String(
+                                                "BBB",
                                             ),
-                                            Bool(
-                                                false,
+                                            String(
+                                                "c",
+                                            ): Bool(
+                                                true,
                                             ),
-                                        ],
+                                        },
                                     ),
-                                    String(
-                                        "Unit",
-                                    ): Unit,
-                                },
-                            ),
+                                ),
+                                String(
+                                    "Tuple",
+                                ): Seq(
+                                    [
+                                        Number(
+                                            U8(
+                                                1,
+                                            ),
+                                        ),
+                                        String(
+                                            "Middle",
+                                        ),
+                                        Bool(
+                                            false,
+                                        ),
+                                    ],
+                                ),
+                                String(
+                                    "Unit",
+                                ): Unit,
+                            },
                         ),
-                    },
-                ),
-            )
-        "#]]
+                    ),
+                },
+            ),
+        )
+    "#]]
     .assert_debug_eq(&deser_values);
 }
 
@@ -412,7 +412,7 @@ fn rmp_round_trip() {
     };
 
     let rmp = rmp_serde::to_vec(&values).unwrap();
-    expect_test::expect![[r#"\x91\x88\xa3Int{\xa6String\xa6FooBar\xa3Int\xcd\x01\xc8\xa6String\xa3XXX\xa4Unit\xc0\xa5Tuple\x93\x01\xa6Middle\xc2\xa6Struct\x93\xcd\x02\x9a\xa3BBB\xc3\xa2Ip\x92\x81\xa2V4\x94\x7f\x00\x00\x01\x81\xa2V6\xdc\x00\x10\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00ww\xcc\xde\xcc\xad\xcc\xbe\xcc\xef"#]]
+    expect_test::expect![[r"\x91\x88\xa3Int{\xa6String\xa6FooBar\xa3Int\xcd\x01\xc8\xa6String\xa3XXX\xa4Unit\xc0\xa5Tuple\x93\x01\xa6Middle\xc2\xa6Struct\x93\xcd\x02\x9a\xa3BBB\xc3\xa2Ip\x92\x81\xa2V4\x94\x7f\x00\x00\x01\x81\xa2V6\xdc\x00\x10\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00ww\xcc\xde\xcc\xad\xcc\xbe\xcc\xef"]]
         .assert_eq(&bytes_debug_readable(&rmp));
     let deser_values: VecEnumValues = rmp_serde::from_read(&*rmp).unwrap();
     assert_eq!(values, deser_values);
@@ -437,7 +437,7 @@ fn yaml_round_trip() {
         ],
     };
 
-    let yaml = serde_yaml::to_string(&values).unwrap();
+    let yaml = yaml_serde::to_string(&values).unwrap();
     expect_test::expect![[r#"
         vec:
           Int: 123
@@ -453,6 +453,6 @@ fn yaml_round_trip() {
             c: true
     "#]]
     .assert_eq(&yaml);
-    let deser_values: VecEnumValues = serde_yaml::from_str(&yaml).unwrap();
+    let deser_values: VecEnumValues = yaml_serde::from_str(&yaml).unwrap();
     assert_eq!(values, deser_values);
 }

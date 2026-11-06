@@ -5,6 +5,1034 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.9.0 - 2026-05-06
+
+### Important Announcements
+
+#### New Github Organization
+Shortly after this release is published, the SQLx repository will be transferred to a new GitHub organization:
+https://github.com/transact-rs/
+
+This is because SQLx has not been owned or maintained by LaunchBadge, LLC. for a few years now, and has since been
+informally transferred to the collective ownership of its principal authors. Moving the repository to a new 
+organization makes this change more clear, and also allows for potentially inviting outside collaborators.
+
+#### `Cargo.lock` Removed from Tracking
+The `Cargo.lock` has been removed from tracking in Git. CI should now always test with the latest versions of 
+all dependencies by default, alongside our pass that checks with `cargo generate-lockfile -Z minimal-versions`.
+
+This should eliminate the need for any PRs that update dependencies to also update `Cargo.lock` or
+contend with an endless stream of merge conflicts against it.
+
+**N.B.** `cargo install --locked sqlx-cli` will no longer work. However, `cargo install sqlx-cli` has _always_
+used the latest dependencies by default, ignoring the lockfile, so most users should not be affected. For users
+requiring reproducible builds, consider maintaining your own lockfile instead; historically, we only ran `cargo update`
+sporadically, so relying on SQLx's lockfile offered few guarantees anyway.
+
+See [the manual page for `cargo install`][man-cargo-install] for details.
+
+### Breaking
+As per our [MSRV policy](FAQ.md#MSRV), the supported Rust version for this release cycle is [`1.94.0`](https://doc.rust-lang.org/stable/releases.html#version-1940-2026-03-05).
+
+
+* [[#3383]]: feat: create `sqlx.toml` format [[@abonander]]
+  * SQLx and `sqlx-cli` now support per-crate configuration files (`sqlx.toml`)
+  * New functionality includes, but is not limited to:
+    * Rename `DATABASE_URL` for a crate (for multi-database workspaces) 
+    * Set global type overrides for the macros (supporting custom types)
+    * Rename or relocate the `_sqlx_migrations` table (for multiple crates using the same database)
+    * Set characters to ignore when hashing migrations (e.g. ignore whitespace)
+  * More to be implemented in future releases.
+  * Enable feature `sqlx-toml` to use.
+    * `sqlx-cli` has it enabled by default, but `sqlx` does **not**.
+    * Default features of library crates can be hard to completely turn off because of [feature unification], 
+      so it's better to keep the default feature set as limited as possible. 
+      [This is something we learned the hard way.][preferred-crates]
+  * Guide: see `sqlx::_config` module in documentation.
+  * Reference: [[Link](sqlx-core/src/config/reference.toml)]
+  * Examples (written for Postgres but can be adapted to other databases; PRs welcome!):
+    * Multiple databases using `DATABASE_URL` renaming and global type overrides: [[Link](examples/postgres/multi-database)]
+    * Multi-tenant database using `_sqlx_migrations` renaming and multiple schemas: [[Link](examples/postgres/multi-tenant)]
+    * Force use of `chrono` when `time` is enabled (e.g. when using `tower-sessions-sqlx-store`): [[Link][preferred-crates]]
+      * Forcing `bigdecimal` when `rust_decimal` is enabled is also shown, but problems with `chrono`/`time` are more common.
+  * **Breaking changes**:
+    * Significant changes to the `Migrate` trait
+    * `sqlx::migrate::resolve_blocking()` is now `#[doc(hidden)]` and thus SemVer-exempt.
+* [[#3486]]: fix(logs): Correct spelling of aquired_after_secs tracing field [[@iamjpotts]]
+  * Breaking behavior change: implementations parsing `tracing` logs from SQLx will need to update the spelling.
+* [[#3495]]: feat(postgres): remove lifetime from `PgAdvisoryLockGuard` [[@bonsairobo]]
+* [[#3526]]: Return &mut Self from the migrator set_ methods [[@nipunn1313]]
+  * Minor breaking change: `Migrator::set_ignore_missing` and `set_locking` now return `&mut Self` instead of `&Self`
+    which may break code in rare circumstances.
+* [[#3541]]: Postgres: force generic plan for better nullability inference. [[@joeydewaal]]
+  * Breaking change: may alter the output of the `query!()` macros for certain queries in Postgres.
+* [[#3613]]: fix: `RawSql` lifetime issues [[@abonander]]
+  * Breaking change: adds `DB` type parameter to all methods of `RawSql`
+* [[#3670]]: Bump ipnetwork to v0.21.1 [[@BeauGieskens]]
+* [[#3674]]: Implement `Decode`, `Encode` and `Type` for `Box`, `Arc`, `Cow` and `Rc` [[@joeydewaal]]
+  * Breaking change: `impl Decode for Cow` now always decodes `Cow::Owned`, lifetime is unlinked
+  * See this discussion for motivation: https://github.com/launchbadge/sqlx/pull/3674#discussion_r2008611502
+* [[#3723]]: Add SqlStr [[@joeydewaal]]
+  * Breaking change: all `query*()` functions now take `impl SqlSafeStr` 
+    which is only implemented for `&'static str` and `AssertSqlSafe`. 
+    For all others, wrap in `AssertSqlSafe(<query>)`.
+  * This, along with [[#3960]], finally allows returning owned queries as the type will be `Query<'static, DB>`.
+  * `SqlSafeStr` trait is deliberately similar to `std::panic::UnwindSafe`, 
+    serving as a speedbump to warn users about naïvely building queries with `format!()`
+    while allowing a workaround for advanced usage that is easy to spot on code review. 
+* [[#3800]]: Escape PostgreSQL Options [[@V02460]]
+  * Breaking behavior change: options passed to `PgConnectOptions::options()` are now automatically escaped.
+    Manual escaping of options is no longer necessary and may cause incorrect behavior.
+* [[#3821]]: Groundwork for 0.9.0-alpha.1 [[@abonander]]
+  * Increased MSRV to 1.86 and set rust-version
+  * Deleted deprecated combination runtime+TLS features (e.g. `runtime-tokio-native-tls`)
+  * Deleted re-export of unstable `TransactionManager` trait in `sqlx`.
+    * Not technically a breaking change because it's `#[doc(hidden)]`,
+      but [it _will_ break SeaORM][seaorm-2600] if not proactively fixed.
+* [[#3924]]: breaking(mysql): assume all non-binary collations compatible with `str` [[@abonander]]
+  * Text (or text-like) columns which previously were inferred to be `Vec<u8>` will be inferred to be `String` 
+    (this should ultimately fix more code than it breaks).
+  * `SET NAMES utf8mb4 COLLATE utf8_general_ci` is no longer sent by default; instead, `SET NAMES utf8mb4` is sent to
+    allow the server to select the appropriate default collation (since this is version- and configuration-dependent).
+  * `MySqlConnectOptions::charset()` and `::collation()` now imply `::set_names(true)` because they don't do anything otherwise.
+  * Setting `charset` doesn't change what's sent in the `Protocol::HandshakeResponse41` packet as that normally only 
+    matters for error messages before `SET NAMES` is sent. 
+    The default collation if `set_names = false` is `utf8mb4_general_ci`.
+  * See [this comment](https://github.com/launchbadge/sqlx/blob/388c424f486bf20542a8a37d296dbcf86bb6dffd/sqlx-mysql/src/collation.rs#L1-L37) for details.
+  * Incidental breaking change: `RawSql::fetch_optional()` now returns `sqlx::Result<Option<DB::Row>>` 
+    instead of `sqlx::Result<DB::Row>`. Whoops.
+* [[#3928]]: breaking(sqlite): `libsqlite3-sys` versioning, feature flags, safety changes [[@abonander]]
+  * SemVer policy changes: `libsqlite3-sys` version is now specified using a range.
+    The maximum of the range may now be increased in any backwards-compatible release.
+    The minimum of the range may only be increased in major releases.
+    If you have `libsqlite3-sys` in your dependencies, Cargo should choose a compatible version automatically. 
+    If otherwise unconstrained, Cargo should choose the latest version supported.
+  * SQLite extension loading (including through the new `sqlx-toml` feature) is now `unsafe`. 
+  * Added new **non-default** features corresponding to conditionally compiled SQLite APIs:
+    * `sqlite-deserialize` enabling `SqliteConnection::serialize()` and `SqliteConnection::deserialize()`
+    * `sqlite-load-extension` enabling `SqliteConnectOptions::extension()` and `::extension_with_entrypoint()`
+    * `sqlite-unlock-notify` enables internal use of `sqlite3_unlock_notify()`
+  * `SqliteValue` and `SqliteValueRef` changes:
+    * The [`sqlite3_value*` interface](https://www.sqlite.org/c3ref/value_blob.html) reserves the right to be stateful. 
+      Without protection, any call could theoretically invalidate values previously returned, leading to dangling pointers.
+    * `SqliteValue` is now `!Sync` and `SqliteValueRef` is `!Send` to prevent data races from concurrent accesses.
+      *  Instead, clone or wrap the `SqliteValue` in `Mutex`, or convert the `SqliteValueRef` to an owned value.
+    * `SqliteValue` and any derived `SqliteValueRef`s now internally track if that value has been used to decode a 
+      borrowed `&[u8]` or `&str` and errors if it's used to decode any other type.
+    * This is not expected to affect the vast majority of usages, which should only decode a single type 
+      per `SqliteValue`/`SqliteValueRef`.
+    * See new docs on `SqliteValue` for details.
+* [[#3949]]: Postgres: move `PgLTree::from` to `From<Vec<PgLTreeLabel>>` implementation [[@JerryQ17]]
+* [[#3957]]: refactor(sqlite): do not borrow bound values, delete lifetime on `SqliteArguments` [[@iamjpotts]]
+* [[#3958]]: refactor(any): Remove lifetime parameter from AnyArguments [[@iamjpotts]]
+* [[#3960]]: refactor(core): Remove lifetime parameter from Arguments trait [[@iamjpotts]]
+* [[#3993]]: Unescape PostgreSQL passfile password [[@V02460]]
+  * Previously, `.pgpass` file handling did not process backslash-escapes in the password part. 
+    Now it does, which may change what password is sent to the server.
+* [[#4008]]: make `#[derive(sqlx::Type)]` automatically generate `impl PgHasArrayType` by default for newtype structs [[@papaj-na-wrotkach]]
+  * Manual implementations of PgHasArrayType for newtypes will conflict with the generated one.
+    Delete the manual impl or add `#[sqlx(no_pg_array)]` where conflicts occur.
+* [[#4077]]: breaking: make `offline` optional to allow building without `serde` [[@CathalMullan]]
+* [[#4094]]: Bump bit-vec to v0.8 [[@zennozenith]]
+* [[#4142]]: feat(mysql): add mysql-rsa feature for non-TLS RSA auth [[@dertin]]
+  * Connections requiring RSA password encryption now need to enable the `mysql-rsa` feature 
+    or an error will be generated at runtime. RSA encryption is only used for plaintext (non-TLS) connections.
+* [[#4255]]: breaking(any+mysql): correctly convert text and blob types to `AnyTypeInfo` [[@abonander]]
+
+### Added
+* [[#3641]]: feat(Postgres): support nested domain types [[@joeydewaal]]
+* [[#3651]]: Add PgBindIter for encoding and use it as the implementation encoding &[T] [[@tylerhawkes]]
+* [[#3675]]: feat: implement Encode, Decode, Type for `Arc<str>` and `Arc<[u8]>` (and `Rc` equivalents) [[@joeydewaal]]
+* [[#3791]]: Smol+async global executor 1.80 dev [[@martin-kolarik]]
+  * Adds `runtime-smol` and `runtime-async-global-executor` features to replace usages of the deprecated `async-std` crate.
+* [[#3859]]: Add more JsonRawValue encode/decode impls. [[@Dirbaio]]
+* [[#3881]]: CLi: made cli-lib modules publicly available for other crates [[@silvestrpredko]]
+* [[#3889]]: Compile-time support for external drivers [[@bobozaur]]
+* [[#3917]]: feat(sqlx.toml): support SQLite extensions in macros and sqlx-cli  [[@djarb]]
+* [[#3918]]: Feature: Add exclusion violation error kind [[@barskern]]
+* [[#3971]]: Allow single-field named structs to be transparent [[@Xiretza]]
+* [[#4015]]: feat(sqlite): `no_tx` migration support [[@AlexTMjugador]]
+* [[#4020]]: Add `Migrator::with_migrations()` constructor [[@xb284524239]]
+* [[#3846]]: Add the possibility to skip migrations [[@Dosenpfand]]
+* [[#4107]]: Add SQLite extension entrypoint config to `sqlx.toml`, update SQLite extension example [[@supleed2]]
+* [[#4118]]: [postgres] Display line number in error message [[@mousetail]]
+* [[#4123]]: feat: add `Json::into_inner()` [[@chrxn1c]]
+* [[#4153]]: Add on unimplemented diagnostic to `SqlStr` [[@joeydewaal]]
+* [[#4167]]: add sqlite serialize/deserialize example [[@mattrighetti]]
+* [[#4228]]: sqlx-postgres: Make `PgNotification` struct clone [[@michaelvanstraten]]
+
+
+### Changed
+* [[#3525]]: Remove unnecessary boxfutures [[@joeydewaal]]
+* [[#3867]]: sqlx-postgres: Bump etcetera to 0.10.0 [[@miniduikboot]]
+* [[#3709]]: chore: replace once_cell `OnceCell`/`Lazy` with std `OnceLock`/`LazyLock` [[@paolobarbolini]]
+* [[#3890]]: feat: Unify `Debug` implementations across `PgRow`, `MySqlRow` and `SqliteRow` [[@davidcornu]]
+* [[#3911]]: chore: upgrade async-io to v2.4.1 [[@zebrapurring]]
+* [[#3938]]: Move `QueryLogger` back [[@joeydewaal]]
+* [[#3956]]: chore(sqlite): Remove unused test of removed git2 feature [[@iamjpotts]]
+* [[#3962]]: Give SQLX_OFFLINE_DIR from environment precedence in macros [[@psionic-k]]
+* [[#3968]]: chore(ci): Add timeouts to ci jobs [[@iamjpotts]]
+* [[#4002]]: sqlx-postgres(tests): cleanup 2 unit tests. [[@joeydewaal]]
+* [[#4022]]: refactor: tweaks after #3791 [[@abonander]]
+* [[#4257]]: Prefer to give real data to `.bind()` in `README.md` [[@sobolevn]]
+* [[#4042]]: Update to webpki-roots 1 [[@tottoto]]
+* [[#4072]]: chore: update hashlink to v0.11.0 [[@anmolitor]]
+* [[#4143]]: Bump whoami to v2 [[@tisonkun]]
+* [[#4161]]: sqlx-sqlite: relax libsqlite3-sys constraint to allow 0.36.x [[@darioAnongba]]
+* [[#4173]]: ci: check direct minimal versions [[@ricochet]]
+  * Note: reverted in 0.9.0 release but still listed for contributor credit. See end of PR thread for details.
+* [[#4189]]: Bump flume to 0.12.0 [[@opoplawski]]
+* [[#4223]]: test(sqlite): add regression test for ORDER BY + LIMIT nullability (#4147) [[@barry3406]]
+* [[#4230]]: chore: Update to cargo_metadata 0.23 [[@tottoto]]
+* [[#4233]]: Change reference to dotenvy [[@graemer957]]
+* [[#4235]]: chore: Update to validator 0.20 [[@tottoto]]
+* [[#4253]]: chore: update example to axum 0.8 [[@tottoto]]
+* Release PR:
+  * Upgraded all Rust-Crypto crates, `rand`
+  * Upgraded `etcetera` to `0.11.0`
+  * Increased max of `libsqlite3-sys` version range to `<0.38.0`
+
+
+### Fixed
+* [[#3840]]: Fix docs.rs build of sqlx-sqlite [[@gferon]]
+* [[#3848]]: fix(macros): don't mutate environment variables [[@joeydewaal]]
+* [[#3856]]: fix(macros): slightly improve unsupported type error message [[@dyc3]]
+* [[#3857]]: fix(mysql): validate parameter count for prepared statements [[@cvzx]]
+* [[#3861]]: Fix NoHostnameTlsVerifier for rustls 0.23.24 and above [[@elichai]]
+* [[#3863]]: Use unnamed statement in pg when not persistent [[@ThomWright]]
+* [[#3874]]: Further reduce dependency on `futures` and `futures-util` [[@paolobarbolini]]
+* [[#3886]]: fix: use Executor::fetch in QueryAs::fetch [[@bobozaur]]
+* [[#3910]]: feat(ok): add correct handling of ok packets in MYSQL implementation [[@0xfourzerofour]]
+* [[#3914]]: fix: regenerate test certificates [[@abonander]]
+* [[#3915]]: fix: spec_error is used by try_from derive [[@saiintbrisson]]
+* [[#3919]]: fix[sqlx-postgres]: do a checked_mul to prevent panic'ing [[@nhatcher-frequenz]]
+* [[#3923]]: sqlx-mysql: Fix bug in cleanup test db's. [[@joeydewaal]]
+* [[#3950]]: chore: Fix warnings for custom postgres_## cfg flags [[@iamjpotts]]
+* [[#3952]]: `Pool.close`: close all connections before returning [[@jpmelos]]
+* [[#3975]]: fix documentation for rustls native root certificates [[@2ndDerivative]]
+* [[#3977]]: refactor(ci): Use separate job for postgres ssl auth tests [[@iamjpotts]]
+* [[#3980]]: Correctly `ROLLBACK` transaction when dropped during `BEGIN`. [[@kevincox]]
+* [[#3981]]: SQLite: fix transaction level accounting with bad custom command. [[@kevincox]]
+* [[#3986]]: chore(core): Fix docstring for Query::try_bind [[@iamjpotts]]
+* [[#3987]]: chore(deps): Resolve deprecation warning for chrono Date and ymd methods [[@iamjpotts]]
+* [[#3988]]: refactor(sqlite): Resolve duplicate test target warning for macros.rs [[@iamjpotts]]
+* [[#3989]]: chore(deps): Set default-features=false on sqlx in workspace.dependencies [[@iamjpotts]]
+* [[#3991]]: fix(sqlite): regression when decoding nulls [[@abonander]]
+* [[#4006]]: PostgreSQL SASL – run SHA256 in a blocking executor [[@ThomWright]]
+* [[#4007]]: fix(compose): use OS-assigned ports for all conatiners [[@papaj-na-wrotkach]]
+* [[#4009]]: Drop cached db connections in macros upon hitting an error [[@swlynch99]]
+* [[#4024]]: fix(sqlite) Migrate revert with no-transaction [[@Dosenpfand]]
+* [[#4027]]: native tls handshake: build TlsConnector in blocking threadpool [[@daviduebler]]
+* [[#4053]]: fix(macros): smarter `.env` loading, caching, and invalidation [[@abonander]]
+  * Additional credit to [[@AlexTMjugador]] ([[#4018]]) and [[@Diggsey]] ([[#4039]]) for their proposed solutions
+    which served as a useful comparison.
+* [[#4068]]: Fix typo in migration example from 'uesrs' to 'users' [[@squidpickles]]
+* [[#4069]]: fix some spelling issues [[@joeydewaal]]
+* [[#4086]]: fix(mysql): Work around for Issue #2206 (ColumnNotFound error when querying) [[@duelafn]]
+* [[#4088]]: (Fix) Handle nullability of SQLite rowid alias columns [[@Lege19]]
+* [[#4100]]: postgres: update pgpass path on windows [[@joeydewaal]]
+* [[#4134]]: fix CI: replace removed macOS runner, deprecated use of `Command::cargo_bin()` [[@abonander]]
+* [[#4136]]: Ensure Deterministic Migration Order  [[@aoengin]]
+* [[#4158]]: Fix panic in JSONB decoder on invalid version byte [[@jrey8343]]
+* [[#4165]]: sqlx-postgres: fix correct operator precedence in  byte length check [[@cuiweixie]]
+* [[#4171]]: fix(postgres): remove home crate in favor of std::env::home_dir [[@ricochet]]
+* [[#4172]]: fix(sqlx-cli): bump openssl minimum to 0.10.46 [[@ricochet]]
+* [[#4176]]: fix(mysql): return error instead of panic on truncated OK packet [[@cvzx]]
+* [[#4199]]: fix(postgres): make advisory lock cancel safe [[@joeydewaal]]
+* [[#4201]]: Fix SCRAM password `SASLprep`  [[@var4yn]]
+* [[#4202]]: fix: replace from_utf8_unchecked with from_utf8_lossy in SqliteError [[@joaquinhuigomez]]
+* [[#4203]]: fix: use sqlite3_value_text for REGEXP to match SQLite coercion [[@joaquinhuigomez]]
+* [[#4219]]: sqlite: lossily coerce invalid UTF-8 in custom collation callback [[@joaquinhuigomez]]
+* [[#4221]]: fix: replace `from_utf8_unchecked` with `from_utf8` in SQLite column name handling [[@barry3406]]
+* [[#4226]]: fix(postgres): use non-prepared statements for metadata queries [[@abonander]]
+* [[#4227]]: fix(macros-core): update unstable proc_macro APIs for recent nightly [[@barry3406]]
+* [[#4234]]: fix: Use correct path in error when failing to create tmp dir in prepare [[@Miesvanderlippe]]
+* [[#4245]]: fix(mysql): repair caching_sha2_password fast-auth path [[@altmannmarcelo]]
+* [[#4251]]: fix(tls): potential deadlock in `StdSocket::poll_ready()` [[@abonander]]
+
+[seaorm-2600]: https://github.com/SeaQL/sea-orm/issues/2600
+[feature unification]: https://doc.rust-lang.org/cargo/reference/features.html#feature-unification
+[preferred-crates]: examples/postgres/preferred-crates
+[man-cargo-install]: https://doc.rust-lang.org/cargo/commands/cargo-install.html#dealing-with-the-lockfile
+
+[#3821]: https://github.com/launchbadge/sqlx/pull/3821
+[#3383]: https://github.com/launchbadge/sqlx/pull/3383
+[#3486]: https://github.com/launchbadge/sqlx/pull/3486
+[#3495]: https://github.com/launchbadge/sqlx/pull/3495
+[#3525]: https://github.com/launchbadge/sqlx/pull/3525
+[#3526]: https://github.com/launchbadge/sqlx/pull/3526
+[#3541]: https://github.com/launchbadge/sqlx/pull/3541
+[#3613]: https://github.com/launchbadge/sqlx/pull/3613
+[#3641]: https://github.com/launchbadge/sqlx/pull/3641
+[#3651]: https://github.com/launchbadge/sqlx/pull/3651
+[#3670]: https://github.com/launchbadge/sqlx/pull/3670
+[#3674]: https://github.com/launchbadge/sqlx/pull/3674
+[#3675]: https://github.com/launchbadge/sqlx/pull/3675
+[#3709]: https://github.com/launchbadge/sqlx/pull/3709
+[#3723]: https://github.com/launchbadge/sqlx/pull/3723
+[#3791]: https://github.com/launchbadge/sqlx/pull/3791
+[#3800]: https://github.com/launchbadge/sqlx/pull/3800
+[#3821]: https://github.com/launchbadge/sqlx/pull/3821
+[#3840]: https://github.com/launchbadge/sqlx/pull/3840
+[#3848]: https://github.com/launchbadge/sqlx/pull/3848
+[#3856]: https://github.com/launchbadge/sqlx/pull/3856
+[#3857]: https://github.com/launchbadge/sqlx/pull/3857
+[#3859]: https://github.com/launchbadge/sqlx/pull/3859
+[#3861]: https://github.com/launchbadge/sqlx/pull/3861
+[#3863]: https://github.com/launchbadge/sqlx/pull/3863
+[#3867]: https://github.com/launchbadge/sqlx/pull/3867
+[#3874]: https://github.com/launchbadge/sqlx/pull/3874
+[#3881]: https://github.com/launchbadge/sqlx/pull/3881
+[#3886]: https://github.com/launchbadge/sqlx/pull/3886
+[#3889]: https://github.com/launchbadge/sqlx/pull/3889
+[#3890]: https://github.com/launchbadge/sqlx/pull/3890
+[#3910]: https://github.com/launchbadge/sqlx/pull/3910
+[#3911]: https://github.com/launchbadge/sqlx/pull/3911
+[#3914]: https://github.com/launchbadge/sqlx/pull/3914
+[#3915]: https://github.com/launchbadge/sqlx/pull/3915
+[#3917]: https://github.com/launchbadge/sqlx/pull/3917
+[#3918]: https://github.com/launchbadge/sqlx/pull/3918
+[#3919]: https://github.com/launchbadge/sqlx/pull/3919
+[#3923]: https://github.com/launchbadge/sqlx/pull/3923
+[#3924]: https://github.com/launchbadge/sqlx/pull/3924
+[#3928]: https://github.com/launchbadge/sqlx/pull/3928
+[#3938]: https://github.com/launchbadge/sqlx/pull/3938
+[#3949]: https://github.com/launchbadge/sqlx/pull/3949
+[#3950]: https://github.com/launchbadge/sqlx/pull/3950
+[#3952]: https://github.com/launchbadge/sqlx/pull/3952
+[#3956]: https://github.com/launchbadge/sqlx/pull/3956
+[#3957]: https://github.com/launchbadge/sqlx/pull/3957
+[#3958]: https://github.com/launchbadge/sqlx/pull/3958
+[#3960]: https://github.com/launchbadge/sqlx/pull/3960
+[#3962]: https://github.com/launchbadge/sqlx/pull/3962
+[#3968]: https://github.com/launchbadge/sqlx/pull/3968
+[#3971]: https://github.com/launchbadge/sqlx/pull/3971
+[#3975]: https://github.com/launchbadge/sqlx/pull/3975
+[#3977]: https://github.com/launchbadge/sqlx/pull/3977
+[#3980]: https://github.com/launchbadge/sqlx/pull/3980
+[#3981]: https://github.com/launchbadge/sqlx/pull/3981
+[#3986]: https://github.com/launchbadge/sqlx/pull/3986
+[#3987]: https://github.com/launchbadge/sqlx/pull/3987
+[#3988]: https://github.com/launchbadge/sqlx/pull/3988
+[#3989]: https://github.com/launchbadge/sqlx/pull/3989
+[#3991]: https://github.com/launchbadge/sqlx/pull/3991
+[#4002]: https://github.com/launchbadge/sqlx/pull/4002
+[#4006]: https://github.com/launchbadge/sqlx/pull/4006
+[#4007]: https://github.com/launchbadge/sqlx/pull/4007
+[#4008]: https://github.com/launchbadge/sqlx/pull/4008
+[#4009]: https://github.com/launchbadge/sqlx/pull/4009
+[#4015]: https://github.com/launchbadge/sqlx/pull/4015
+[#4018]: https://github.com/launchbadge/sqlx/pull/4018
+[#4020]: https://github.com/launchbadge/sqlx/pull/4020
+[#4022]: https://github.com/launchbadge/sqlx/pull/4022
+[#4024]: https://github.com/launchbadge/sqlx/pull/4024
+[#4027]: https://github.com/launchbadge/sqlx/pull/4027
+[#4039]: https://github.com/launchbadge/sqlx/pull/4039
+[#4053]: https://github.com/launchbadge/sqlx/pull/4053
+[#3846]: https://github.com/launchbadge/sqlx/pull/3846
+[#3993]: https://github.com/launchbadge/sqlx/pull/3993
+[#4042]: https://github.com/launchbadge/sqlx/pull/4042
+[#4068]: https://github.com/launchbadge/sqlx/pull/4068
+[#4069]: https://github.com/launchbadge/sqlx/pull/4069
+[#4072]: https://github.com/launchbadge/sqlx/pull/4072
+[#4077]: https://github.com/launchbadge/sqlx/pull/4077
+[#4086]: https://github.com/launchbadge/sqlx/pull/4086
+[#4088]: https://github.com/launchbadge/sqlx/pull/4088
+[#4094]: https://github.com/launchbadge/sqlx/pull/4094
+[#4100]: https://github.com/launchbadge/sqlx/pull/4100
+[#4107]: https://github.com/launchbadge/sqlx/pull/4107
+[#4118]: https://github.com/launchbadge/sqlx/pull/4118
+[#4123]: https://github.com/launchbadge/sqlx/pull/4123
+[#4134]: https://github.com/launchbadge/sqlx/pull/4134
+[#4136]: https://github.com/launchbadge/sqlx/pull/4136
+[#4142]: https://github.com/launchbadge/sqlx/pull/4142
+[#4143]: https://github.com/launchbadge/sqlx/pull/4143
+[#4153]: https://github.com/launchbadge/sqlx/pull/4153
+[#4158]: https://github.com/launchbadge/sqlx/pull/4158
+[#4161]: https://github.com/launchbadge/sqlx/pull/4161
+[#4165]: https://github.com/launchbadge/sqlx/pull/4165
+[#4167]: https://github.com/launchbadge/sqlx/pull/4167
+[#4171]: https://github.com/launchbadge/sqlx/pull/4171
+[#4172]: https://github.com/launchbadge/sqlx/pull/4172
+[#4173]: https://github.com/launchbadge/sqlx/pull/4173
+[#4176]: https://github.com/launchbadge/sqlx/pull/4176
+[#4189]: https://github.com/launchbadge/sqlx/pull/4189
+[#4199]: https://github.com/launchbadge/sqlx/pull/4199
+[#4201]: https://github.com/launchbadge/sqlx/pull/4201
+[#4202]: https://github.com/launchbadge/sqlx/pull/4202
+[#4203]: https://github.com/launchbadge/sqlx/pull/4203
+[#4219]: https://github.com/launchbadge/sqlx/pull/4219
+[#4221]: https://github.com/launchbadge/sqlx/pull/4221
+[#4223]: https://github.com/launchbadge/sqlx/pull/4223
+[#4226]: https://github.com/launchbadge/sqlx/pull/4226
+[#4227]: https://github.com/launchbadge/sqlx/pull/4227
+[#4228]: https://github.com/launchbadge/sqlx/pull/4228
+[#4230]: https://github.com/launchbadge/sqlx/pull/4230
+[#4233]: https://github.com/launchbadge/sqlx/pull/4233
+[#4234]: https://github.com/launchbadge/sqlx/pull/4234
+[#4235]: https://github.com/launchbadge/sqlx/pull/4235
+[#4245]: https://github.com/launchbadge/sqlx/pull/4245
+[#4251]: https://github.com/launchbadge/sqlx/pull/4251
+[#4253]: https://github.com/launchbadge/sqlx/pull/4253
+[#4255]: https://github.com/launchbadge/sqlx/pull/4255
+[#4257]: https://github.com/launchbadge/sqlx/pull/4257
+
+## 0.8.6 - 2025-05-19
+
+9 pull requests were merged this release cycle.
+
+### Added
+* [[#3849]]: Add color and wrapping to cli help text [[@joshka]]
+
+### Changed
+* [[#3830]]: build: drop unused `tempfile` dependency [[@paolobarbolini]]
+* [[#3845]]: chore: clean up no longer used imports [[@tisonkun]]
+* [[#3863]]: Use unnamed statement in pg when not persistent [[@ThomWright]]
+* [[#3866]]: chore(doc): clarify compile-time verification and case conversion behavior [[@duhby]]
+
+### Fixed
+* [[#3840]]: Fix docs.rs build of sqlx-sqlite [[@gferon]]
+* [[#3848]]: fix(macros): don't mutate environment variables [[@joeydewaal]]
+* [[#3855]]: fix `attrubute` typo in doc [[@kujeger]]
+* [[#3856]]: fix(macros): slightly improve unsupported type error message [[@dyc3]]
+
+[#3830]: https://github.com/launchbadge/sqlx/pull/3830
+[#3840]: https://github.com/launchbadge/sqlx/pull/3840
+[#3845]: https://github.com/launchbadge/sqlx/pull/3845
+[#3848]: https://github.com/launchbadge/sqlx/pull/3848
+[#3849]: https://github.com/launchbadge/sqlx/pull/3849
+[#3855]: https://github.com/launchbadge/sqlx/pull/3855
+[#3856]: https://github.com/launchbadge/sqlx/pull/3856
+[#3863]: https://github.com/launchbadge/sqlx/pull/3863
+[#3866]: https://github.com/launchbadge/sqlx/pull/3866
+
+## 0.8.5 - 2025-04-14
+
+Hotfix release to address two new issues:
+* [[#3823]]: `sqlx-cli@0.8.4` broke `.env` default resolution mechanism
+* [[#3825]]: `sqlx@0.8.4` broke test fixture setup
+
+The `0.8.4` release will be yanked as of publishing this one.
+
+### Added
+* In release PR: `sqlx-cli` now accepts `--no-dotenv` in subcommand arguments.
+* In release PR: added functionality tests for `sqlx-cli` to CI.
+* In release PR: test `#[sqlx::test]` twice in CI to cover cleanup.
+
+### Fixed
+* In release PR: `sqlx-cli` correctly reads `.env` files by default again.
+  * Addresses [[#3823]].
+* In release PR: fix bugs in MySQL implementation of `#[sqlx::test]`.
+  * Addresses [[#3825]].
+
+[#3823]: https://github.com/launchbadge/sqlx/issues/3823
+[#3825]: https://github.com/launchbadge/sqlx/issues/3825
+
+## 0.8.4 - 2025-04-13
+
+50 pull requests were merged this release cycle.
+
+### Added
+* [[#3603]]: Added missing special casing for encoding embedded arrays of custom types [[@nico-incubiq]]
+* [[#3625]]: feat(sqlite): add preupdate hook [[@aschey]]
+* [[#3655]]: docs: add example for postgres enums with type TEXT [[@tisonkun]]
+* [[#3677]]: Add json(nullable) macro attribute [[@seanaye]]
+* [[#3687]]: Derive clone and debug for postgresql arguments [[@remysaissy]]
+* [[#3690]]: feat: add postres geometry line segment [[@jayy-lmao]]
+* [[#3707]]: feat(Sqlite): add LockedSqliteHandle::last_error [[@joeydewaal]]
+* [[#3710]]: feat: add ipnet support [[@BeauGieskens]]
+* [[#3711]]: feat(postgres): add geometry box [[@jayy-lmao]]
+* [[#3714]]: chore: expose bstr feature [[@joeydewaal]]
+* [[#3716]]: feat(postgres): add geometry path [[@jayy-lmao]]
+* [[#3724]]: feat(sqlx-cli): Add flag to disable automatic loading of .env files [[@benwilber]]
+* [[#3734]]: QueryBuilder: add debug_assert when `push_values` is passed an empty set of tuples [[@chanmaoganda]]
+* [[#3745]]: feat: sqlx sqlite expose de/serialize [[@mattrighetti]]
+* [[#3765]]: Merge of #3427 (by @mpyw) and #3614 (by @bonsairobo) [[@abonander]]
+    * [[#3427]] Expose `transaction_depth` through `get_transaction_depth()` method [[@mpyw]]
+      * Changed to `Connection::is_in_transaction` in [[#3765]]
+    * [[#3614]] Add `begin_with` methods to support database-specific transaction options [[@bonsairobo]]
+* [[#3769]]: feat(postgres): add geometry polygon [[@jayy-lmao]]
+* [[#3773]]: feat(postgres): add geometry circle [[@jayy-lmao]]
+
+### Changed
+* [[#3665]]: build(deps): bump semver compatible dependencies [[@paolobarbolini]]
+* [[#3669]]: refactor(cli): replace promptly with dialoguer [[@paolobarbolini]]
+* [[#3672]]: add `#[track_caller]` to `Row::get()` [[@karambarakat]]
+* [[#3708]]: chore(MySql): Remove unnecessary box [[@joeydewaal]]
+* [[#3715]]: chore: add pg_copy regression tests [[@joeydewaal]]
+* [[#3721]]: Replace some `futures-core` / `futures-util` APIs with `std` variants [[@paolobarbolini]]
+* [[#3725]]: chore: replace rustls-pemfile with rustls-pki-types [[@tottoto]]
+* [[#3754]]: chore(cli): remove unused async-trait crate from dependencies [[@tottoto]]
+* [[#3762]]: docs(pool): recommend actix-web ThinData over Data to avoid two Arcs [[@jonasmalacofilho]]
+
+### Fixed
+* [[#3289]]: Always set `SQLITE_OPEN_URI` on in-memory sqlite [[@LecrisUT]]
+* [[#3334]]: Fix: nextest cleanup race condition [[@bonega]]
+* [[#3666]]: fix(cli): running tests on 32bit platforms [[@paolobarbolini]]
+* [[#3686]]: fix: handle nullable values by printing NULL instead of panicking [[@joeydewaal]]
+* [[#3700]]: fix(Sqlite): stop sending rows after first error [[@joeydewaal]]
+* [[#3701]]: fix(postgres) use signed int for length prefix in `PgCopyIn` [[@joeydewaal]]
+* [[#3703]]: fix(Postgres) chunk pg_copy data [[@joeydewaal]]
+* [[#3712]]: FromRow: Fix documentation order [[@Turbo87]]
+* [[#3720]]: Fix readme: uuid feature is gating for all repos [[@jthacker]]
+* [[#3728]]: postgres: Fix tracing span when dropping PgListener [[@chitoku-k]]
+* [[#3741]]: Fix example calculation in docs [[@dns2utf8]]
+* [[#3749]]: docs: add some missing backticks [[@soulwa]]
+* [[#3753]]: Avoid privilege requirements by using an advisory lock in test setup (postgres). [[@kildrens]]
+* [[#3755]]: Fix FromRow docs for tuples [[@xvapx]]
+* [[#3768]]: chore(Sqlite): remove ci.db from repo [[@joeydewaal]]
+* [[#3771]]: fix(ci): breakage from Rustup 1.28 [[@abonander]]
+* [[#3786]]: Fix a copy-paste error on get_username docs [[@sulami]]
+* [[#3801]]: Fix: Enable Json type when db feature isn't enabled [[@thriller08]]
+* [[#3809]]: fix: PgConnectOptions docs [[@mbj]]
+* [[#3811]]: Fix error message typo in PgPoint::from_str [[@TeCHiScy]]
+* [[#3812]]: mysql: Fix panic on invalid text row length field [[@0xdeafbeef]]
+* [[#3815]]: fix(macros): cache macro metadata based on `CARGO_MANIFEST_DIR` [[@joeydewaal]]
+* Fixes in release PR [[#3819]] [[@abonander]]:
+  * fix(postgres): send `limit: 0` for all `Execute` messages
+    * Addresses [[#3673]]: Parallel workers not used on Postgres 
+  * fix: let `CertificateInput::from` infer any PEM-encoded document
+    * Fixes `PGSSLKEY` not being parsed correctly when containing a PEM-encoded private key.
+  * doc: improve documentation of `PgConnectOptions`
+    * `PGHOSTADDR` now can be used to override `PGHOST`. 
+    * Addresses [[#3740]]: Document the URL syntax for Unix-domain sockets when connecting to postgres
+
+[#3819]: https://github.com/launchbadge/sqlx/pull/3819
+
+[#3673]: https://github.com/launchbadge/sqlx/issues/3673
+[#3740]: https://github.com/launchbadge/sqlx/issues/3740
+
+[#3289]: https://github.com/launchbadge/sqlx/pull/3289
+[#3334]: https://github.com/launchbadge/sqlx/pull/3334
+[#3427]: https://github.com/launchbadge/sqlx/pull/3427
+[#3603]: https://github.com/launchbadge/sqlx/pull/3603
+[#3614]: https://github.com/launchbadge/sqlx/pull/3614
+[#3625]: https://github.com/launchbadge/sqlx/pull/3625
+[#3655]: https://github.com/launchbadge/sqlx/pull/3655
+[#3665]: https://github.com/launchbadge/sqlx/pull/3665
+[#3666]: https://github.com/launchbadge/sqlx/pull/3666
+[#3669]: https://github.com/launchbadge/sqlx/pull/3669
+[#3672]: https://github.com/launchbadge/sqlx/pull/3672
+[#3677]: https://github.com/launchbadge/sqlx/pull/3677
+[#3686]: https://github.com/launchbadge/sqlx/pull/3686
+[#3687]: https://github.com/launchbadge/sqlx/pull/3687
+[#3690]: https://github.com/launchbadge/sqlx/pull/3690
+[#3700]: https://github.com/launchbadge/sqlx/pull/3700
+[#3701]: https://github.com/launchbadge/sqlx/pull/3701
+[#3703]: https://github.com/launchbadge/sqlx/pull/3703
+[#3707]: https://github.com/launchbadge/sqlx/pull/3707
+[#3708]: https://github.com/launchbadge/sqlx/pull/3708
+[#3710]: https://github.com/launchbadge/sqlx/pull/3710
+[#3711]: https://github.com/launchbadge/sqlx/pull/3711
+[#3712]: https://github.com/launchbadge/sqlx/pull/3712
+[#3714]: https://github.com/launchbadge/sqlx/pull/3714
+[#3715]: https://github.com/launchbadge/sqlx/pull/3715
+[#3716]: https://github.com/launchbadge/sqlx/pull/3716
+[#3720]: https://github.com/launchbadge/sqlx/pull/3720
+[#3721]: https://github.com/launchbadge/sqlx/pull/3721
+[#3724]: https://github.com/launchbadge/sqlx/pull/3724
+[#3725]: https://github.com/launchbadge/sqlx/pull/3725
+[#3728]: https://github.com/launchbadge/sqlx/pull/3728
+[#3734]: https://github.com/launchbadge/sqlx/pull/3734
+[#3741]: https://github.com/launchbadge/sqlx/pull/3741
+[#3745]: https://github.com/launchbadge/sqlx/pull/3745
+[#3749]: https://github.com/launchbadge/sqlx/pull/3749
+[#3753]: https://github.com/launchbadge/sqlx/pull/3753
+[#3754]: https://github.com/launchbadge/sqlx/pull/3754
+[#3755]: https://github.com/launchbadge/sqlx/pull/3755
+[#3762]: https://github.com/launchbadge/sqlx/pull/3762
+[#3765]: https://github.com/launchbadge/sqlx/pull/3765
+[#3768]: https://github.com/launchbadge/sqlx/pull/3768
+[#3769]: https://github.com/launchbadge/sqlx/pull/3769
+[#3771]: https://github.com/launchbadge/sqlx/pull/3771
+[#3773]: https://github.com/launchbadge/sqlx/pull/3773
+[#3786]: https://github.com/launchbadge/sqlx/pull/3786
+[#3801]: https://github.com/launchbadge/sqlx/pull/3801
+[#3809]: https://github.com/launchbadge/sqlx/pull/3809
+[#3811]: https://github.com/launchbadge/sqlx/pull/3811
+[#3812]: https://github.com/launchbadge/sqlx/pull/3812
+[#3815]: https://github.com/launchbadge/sqlx/pull/3815
+
+## 0.8.3 - 2025-01-03
+
+41 pull requests were merged this release cycle.
+
+### Added
+* [[#3418]]: parse timezone parameter in mysql connection url [[@dojiong]]
+* [[#3491]]: chore: Update async-std v1.13 [[@jayvdb]]
+* [[#3492]]: expose relation_id and relation_attribution_no on PgColumn [[@kurtbuilds]]
+* [[#3493]]: doc(sqlite): document behavior for zoned date-time types [[@abonander]]
+* [[#3500]]: Add sqlite commit and rollback hooks [[@gridbox]]
+* [[#3505]]: chore(mysql): create test for passwordless auth (#3484) [[@abonander]]
+* [[#3507]]: Add a "sqlite-unbundled" feature that dynamically links to system libsqlite3.so library [[@lilydjwg]]
+* [[#3508]]: doc(sqlite): show how to turn options into a pool [[@M3t0r]]
+* [[#3514]]: Support PgHstore by default in macros [[@joeydewaal]]
+* [[#3550]]: Implement Acquire for PgListener [[@sandhose]]
+* [[#3551]]: Support building with rustls but native certificates [[@IlyaBizyaev]]
+* [[#3553]]: Add support for Postgres lquery arrays [[@philipcristiano]]
+* [[#3560]]: Add PgListener::next_buffered(), to support batch processing of notifications [[@chanks]]
+* [[#3577]]: Derive Copy where possible for database-specific types [[@veigaribo]]
+* [[#3579]]: Reexport AnyTypeInfoKind [[@Norlock]]
+* [[#3580]]: doc(mysql): document difference between `Uuid` and `uuid::fmt::Hyphenated` [[@abonander]]
+* [[#3583]]: feat: point [[@jayy-lmao]]
+* [[#3608]]: Implement AnyQueryResult for Sqlite and MySQL [[@pxp9]]
+* [[#3623]]: feat: add geometry line [[@jayy-lmao]]
+* [[#3658]]: feat: add Transaction type aliases [[@joeydewaal]]
+
+### Changed
+* [[#3519]]: Remove unused dependencies from sqlx-core, sqlx-cli and sqlx-postgres [[@vsuryamurthy]]
+* [[#3529]]: Box Pgconnection fields [[@joeydewaal]]
+* [[#3548]]: Demote `.pgpass` file warning to a debug message. [[@denschub]]
+* [[#3585]]: Eagerly reconnect in `PgListener::try_recv` [[@swlynch99]]
+* [[#3596]]: Bump thiserror to v2.0.0 [[@paolobarbolini]]
+* [[#3605]]: Use `UNION ALL` instead of `UNION` in nullable check [[@Suficio]]
+* [[#3629]]: chore: remove BoxFuture's (non-breaking) [[@joeydewaal]]
+* [[#3632]]: Bump hashlink to v0.10 [[@paolobarbolini]]
+* [[#3643]]: Roll PostgreSQL 11..=15 tests to 13..=17 [[@paolobarbolini]]
+* [[#3648]]: close listener connection on TimedOut and BrokenPipe errors [[@DXist]]
+* [[#3649]]: Bump hashbrown to v0.15 [[@paolobarbolini]]
+
+### Fixed
+* [[#3528]]: fix: obey `no-transaction` flag in down migrations [[@manifest]]
+* [[#3536]]: fix: using sqlx::test macro inside macro's [[@joeydewaal]]
+* [[#3545]]: fix: remove `sqlformat` [[@tbar4]]
+* [[#3558]]: fix: fix example code of `query_as` [[@xuehaonan27]]
+* [[#3566]]: Fix: Cannot query Postgres `INTERVAL[]` [[@Ddystopia]]
+* [[#3593]]: fix: URL decode database name when parsing connection url [[@BenoitRanque]]
+* [[#3601]]: Remove default-features = false from url [[@hsivonen]]
+* [[#3604]]: Fix mistake in sqlx::test fixtures docs [[@andreweggleston]]
+* [[#3612]]: fix(mysql): percent-decode database name [[@abonander]]
+* [[#3640]]: Dont use `EXPLAIN` in nullability check for QuestDB [[@Suficio]]
+
+[#3418]: https://github.com/launchbadge/sqlx/pull/3418
+[#3478]: https://github.com/launchbadge/sqlx/pull/3478
+[#3491]: https://github.com/launchbadge/sqlx/pull/3491
+[#3492]: https://github.com/launchbadge/sqlx/pull/3492
+[#3493]: https://github.com/launchbadge/sqlx/pull/3493
+[#3500]: https://github.com/launchbadge/sqlx/pull/3500
+[#3505]: https://github.com/launchbadge/sqlx/pull/3505
+[#3507]: https://github.com/launchbadge/sqlx/pull/3507
+[#3508]: https://github.com/launchbadge/sqlx/pull/3508
+[#3514]: https://github.com/launchbadge/sqlx/pull/3514
+[#3519]: https://github.com/launchbadge/sqlx/pull/3519
+[#3528]: https://github.com/launchbadge/sqlx/pull/3528
+[#3529]: https://github.com/launchbadge/sqlx/pull/3529
+[#3536]: https://github.com/launchbadge/sqlx/pull/3536
+[#3545]: https://github.com/launchbadge/sqlx/pull/3545
+[#3548]: https://github.com/launchbadge/sqlx/pull/3548
+[#3550]: https://github.com/launchbadge/sqlx/pull/3550
+[#3551]: https://github.com/launchbadge/sqlx/pull/3551
+[#3553]: https://github.com/launchbadge/sqlx/pull/3553
+[#3558]: https://github.com/launchbadge/sqlx/pull/3558
+[#3560]: https://github.com/launchbadge/sqlx/pull/3560
+[#3566]: https://github.com/launchbadge/sqlx/pull/3566
+[#3577]: https://github.com/launchbadge/sqlx/pull/3577
+[#3579]: https://github.com/launchbadge/sqlx/pull/3579
+[#3580]: https://github.com/launchbadge/sqlx/pull/3580
+[#3583]: https://github.com/launchbadge/sqlx/pull/3583
+[#3585]: https://github.com/launchbadge/sqlx/pull/3585
+[#3593]: https://github.com/launchbadge/sqlx/pull/3593
+[#3596]: https://github.com/launchbadge/sqlx/pull/3596
+[#3601]: https://github.com/launchbadge/sqlx/pull/3601
+[#3604]: https://github.com/launchbadge/sqlx/pull/3604
+[#3605]: https://github.com/launchbadge/sqlx/pull/3605
+[#3608]: https://github.com/launchbadge/sqlx/pull/3608
+[#3612]: https://github.com/launchbadge/sqlx/pull/3612
+[#3623]: https://github.com/launchbadge/sqlx/pull/3623
+[#3629]: https://github.com/launchbadge/sqlx/pull/3629
+[#3632]: https://github.com/launchbadge/sqlx/pull/3632
+[#3640]: https://github.com/launchbadge/sqlx/pull/3640
+[#3643]: https://github.com/launchbadge/sqlx/pull/3643
+[#3648]: https://github.com/launchbadge/sqlx/pull/3648
+[#3649]: https://github.com/launchbadge/sqlx/pull/3649
+[#3658]: https://github.com/launchbadge/sqlx/pull/3658
+
+
+## 0.8.2 - 2024-09-02
+
+10 pull requests were merged this release cycle.
+
+This release addresses a few regressions that have occurred, and refines SQLx's MSRV policy (see [the FAQ](FAQ.md)).
+
+### Added
+* [[#3447]]: Clarify usage of Json/Jsonb in query macros [[@Lachstec]]
+
+### Changed
+* [[#3424]]: Remove deprecated feature-names from `Cargo.toml` files in examples [[@carschandler]]
+
+### Fixed
+* [[#3403]]: Fix (#3395) sqlx::test macro in 0.8 [[@joeydewaal]]
+* [[#3411]]: fix: Use rfc3339 to decode date from text [[@pierre-wehbe]]
+* [[#3453]]: fix(#3445): PgHasArrayType [[@joeydewaal]]
+    * Fixes `#[sqlx(no_pg_array)]` being forbidden on `#[derive(Type)]` structs. 
+* [[#3454]]: fix: non snake case warning [[@joeydewaal]]
+* [[#3459]]: Pgsql cube type compile fail [[@kdesjard]]
+* [[#3465]]: fix(postgres): max number of binds is 65535, not 32767 (regression) [[@abonander]]
+* [[#3467]]: fix cancellation issues with `PgListener`, `PgStream::recv()` [[@abonander]]
+    * Fixes cryptic `unknown message: "\\0"` error 
+* [[#3474]]: Fix try_get example in README.md [[@luveti]]
+
+[#3403]: https://github.com/launchbadge/sqlx/pull/3403
+[#3411]: https://github.com/launchbadge/sqlx/pull/3411
+[#3424]: https://github.com/launchbadge/sqlx/pull/3424
+[#3447]: https://github.com/launchbadge/sqlx/pull/3447
+[#3453]: https://github.com/launchbadge/sqlx/pull/3453
+[#3454]: https://github.com/launchbadge/sqlx/pull/3454
+[#3455]: https://github.com/launchbadge/sqlx/pull/3455
+[#3459]: https://github.com/launchbadge/sqlx/pull/3459
+[#3465]: https://github.com/launchbadge/sqlx/pull/3465
+[#3467]: https://github.com/launchbadge/sqlx/pull/3467
+[#3474]: https://github.com/launchbadge/sqlx/pull/3474
+
+## 0.8.1 - 2024-08-23
+
+16 pull requests were merged this release cycle.
+
+This release contains a fix for [RUSTSEC-2024-0363]. 
+
+Postgres users are advised to upgrade ASAP as a possible exploit has been demonstrated:
+<https://github.com/launchbadge/sqlx/issues/3440#issuecomment-2307956901>
+
+MySQL and SQLite do not _appear_ to be exploitable, but upgrading is recommended nonetheless.
+
+### Added
+* [[#3421]]: correct spelling of `MySqlConnectOptions::no_engine_substitution()` [[@kolinfluence]]
+    * Deprecates `MySqlConnectOptions::no_engine_subsitution()` (oops) in favor of the correctly spelled version.
+
+### Changed
+* [[#3376]]: doc: hide `spec_error` module [[@abonander]]
+    * This is a helper module for the macros and was not meant to be exposed.
+    * It is not expected to receive any breaking changes for the 0.8.x release, but is not designed as a public API.
+      Use at your own risk.
+* [[#3382]]: feat: bumped to `libsqlite3-sys=0.30.1` to support sqlite 3.46 [[@CommanderStorm]]
+* [[#3385]]: chore(examples):Migrated the pg-chat example to ratatui [[@CommanderStorm]]
+* [[#3399]]: Upgrade to rustls 0.23 [[@djc]]
+    * RusTLS now has pluggable cryptography providers: `ring` (the existing implementation),
+      and `aws-lc-rs` which has optional FIPS certification.
+    * The existing features activating RusTLS (`runtime-tokio-rustls`, `runtime-async-std-rustls`, `tls-rustls`)
+      enable the `ring` provider of RusTLS to match the existing behavior so this _should not_ be a breaking change. 
+    * Switch to the `tls-rustls-aws-lc-rs` feature to use the `aws-lc-rs` provider.
+      * If using `runtime-tokio-rustls` or `runtime-async-std-rustls`, 
+        this will necessitate switching to the appropriate non-legacy runtime feature: 
+        `runtime-tokio` or `runtime-async-std`
+    * See the RusTLS README for more details: <https://github.com/rustls/rustls?tab=readme-ov-file#cryptography-providers>
+
+### Fixed
+* [[#2786]]: fix(sqlx-cli): do not clean sqlx during prepare [[@cycraig]]
+* [[#3354]]: sqlite: fix inconsistent read-after-write [[@ckampfe]]
+* [[#3371]]: Fix encoding and decoding of MySQL enums in `sqlx::Type` [[@alu]]
+* [[#3374]]: fix: usage of `node12` in `SQLx` action [[@hamirmahal]]
+* [[#3380]]: chore: replace structopt with clap in examples [[@tottoto]]
+* [[#3381]]: Fix CI after Rust 1.80, remove dead feature references [[@abonander]]
+* [[#3384]]: chore(tests): fixed deprecation warnings [[@CommanderStorm]]
+* [[#3386]]: fix(dependencys):bumped cargo_metadata to `v0.18.1` to avoid yanked `v0.14.3` [[@CommanderStorm]]
+* [[#3389]]: fix(cli): typo in error for required DB URL [[@ods]]
+* [[#3417]]: Update version to 0.8 in README [[@soucosmo]]
+* [[#3441]]: fix: audit protocol handling [[@abonander]]
+    * This addresses [RUSTSEC-2024-0363] and includes regression tests for MySQL, Postgres and SQLite.
+
+[#2786]: https://github.com/launchbadge/sqlx/pull/2786
+[#3354]: https://github.com/launchbadge/sqlx/pull/3354
+[#3371]: https://github.com/launchbadge/sqlx/pull/3371
+[#3374]: https://github.com/launchbadge/sqlx/pull/3374
+[#3376]: https://github.com/launchbadge/sqlx/pull/3376
+[#3380]: https://github.com/launchbadge/sqlx/pull/3380
+[#3381]: https://github.com/launchbadge/sqlx/pull/3381
+[#3382]: https://github.com/launchbadge/sqlx/pull/3382
+[#3384]: https://github.com/launchbadge/sqlx/pull/3384
+[#3385]: https://github.com/launchbadge/sqlx/pull/3385
+[#3386]: https://github.com/launchbadge/sqlx/pull/3386
+[#3389]: https://github.com/launchbadge/sqlx/pull/3389
+[#3399]: https://github.com/launchbadge/sqlx/pull/3399
+[#3417]: https://github.com/launchbadge/sqlx/pull/3417
+[#3421]: https://github.com/launchbadge/sqlx/pull/3421
+[#3441]: https://github.com/launchbadge/sqlx/pull/3441
+
+[RUSTSEC-2024-0363]: https://rustsec.org/advisories/RUSTSEC-2024-0363.html
+
+## 0.8.0 - 2024-07-22
+
+70 pull requests were merged this release cycle.
+
+[#2697] was merged the same day as release 0.7.4 and so was missed by the automatic CHANGELOG generation.
+
+### Breaking
+* [[#2697]]: fix(macros): only enable chrono when time is disabled [[@saiintbrisson]]
+* [[#2973]]: Generic Associated Types in Database, replacing HasValueRef, HasArguments, HasStatement [[@nitn3lav]]
+* [[#2482]]: chore: bump syn to 2.0 [[@saiintbrisson]]
+    * Deprecated type ascription syntax in the query macros was removed.
+* [[#2736]]: Fix describe on PostgreSQL views with rules [[@tsing]]
+  * Potentially breaking: nullability inference changes for Postgres.
+* [[#2869]]: Implement PgHasArrayType for all references [[@tylerhawkes]]
+    * Conflicts with existing manual implementations.
+* [[#2940]]: fix: Decode and Encode derives (#1031) [[@benluelo]]
+    * Changes lifetime obligations for field types.
+* [[#3064]]: Sqlite explain graph [[@tyrelr]]
+    * Potentially breaking: nullability inference changes for SQLite.
+* [[#3123]]: Reorder attrs in sqlx::test macro [[@bobozaur]]
+    * Potentially breaking: attributes on `#[sqlx::test]` usages are applied in the correct order now.
+* [[#3126]]: Make Encode return a result [[@FSMaxB]]
+* [[#3130]]: Add version information for failed cli migration (#3129) [[@FlakM]]
+    * Breaking changes to `MigrateError`.
+* [[#3181]]: feat: no tx migration [[@cleverjam]]
+    * (Postgres only) migrations that should not run in a transaction can be flagged by adding `-- no-transaction` to the beginning.
+    * Breaking change: added field to `Migration`
+* [[#3184]]: [BREAKING} fix(sqlite): always use `i64` as intermediate when decoding [[@abonander]]
+    * integer decoding will now loudly error on overflow instead of silently truncating.
+    * some usages of the query!() macros might change an i32 to an i64.
+* [[#3252]]: fix `#[derive(sqlx::Type)]` in Postgres [[@abonander]]
+  * Manual implementations of PgHasArrayType for enums will conflict with the generated one. Delete the manual impl or add `#[sqlx(no_pg_array)]` where conflicts occur.
+  * Type equality for PgTypeInfo is now schema-aware.
+* [[#3329]]: fix: correct handling of arrays of custom types in Postgres [[@abonander]]
+    * Potential breaking change: `PgTypeInfo::with_name()` infers types that start with `_` to be arrays of the un-prefixed type. Wrap type names in quotes to bypass this behavior.
+* [[#3356]]: breaking: fix name collision in `FromRow`, return `Error::ColumnDecode` for `TryFrom` errors [[@abonander]]
+    * Breaking behavior change: errors with `#[sqlx(try_from = "T")]` now return `Error::ColumnDecode` instead of `Error::ColumnNotFound`.
+    * Breaking because `#[sqlx(default)]` on an individual field or the struct itself would have previously suppressed the error. 
+      This doesn't seem like good behavior as it could result in some potentially very difficult bugs.
+      * Instead, create a wrapper implementing `From` and apply the default explicitly.
+* [[#3337]]: allow rename with rename_all (close #2896) [[@DirectorX]]
+    * Changes the precedence of `#[sqlx(rename)]` and `#[sqlx(rename_all)]` to match the expected behavior (`rename` wins).
+* [[#3285]]: fix: use correct names for sslmode options [[@lily-mosquitoes]]
+    * Changes the output of `ConnectOptions::to_url_lossy()` to match what parsing expects.
+
+### Added
+* [[#2917]]: Add Debug impl for PgRow [[@g-bartoszek]]
+* [[#3113]]: feat: new derive feature flag [[@saiintbrisson]]
+* [[#3154]]: feat: add `MySqlTime`, audit `mysql::types` for panics [[@abonander]]
+* [[#3188]]: feat(cube): support postgres cube [[@jayy-lmao]]
+* [[#3244]]: feat: support `NonZero*` scalar types [[@AlphaKeks]]
+* [[#3260]]: feat: Add set_update_hook on SqliteConnection [[@gridbox]]
+* [[#3291]]: feat: support the Postgres Bool type for the Any driver [[@etorreborre]]
+* [[#3293]]: Add LICENSE-* files to crates [[@LecrisUT]]
+* [[#3303]]: add array support for NonZeroI* in postgres [[@JohannesIBK]]
+* [[#3311]]: Add example on how to use Transaction as Executor [[@Lachstec]]
+* [[#3343]]: Add support for PostgreSQL HSTORE data type [[@KobusEllis]]
+
+### Changed
+* [[#2652]]: MySQL: Remove collation compatibility check for strings [[@alu]]
+* [[#2960]]: Removed `Send` trait bound from argument binding [[@bobozaur]]
+* [[#2970]]: refactor: lift type mappings into driver crates [[@abonander]]
+* [[#3148]]: Bump libsqlite3-sys to v0.28 [[@NfNitLoop]]
+    * Note: version bumps to `libsqlite3-sys` are not considered breaking changes as per our semver guarantees.
+* [[#3265]]: perf: box `MySqlConnection` to reduce sizes of futures [[@stepantubanov]]
+* [[#3352]]: chore:added a testcase for `sqlx migrate add ...` [[@CommanderStorm]]
+* [[#3340]]: ci: Add job to check that sqlx builds with its declared minimum dependencies [[@iamjpotts]]
+
+### Fixed
+* [[#2702]]: Constrain cyclic associated types to themselves [[@BadBastion]]
+* [[#2954]]: Fix several inter doc links [[@ralpha]]
+* [[#3073]]: feat(logging): Log slow acquires from connection pool [[@iamjpotts]]
+* [[#3137]]: SqliteConnectOptions::filename() memory fix (#3136) [[@hoxxep]]
+* [[#3138]]: PostgreSQL Bugfix: Ensure connection is usable after failed COPY inside a transaction [[@feikesteenbergen]]
+* [[#3146]]: fix(sqlite): delete unused `ConnectionHandleRaw` type [[@abonander]]
+* [[#3162]]: Drop urlencoding dependency [[@paolobarbolini]]
+* [[#3165]]: Bump deps that do not need code changes [[@GnomedDev]]
+* [[#3167]]: fix(ci): use `docker compose` instead of `docker-compose` [[@abonander]]
+* [[#3172]]: fix: Option decoding in any driver [[@pxp9]]
+* [[#3173]]: fix(postgres) : int type conversion while decoding [[@RaghavRox]]
+* [[#3190]]: Update time to 0.3.36 [[@BlackSoulHub]]
+* [[#3191]]: Fix unclean TLS shutdown [[@levkk]]
+* [[#3194]]: Fix leaking connections in fetch_optional (#2647) [[@danjpgriffin]]
+* [[#3216]]: security: bump rustls to 0.21.11 [[@toxeus]]
+* [[#3230]]: fix: sqlite pragma order for auto_vacuum [[@jasonish]]
+* [[#3233]]: fix: get_filename should not consume self [[@jasonish]]
+* [[#3234]]: fix(ci): pin Rust version, ditch unmaintained actions [[@abonander]]
+* [[#3236]]: fix: resolve `path` ownership problems when using `sqlx_macros_unstable` [[@lily-mosquitoes]]
+* [[#3254]]: fix: hide `sqlx_postgres::any` [[@Zarathustra2]]
+* [[#3266]]: ci: MariaDB - add back 11.4 and add 11.5 [[@grooverdan]]
+* [[#3267]]: ci: syntax fix [[@grooverdan]]
+* [[#3271]]: docs(sqlite): fix typo - unixtime() -> unixepoch() [[@joelkoen]]
+* [[#3276]]: Invert boolean for `migrate` error message. (#3275) [[@nk9]]
+* [[#3279]]: fix Clippy errors [[@abonander]]
+* [[#3288]]: fix: sqlite update_hook char types [[@jasonish]]
+* [[#3297]]: Pass the `persistent` query setting when preparing queries with the `Any` driver [[@etorreborre]]
+* [[#3298]]: Track null arguments in order to provide the appropriate type when converting them. [[@etorreborre]]
+* [[#3312]]: doc: Minor rust docs fixes [[@SrGesus]]
+* [[#3327]]: chore: fixed one usage of `select_input_type!()` being unhygenic [[@CommanderStorm]]
+* [[#3328]]: fix(ci): comment not separated from other characters [[@hamirmahal]]
+* [[#3341]]: refactor: Resolve cargo check warnings in postgres examples [[@iamjpotts]]
+* [[#3346]]: fix(postgres): don't panic if `M` or `C` Notice fields are not UTF-8 [[@YgorSouza]]
+* [[#3350]]: fix:the `json`-feature should activate `sqlx-postgres?/json` as well [[@CommanderStorm]]
+* [[#3353]]: fix: build script new line at eof [[@Zarthus]]
+* (no PR): activate `clock` and `std` features of `workspace.dependencies.chrono`.
+
+[#2482]: https://github.com/launchbadge/sqlx/pull/2482
+[#2652]: https://github.com/launchbadge/sqlx/pull/2652
+[#2697]: https://github.com/launchbadge/sqlx/pull/2697
+[#2702]: https://github.com/launchbadge/sqlx/pull/2702
+[#2736]: https://github.com/launchbadge/sqlx/pull/2736
+[#2869]: https://github.com/launchbadge/sqlx/pull/2869
+[#2917]: https://github.com/launchbadge/sqlx/pull/2917
+[#2940]: https://github.com/launchbadge/sqlx/pull/2940
+[#2954]: https://github.com/launchbadge/sqlx/pull/2954
+[#2960]: https://github.com/launchbadge/sqlx/pull/2960
+[#2970]: https://github.com/launchbadge/sqlx/pull/2970
+[#2973]: https://github.com/launchbadge/sqlx/pull/2973
+[#3064]: https://github.com/launchbadge/sqlx/pull/3064
+[#3073]: https://github.com/launchbadge/sqlx/pull/3073
+[#3113]: https://github.com/launchbadge/sqlx/pull/3113
+[#3123]: https://github.com/launchbadge/sqlx/pull/3123
+[#3126]: https://github.com/launchbadge/sqlx/pull/3126
+[#3130]: https://github.com/launchbadge/sqlx/pull/3130
+[#3137]: https://github.com/launchbadge/sqlx/pull/3137
+[#3138]: https://github.com/launchbadge/sqlx/pull/3138
+[#3146]: https://github.com/launchbadge/sqlx/pull/3146
+[#3148]: https://github.com/launchbadge/sqlx/pull/3148
+[#3154]: https://github.com/launchbadge/sqlx/pull/3154
+[#3162]: https://github.com/launchbadge/sqlx/pull/3162
+[#3165]: https://github.com/launchbadge/sqlx/pull/3165
+[#3167]: https://github.com/launchbadge/sqlx/pull/3167
+[#3172]: https://github.com/launchbadge/sqlx/pull/3172
+[#3173]: https://github.com/launchbadge/sqlx/pull/3173
+[#3181]: https://github.com/launchbadge/sqlx/pull/3181
+[#3184]: https://github.com/launchbadge/sqlx/pull/3184
+[#3188]: https://github.com/launchbadge/sqlx/pull/3188
+[#3190]: https://github.com/launchbadge/sqlx/pull/3190
+[#3191]: https://github.com/launchbadge/sqlx/pull/3191
+[#3194]: https://github.com/launchbadge/sqlx/pull/3194
+[#3216]: https://github.com/launchbadge/sqlx/pull/3216
+[#3230]: https://github.com/launchbadge/sqlx/pull/3230
+[#3233]: https://github.com/launchbadge/sqlx/pull/3233
+[#3234]: https://github.com/launchbadge/sqlx/pull/3234
+[#3236]: https://github.com/launchbadge/sqlx/pull/3236
+[#3244]: https://github.com/launchbadge/sqlx/pull/3244
+[#3252]: https://github.com/launchbadge/sqlx/pull/3252
+[#3254]: https://github.com/launchbadge/sqlx/pull/3254
+[#3260]: https://github.com/launchbadge/sqlx/pull/3260
+[#3265]: https://github.com/launchbadge/sqlx/pull/3265
+[#3266]: https://github.com/launchbadge/sqlx/pull/3266
+[#3267]: https://github.com/launchbadge/sqlx/pull/3267
+[#3271]: https://github.com/launchbadge/sqlx/pull/3271
+[#3276]: https://github.com/launchbadge/sqlx/pull/3276
+[#3279]: https://github.com/launchbadge/sqlx/pull/3279
+[#3285]: https://github.com/launchbadge/sqlx/pull/3285
+[#3288]: https://github.com/launchbadge/sqlx/pull/3288
+[#3291]: https://github.com/launchbadge/sqlx/pull/3291
+[#3293]: https://github.com/launchbadge/sqlx/pull/3293
+[#3297]: https://github.com/launchbadge/sqlx/pull/3297
+[#3298]: https://github.com/launchbadge/sqlx/pull/3298
+[#3303]: https://github.com/launchbadge/sqlx/pull/3303
+[#3311]: https://github.com/launchbadge/sqlx/pull/3311
+[#3312]: https://github.com/launchbadge/sqlx/pull/3312
+[#3327]: https://github.com/launchbadge/sqlx/pull/3327
+[#3328]: https://github.com/launchbadge/sqlx/pull/3328
+[#3329]: https://github.com/launchbadge/sqlx/pull/3329
+[#3337]: https://github.com/launchbadge/sqlx/pull/3337
+[#3340]: https://github.com/launchbadge/sqlx/pull/3340
+[#3341]: https://github.com/launchbadge/sqlx/pull/3341
+[#3343]: https://github.com/launchbadge/sqlx/pull/3343
+[#3346]: https://github.com/launchbadge/sqlx/pull/3346
+[#3350]: https://github.com/launchbadge/sqlx/pull/3350
+[#3352]: https://github.com/launchbadge/sqlx/pull/3352
+[#3353]: https://github.com/launchbadge/sqlx/pull/3353
+[#3356]: https://github.com/launchbadge/sqlx/pull/3356
+## 0.7.4 - 2024-03-11
+
+38 pull requests were merged this release cycle.
+
+This is officially the **last** release of the 0.7.x release cycle.
+
+As of this release, development of 0.8.0 has begun on `main` and only high-priority bugfixes may be backported.
+
+### Added
+
+* [[#2891]]: feat: expose getters for connect options fields [[@saiintbrisson]]
+* [[#2902]]: feat: add `to_url_lossy` to connect options [[@lily-mosquitoes]]
+* [[#2927]]: Support `query!` for cargo-free systems [[@kshramt]]
+* [[#2997]]: doc(FAQ): add entry explaining prepared statements [[@abonander]]
+* [[#3001]]: Update README to clarify MariaDB support [[@iangilfillan]]
+* [[#3004]]: feat(logging): Add numeric elapsed time field elapsed_secs [[@iamjpotts]]
+* [[#3007]]: feat: add `raw_sql` API [[@abonander]]
+    * This hopefully makes it easier to find how to execute statements which are not supported by the default
+      prepared statement interfaces `query*()` and `query!()`.
+    * Improved documentation across the board for the `query*()` functions.
+    * Deprecated: `execute_many()` and `fetch_many()` on interfaces that use prepared statements.
+        * Multiple SQL statements in one query string were only supported by SQLite because its prepared statement
+          interface is the *only* way to execute SQL. All other database flavors forbid multiple statements in
+          one prepared statement string as an extra defense against SQL injection.
+        * The new `raw_sql` API retains this functionality because it explicitly does *not* use prepared statements.
+          Raw or text-mode query interfaces generally allow multiple statements in one query string, and this is
+          supported by all current databases. Due to their nature, however, one cannot use bind parameters with them.
+        * If this change affects you, an issue is open for discussion: https://github.com/launchbadge/sqlx/issues/3108
+* [[#3011]]: Added support to IpAddr with MySQL/MariaDB. [[@Icerath]]
+* [[#3013]]: Add default implementation for PgInterval [[@pawurb]]
+* [[#3018]]: Add default implementation for PgMoney [[@pawurb]]
+* [[#3026]]: Update docs to reflect support for MariaDB data types [[@iangilfillan]]
+* [[#3037]]: feat(mysql): allow to connect with mysql driver without default behavor [[@darkecho731]]
+
+### Changed
+
+* [[#2900]]: Show latest url to docs for macro.migrate [[@Vrajs16]]
+* [[#2914]]: Use `create_new` instead of `atomic-file-write` [[@mattfbacon]]
+* [[#2926]]: docs: update example for `PgConnectOptions` [[@Fyko]]
+* [[#2989]]: sqlx-core: Remove dotenvy dependency [[@joshtriplett]]
+* [[#2996]]: chore: Update ahash to 0.8.7 [[@takenoko-gohan]]
+* [[#3006]]: chore(deps): Replace unmaintained tempdir crate with tempfile [[@iamjpotts]]
+* [[#3008]]: chore: Ignore .sqlx folder created by running ci steps locally [[@iamjpotts]]
+* [[#3009]]: chore(dev-deps): Upgrade env_logger from 0.9 to 0.11 [[@iamjpotts]]
+* [[#3010]]: chore(deps): Upgrade criterion to 0.5.1 [[@iamjpotts]]
+* [[#3050]]: Optimize SASL auth in sqlx-postgres [[@mirek26]]
+* [[#3055]]: Set TCP_NODELAY option on TCP sockets [[@mirek26]]
+* [[#3065]]: Improve max_lifetime handling [[@mirek26]]
+* [[#3072]]: Change the name of "inner" function generated by `#[sqlx::test]` [[@ciffelia]]
+* [[#3083]]: Remove sha1 because it's not being used in postgres [[@rafaelGuerreiro]]
+
+### Fixed
+
+* [[#2898]]: Fixed docs [[@Vrajs16]]
+* [[#2905]]: fix(mysql): Close prepared statement if persistence is disabled [[@larsschumacher]]
+* [[#2913]]: Fix handling of deferred constraints [[@Thomasdezeeuw]]
+* [[#2919]]: fix duplicate "`" in FromRow "default" attribute doc comment [[@shengsheng]]
+* [[#2932]]: fix(postgres): avoid unnecessary flush in PgCopyIn::read_from [[@tsing]]
+* [[#2955]]: Minor fixes [[@Dawsoncodes]]
+* [[#2963]]: Fixed ReadMe badge styling [[@tadghh]]
+* [[#2976]]: fix: AnyRow not support PgType::Varchar [[@holicc]]
+* [[#3053]]: fix: do not panic when binding a large BigDecimal [[@Ekleog]]
+* [[#3056]]: fix: spans in sqlite tracing (#2876) [[@zoomiti]]
+* [[#3089]]: fix(migrate): improve error message when parsing version from filename [[@abonander]]
+* [[#3098]]: Migrations fixes [[@abonander]]
+  * Unhides `sqlx::migrate::Migrator`.
+  * Improves I/O error message when failing to read a file in `migrate!()`.
+
+[#2891]: https://github.com/launchbadge/sqlx/pull/2891
+[#2898]: https://github.com/launchbadge/sqlx/pull/2898
+[#2900]: https://github.com/launchbadge/sqlx/pull/2900
+[#2902]: https://github.com/launchbadge/sqlx/pull/2902
+[#2905]: https://github.com/launchbadge/sqlx/pull/2905
+[#2913]: https://github.com/launchbadge/sqlx/pull/2913
+[#2914]: https://github.com/launchbadge/sqlx/pull/2914
+[#2919]: https://github.com/launchbadge/sqlx/pull/2919
+[#2926]: https://github.com/launchbadge/sqlx/pull/2926
+[#2927]: https://github.com/launchbadge/sqlx/pull/2927
+[#2932]: https://github.com/launchbadge/sqlx/pull/2932
+[#2955]: https://github.com/launchbadge/sqlx/pull/2955
+[#2963]: https://github.com/launchbadge/sqlx/pull/2963
+[#2976]: https://github.com/launchbadge/sqlx/pull/2976
+[#2989]: https://github.com/launchbadge/sqlx/pull/2989
+[#2996]: https://github.com/launchbadge/sqlx/pull/2996
+[#2997]: https://github.com/launchbadge/sqlx/pull/2997
+[#3001]: https://github.com/launchbadge/sqlx/pull/3001
+[#3004]: https://github.com/launchbadge/sqlx/pull/3004
+[#3006]: https://github.com/launchbadge/sqlx/pull/3006
+[#3007]: https://github.com/launchbadge/sqlx/pull/3007
+[#3008]: https://github.com/launchbadge/sqlx/pull/3008
+[#3009]: https://github.com/launchbadge/sqlx/pull/3009
+[#3010]: https://github.com/launchbadge/sqlx/pull/3010
+[#3011]: https://github.com/launchbadge/sqlx/pull/3011
+[#3013]: https://github.com/launchbadge/sqlx/pull/3013
+[#3018]: https://github.com/launchbadge/sqlx/pull/3018
+[#3026]: https://github.com/launchbadge/sqlx/pull/3026
+[#3037]: https://github.com/launchbadge/sqlx/pull/3037
+[#3050]: https://github.com/launchbadge/sqlx/pull/3050
+[#3053]: https://github.com/launchbadge/sqlx/pull/3053
+[#3055]: https://github.com/launchbadge/sqlx/pull/3055
+[#3056]: https://github.com/launchbadge/sqlx/pull/3056
+[#3065]: https://github.com/launchbadge/sqlx/pull/3065
+[#3072]: https://github.com/launchbadge/sqlx/pull/3072
+[#3083]: https://github.com/launchbadge/sqlx/pull/3083
+[#3089]: https://github.com/launchbadge/sqlx/pull/3089
+[#3098]: https://github.com/launchbadge/sqlx/pull/3098
+
 ## 0.7.3 - 2023-11-22
 
 38 pull requests were merged this release cycle.
@@ -2135,3 +3163,167 @@ Fix docs.rs build by enabling a runtime feature in the docs.rs metadata in `Carg
 [@Vrajs16]: https://github.com/Vrajs16
 [@shiftrightonce]: https://github.com/shiftrightonce
 [@tamasfe]: https://github.com/tamasfe
+[@lily-mosquitoes]: https://github.com/lily-mosquitoes
+[@larsschumacher]: https://github.com/larsschumacher
+[@shengsheng]: https://github.com/shengsheng
+[@Fyko]: https://github.com/Fyko
+[@kshramt]: https://github.com/kshramt
+[@Dawsoncodes]: https://github.com/Dawsoncodes
+[@tadghh]: https://github.com/tadghh
+[@holicc]: https://github.com/holicc
+[@takenoko-gohan]: https://github.com/takenoko-gohan
+[@iangilfillan]: https://github.com/iangilfillan
+[@iamjpotts]: https://github.com/iamjpotts
+[@Icerath]: https://github.com/Icerath
+[@pawurb]: https://github.com/pawurb
+[@darkecho731]: https://github.com/darkecho731
+[@mirek26]: https://github.com/mirek26
+[@Ekleog]: https://github.com/Ekleog
+[@zoomiti]: https://github.com/zoomiti
+[@ciffelia]: https://github.com/ciffelia
+[@rafaelGuerreiro]: https://github.com/rafaelGuerreiro
+[@alu]: https://github.com/alu
+[@BadBastion]: https://github.com/BadBastion
+[@tylerhawkes]: https://github.com/tylerhawkes
+[@g-bartoszek]: https://github.com/g-bartoszek
+[@benluelo]: https://github.com/benluelo
+[@ralpha]: https://github.com/ralpha
+[@nitn3lav]: https://github.com/nitn3lav
+[@FlakM]: https://github.com/FlakM
+[@hoxxep]: https://github.com/hoxxep
+[@NfNitLoop]: https://github.com/NfNitLoop
+[@GnomedDev]: https://github.com/GnomedDev
+[@pxp9]: https://github.com/pxp9
+[@RaghavRox]: https://github.com/RaghavRox
+[@cleverjam]: https://github.com/cleverjam
+[@BlackSoulHub]: https://github.com/BlackSoulHub
+[@levkk]: https://github.com/levkk
+[@danjpgriffin]: https://github.com/danjpgriffin
+[@toxeus]: https://github.com/toxeus
+[@jasonish]: https://github.com/jasonish
+[@AlphaKeks]: https://github.com/AlphaKeks
+[@Zarathustra2]: https://github.com/Zarathustra2
+[@gridbox]: https://github.com/gridbox
+[@joelkoen]: https://github.com/joelkoen
+[@nk9]: https://github.com/nk9
+[@etorreborre]: https://github.com/etorreborre
+[@LecrisUT]: https://github.com/LecrisUT
+[@JohannesIBK]: https://github.com/JohannesIBK
+[@Lachstec]: https://github.com/Lachstec
+[@SrGesus]: https://github.com/SrGesus
+[@CommanderStorm]: https://github.com/CommanderStorm
+[@hamirmahal]: https://github.com/hamirmahal
+[@DirectorX]: https://github.com/DirectorX
+[@KobusEllis]: https://github.com/KobusEllis
+[@YgorSouza]: https://github.com/YgorSouza
+[@Zarthus]: https://github.com/Zarthus
+[@ckampfe]: https://github.com/ckampfe
+[@tottoto]: https://github.com/tottoto
+[@ods]: https://github.com/ods
+[@soucosmo]: https://github.com/soucosmo
+[@kolinfluence]: https://github.com/kolinfluence
+[@joeydewaal]: https://github.com/joeydewaal
+[@pierre-wehbe]: https://github.com/pierre-wehbe
+[@carschandler]: https://github.com/carschandler
+[@kdesjard]: https://github.com/kdesjard
+[@luveti]: https://github.com/luveti
+[@dojiong]: https://github.com/dojiong
+[@jayvdb]: https://github.com/jayvdb
+[@kurtbuilds]: https://github.com/kurtbuilds
+[@lilydjwg]: https://github.com/lilydjwg
+[@M3t0r]: https://github.com/M3t0r
+[@vsuryamurthy]: https://github.com/vsuryamurthy
+[@manifest]: https://github.com/manifest
+[@tbar4]: https://github.com/tbar4
+[@sandhose]: https://github.com/sandhose
+[@IlyaBizyaev]: https://github.com/IlyaBizyaev
+[@philipcristiano]: https://github.com/philipcristiano
+[@xuehaonan27]: https://github.com/xuehaonan27
+[@chanks]: https://github.com/chanks
+[@Ddystopia]: https://github.com/Ddystopia
+[@veigaribo]: https://github.com/veigaribo
+[@Norlock]: https://github.com/Norlock
+[@swlynch99]: https://github.com/swlynch99
+[@BenoitRanque]: https://github.com/BenoitRanque
+[@hsivonen]: https://github.com/hsivonen
+[@andreweggleston]: https://github.com/andreweggleston
+[@Suficio]: https://github.com/Suficio
+[@bonega]: https://github.com/bonega
+[@nico-incubiq]: https://github.com/nico-incubiq
+[@tisonkun]: https://github.com/tisonkun
+[@karambarakat]: https://github.com/karambarakat
+[@seanaye]: https://github.com/seanaye
+[@remysaissy]: https://github.com/remysaissy
+[@BeauGieskens]: https://github.com/BeauGieskens
+[@Turbo87]: https://github.com/Turbo87
+[@jthacker]: https://github.com/jthacker
+[@benwilber]: https://github.com/benwilber
+[@chitoku-k]: https://github.com/chitoku-k
+[@chanmaoganda]: https://github.com/chanmaoganda
+[@dns2utf8]: https://github.com/dns2utf8
+[@mattrighetti]: https://github.com/mattrighetti
+[@soulwa]: https://github.com/soulwa
+[@kildrens]: https://github.com/kildrens
+[@xvapx]: https://github.com/xvapx
+[@jonasmalacofilho]: https://github.com/jonasmalacofilho
+[@sulami]: https://github.com/sulami
+[@thriller08]: https://github.com/thriller08
+[@mbj]: https://github.com/mbj
+[@TeCHiScy]: https://github.com/TeCHiScy
+[@mpyw]: https://github.com/mpyw
+[@bonsairobo]: https://github.com/bonsairobo
+[@gferon]: https://github.com/gferon
+[@joshka]: https://github.com/joshka
+[@kujeger]: https://github.com/kujeger
+[@dyc3]: https://github.com/dyc3
+[@ThomWright]: https://github.com/ThomWright
+[@duhby]: https://github.com/duhby
+[@V02460]: https://github.com/V02460
+[@nipunn1313]: https://github.com/nipunn1313
+[@miniduikboot]: https://github.com/miniduikboot
+[@0xfourzerofour]: https://github.com/0xfourzerofour
+[@AlexTMjugador]: https://github.com/AlexTMjugador
+[@martin-kolarik]: https://github.com/martin-kolarik
+[@cvzx]: https://github.com/cvzx
+[@Dirbaio]: https://github.com/Dirbaio
+[@elichai]: https://github.com/elichai
+[@silvestrpredko]: https://github.com/silvestrpredko
+[@davidcornu]: https://github.com/davidcornu
+[@zebrapurring]: https://github.com/zebrapurring
+[@djarb]: https://github.com/djarb
+[@barskern]: https://github.com/barskern
+[@nhatcher-frequenz]: https://github.com/nhatcher-frequenz
+[@JerryQ17]: https://github.com/JerryQ17
+[@jpmelos]: https://github.com/jpmelos
+[@psionic-k]: https://github.com/psionic-k
+[@Xiretza]: https://github.com/Xiretza
+[@2ndDerivative]: https://github.com/2ndDerivative
+[@kevincox]: https://github.com/kevincox
+[@papaj-na-wrotkach]: https://github.com/papaj-na-wrotkach
+[@xb284524239]: https://github.com/xb284524239
+[@Dosenpfand]: https://github.com/Dosenpfand
+[@daviduebler]: https://github.com/daviduebler
+[@squidpickles]: https://github.com/squidpickles
+[@anmolitor]: https://github.com/anmolitor
+[@CathalMullan]: https://github.com/CathalMullan
+[@duelafn]: https://github.com/duelafn
+[@Lege19]: https://github.com/Lege19
+[@zennozenith]: https://github.com/zennozenith
+[@supleed2]: https://github.com/supleed2
+[@mousetail]: https://github.com/mousetail
+[@chrxn1c]: https://github.com/chrxn1c
+[@aoengin]: https://github.com/aoengin
+[@dertin]: https://github.com/dertin
+[@jrey8343]: https://github.com/jrey8343
+[@darioAnongba]: https://github.com/darioAnongba
+[@cuiweixie]: https://github.com/cuiweixie
+[@ricochet]: https://github.com/ricochet
+[@opoplawski]: https://github.com/opoplawski
+[@var4yn]: https://github.com/var4yn
+[@joaquinhuigomez]: https://github.com/joaquinhuigomez
+[@barry3406]: https://github.com/barry3406
+[@michaelvanstraten]: https://github.com/michaelvanstraten
+[@graemer957]: https://github.com/graemer957
+[@Miesvanderlippe]: https://github.com/Miesvanderlippe
+[@altmannmarcelo]: https://github.com/altmannmarcelo
+[@sobolevn]: https://github.com/sobolevn

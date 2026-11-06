@@ -6,12 +6,16 @@ use crate::hpack::{self, BytesStr};
 use http::header::{self, HeaderName, HeaderValue};
 use http::{uri, HeaderMap, Method, Request, StatusCode, Uri};
 
-use bytes::{BufMut, Bytes, BytesMut};
+use bytes::{Buf, BufMut, BytesMut};
 
 use std::fmt;
 use std::io::Cursor;
+use std::ops::ControlFlow;
 
 type EncodeBuf<'a> = bytes::buf::Limit<&'a mut BytesMut>;
+
+const MAX_HEADER_LIST_ABUSE_MULTIPLIER: usize = 4;
+
 /// Header frame
 ///
 /// This could be either a request or a response.
@@ -87,6 +91,9 @@ struct HeaderBlock {
     /// The decoded header fields
     fields: HeaderMap,
 
+    /// Precomputed size of all of our header fields, for perf reasons
+    field_size: usize,
+
     /// Set to true if decoding went over the max header list size.
     is_over_size: bool,
 
@@ -97,7 +104,7 @@ struct HeaderBlock {
 
 #[derive(Debug)]
 struct EncodingHeaderBlock {
-    hpack: Bytes,
+    hpack: BytesMut,
 }
 
 const END_STREAM: u8 = 0x1;
@@ -115,6 +122,7 @@ impl Headers {
             stream_id,
             stream_dep: None,
             header_block: HeaderBlock {
+                field_size: calculate_headermap_size(&fields),
                 fields,
                 is_over_size: false,
                 pseudo,
@@ -131,6 +139,7 @@ impl Headers {
             stream_id,
             stream_dep: None,
             header_block: HeaderBlock {
+                field_size: calculate_headermap_size(&fields),
                 fields,
                 is_over_size: false,
                 pseudo: Pseudo::default(),
@@ -160,7 +169,7 @@ impl Headers {
             pad = src[0] as usize;
 
             // Drop the padding
-            let _ = src.split_to(1);
+            src.advance(1);
         }
 
         // Read the stream dependency
@@ -175,7 +184,7 @@ impl Headers {
             }
 
             // Drop the next 5 bytes
-            let _ = src.split_to(5);
+            src.advance(5);
 
             Some(stream_dep)
         } else {
@@ -196,6 +205,7 @@ impl Headers {
             stream_dep,
             header_block: HeaderBlock {
                 fields: HeaderMap::new(),
+                field_size: 0,
                 is_over_size: false,
                 pseudo: Pseudo::default(),
             },
@@ -247,6 +257,10 @@ impl Headers {
         &mut self.header_block.pseudo
     }
 
+    pub(crate) fn pseudo(&self) -> &Pseudo {
+        &self.header_block.pseudo
+    }
+
     /// Whether it has status 1xx
     pub(crate) fn is_informational(&self) -> bool {
         self.header_block.pseudo.is_informational()
@@ -273,7 +287,7 @@ impl Headers {
 
         self.header_block
             .into_encoding(encoder)
-            .encode(&head, dst, |_| {})
+            .encode(&head, dst, Some(encoder), |_| {})
     }
 
     fn head(&self) -> Head {
@@ -350,6 +364,7 @@ impl PushPromise {
         PushPromise {
             flags: PushPromiseFlag::default(),
             header_block: HeaderBlock {
+                field_size: calculate_headermap_size(&fields),
                 fields,
                 is_over_size: false,
                 pseudo,
@@ -366,7 +381,7 @@ impl PushPromise {
 
         // A promised request "that indicates the presence of a request body
         // MUST reset the promised stream with a stream error"
-        if let Some(content_length) = req.headers().get(header::CONTENT_LENGTH) {
+        for content_length in req.headers().get_all(header::CONTENT_LENGTH) {
             let parsed_length = parse_u64(content_length.as_bytes());
             if parsed_length != Ok(0) {
                 return Err(InvalidContentLength(parsed_length));
@@ -417,7 +432,7 @@ impl PushPromise {
             pad = src[0] as usize;
 
             // Drop the padding
-            let _ = src.split_to(1);
+            src.advance(1);
         }
 
         if src.len() < 5 {
@@ -426,7 +441,7 @@ impl PushPromise {
 
         let (promised_id, _) = StreamId::parse(&src[..4]);
         // Drop promised_id bytes
-        let _ = src.split_to(4);
+        src.advance(4);
 
         if pad > 0 {
             if pad > src.len() {
@@ -441,6 +456,7 @@ impl PushPromise {
             flags,
             header_block: HeaderBlock {
                 fields: HeaderMap::new(),
+                field_size: 0,
                 is_over_size: false,
                 pseudo: Pseudo::default(),
             },
@@ -492,7 +508,7 @@ impl PushPromise {
 
         self.header_block
             .into_encoding(encoder)
-            .encode(&head, dst, |dst| {
+            .encode(&head, dst, Some(encoder), |dst| {
                 dst.put_u32(promised_id.into());
             })
     }
@@ -535,7 +551,7 @@ impl Continuation {
         // Get the CONTINUATION frame head
         let head = self.head();
 
-        self.header_block.encode(&head, dst, |_| {})
+        self.header_block.encode(&head, dst, None, |_| {})
     }
 }
 
@@ -545,32 +561,36 @@ impl Pseudo {
     pub fn request(method: Method, uri: Uri, protocol: Option<Protocol>) -> Self {
         let parts = uri::Parts::from(uri);
 
-        let mut path = parts
-            .path_and_query
-            .map(|v| BytesStr::from(v.as_str()))
-            .unwrap_or(BytesStr::from_static(""));
+        let (scheme, path) = if method == Method::CONNECT && protocol.is_none() {
+            (None, None)
+        } else {
+            let path = parts
+                .path_and_query
+                .map(|v| BytesStr::from(v.as_str()))
+                .unwrap_or(BytesStr::from_static(""));
 
-        match method {
-            Method::OPTIONS | Method::CONNECT => {}
-            _ if path.is_empty() => {
-                path = BytesStr::from_static("/");
-            }
-            _ => {}
-        }
+            let path = if !path.is_empty() {
+                path
+            } else if method == Method::OPTIONS {
+                BytesStr::from_static("*")
+            } else {
+                BytesStr::from_static("/")
+            };
+
+            (parts.scheme, Some(path))
+        };
 
         let mut pseudo = Pseudo {
             method: Some(method),
             scheme: None,
             authority: None,
-            path: Some(path).filter(|p| !p.is_empty()),
+            path,
             protocol,
             status: None,
         };
 
         // If the URI includes a scheme component, add it to the pseudo headers
-        //
-        // TODO: Scheme must be set...
-        if let Some(scheme) = parts.scheme {
+        if let Some(scheme) = scheme {
             pseudo.set_scheme(scheme);
         }
 
@@ -627,7 +647,13 @@ impl Pseudo {
 // ===== impl EncodingHeaderBlock =====
 
 impl EncodingHeaderBlock {
-    fn encode<F>(mut self, head: &Head, dst: &mut EncodeBuf<'_>, f: F) -> Option<Continuation>
+    fn encode<F>(
+        mut self,
+        head: &Head,
+        dst: &mut EncodeBuf<'_>,
+        encoder: Option<&mut hpack::Encoder>,
+        f: F,
+    ) -> Option<Continuation>
     where
         F: FnOnce(&mut EncodeBuf<'_>),
     {
@@ -644,7 +670,8 @@ impl EncodingHeaderBlock {
 
         // Now, encode the header payload
         let continuation = if self.hpack.len() > dst.remaining_mut() {
-            dst.put_slice(&self.hpack.split_to(dst.remaining_mut()));
+            let head_part = self.hpack.split_to(dst.remaining_mut());
+            dst.put_slice(&head_part);
 
             Some(Continuation {
                 stream_id: head.stream_id(),
@@ -652,6 +679,11 @@ impl EncodingHeaderBlock {
             })
         } else {
             dst.put_slice(&self.hpack);
+            // The block is fully written, so the buffer can be reused by the
+            // next frame on this connection.
+            if let Some(encoder) = encoder {
+                encoder.return_scratch(self.hpack);
+            }
 
             None
         };
@@ -835,7 +867,26 @@ impl HeaderBlock {
     ) -> Result<(), Error> {
         let mut reg = !self.fields.is_empty();
         let mut malformed = false;
+        let mut header_list_way_too_large = false;
         let mut headers_size = self.calculate_header_list_size();
+        let max_header_list_abuse_size =
+            max_header_list_size.saturating_mul(MAX_HEADER_LIST_ABUSE_MULTIPLIER);
+
+        macro_rules! check_size {
+            () => {{
+                if headers_size > max_header_list_abuse_size {
+                    tracing::trace!("load_hpack; header list size over abuse max");
+                    header_list_way_too_large = true;
+                    ControlFlow::Break(())
+                } else {
+                    if headers_size >= max_header_list_size && !self.is_over_size {
+                        tracing::trace!("load_hpack; header list size over max");
+                        self.is_over_size = true;
+                    }
+                    ControlFlow::Continue(())
+                }
+            }};
+        }
 
         macro_rules! set_pseudo {
             ($field:ident, $val:expr) => {{
@@ -849,11 +900,11 @@ impl HeaderBlock {
                     let __val = $val;
                     headers_size +=
                         decoded_header_size(stringify!($field).len() + 1, __val.as_str().len());
-                    if headers_size < max_header_list_size {
+                    if check_size!().is_break() {
+                        return ControlFlow::Break(());
+                    }
+                    if !self.is_over_size {
                         self.pseudo.$field = Some(__val);
-                    } else if !self.is_over_size {
-                        tracing::trace!("load_hpack; header list size over max");
-                        self.is_over_size = true;
                     }
                 }
             }};
@@ -890,12 +941,19 @@ impl HeaderBlock {
                     } else {
                         reg = true;
 
-                        headers_size += decoded_header_size(name.as_str().len(), value.len());
-                        if headers_size < max_header_list_size {
-                            self.fields.append(name, value);
-                        } else if !self.is_over_size {
-                            tracing::trace!("load_hpack; header list size over max");
-                            self.is_over_size = true;
+                        let header_size = decoded_header_size(name.as_str().len(), value.len());
+                        headers_size += header_size;
+                        if check_size!().is_break() {
+                            return ControlFlow::Break(());
+                        }
+                        if !self.is_over_size {
+                            self.field_size += header_size;
+                            if self.fields.try_append(name, value).is_err() {
+                                // HeaderMap capacity exceeded — treat as over-size
+                                // so the stream is rejected downstream (RST_STREAM / 431)
+                                // instead of panicking on the 24,577th unique header.
+                                self.is_over_size = true;
+                            }
                         }
                     }
                 }
@@ -906,11 +964,21 @@ impl HeaderBlock {
                 Protocol(v) => set_pseudo!(protocol, v),
                 Status(v) => set_pseudo!(status, v),
             }
+
+            ControlFlow::Continue(())
         });
 
-        if let Err(e) = res {
-            tracing::trace!("hpack decoding error; err={:?}", e);
-            return Err(e.into());
+        match res {
+            Ok(()) => {}
+            Err(e) => {
+                tracing::trace!("hpack decoding error; err={:?}", e);
+                return Err(e.into());
+            }
+        }
+
+        if header_list_way_too_large {
+            tracing::trace!("header list way too large; aborting connection");
+            return Err(Error::HeaderListWayTooLarge);
         }
 
         if malformed {
@@ -922,7 +990,8 @@ impl HeaderBlock {
     }
 
     fn into_encoding(self, encoder: &mut hpack::Encoder) -> EncodingHeaderBlock {
-        let mut hpack = BytesMut::new();
+        let mut hpack = encoder.take_scratch();
+        hpack.clear();
         let headers = Iter {
             pseudo: Some(self.pseudo),
             fields: self.fields.into_iter(),
@@ -930,9 +999,7 @@ impl HeaderBlock {
 
         encoder.encode(headers, &mut hpack);
 
-        EncodingHeaderBlock {
-            hpack: hpack.freeze(),
-        }
+        EncodingHeaderBlock { hpack }
     }
 
     /// Calculates the size of the currently decoded header list.
@@ -958,12 +1025,14 @@ impl HeaderBlock {
             + pseudo_size!(status)
             + pseudo_size!(authority)
             + pseudo_size!(path)
-            + self
-                .fields
-                .iter()
-                .map(|(name, value)| decoded_header_size(name.as_str().len(), value.len()))
-                .sum::<usize>()
+            + self.field_size
     }
+}
+
+fn calculate_headermap_size(map: &HeaderMap) -> usize {
+    map.iter()
+        .map(|(name, value)| decoded_header_size(name.as_str().len(), value.len()))
+        .sum::<usize>()
 }
 
 fn decoded_header_size(name: usize, value: usize) -> usize {
@@ -972,10 +1041,6 @@ fn decoded_header_size(name: usize, value: usize) -> usize {
 
 #[cfg(test)]
 mod test {
-    use std::iter::FromIterator;
-
-    use http::HeaderValue;
-
     use super::*;
     use crate::frame;
     use crate::hpack::{huffman, Encoder};
@@ -1038,5 +1103,246 @@ mod test {
     fn huff_decode(src: &[u8]) -> BytesMut {
         let mut buf = BytesMut::new();
         huffman::decode(src, &mut buf).unwrap()
+    }
+
+    #[test]
+    fn test_connect_request_pseudo_headers_omits_path_and_scheme() {
+        // CONNECT requests MUST NOT include :scheme & :path pseudo-header fields
+        // See: https://datatracker.ietf.org/doc/html/rfc9113#section-8.5
+
+        assert_eq!(
+            Pseudo::request(
+                Method::CONNECT,
+                Uri::from_static("https://example.com:8443"),
+                None
+            ),
+            Pseudo {
+                method: Method::CONNECT.into(),
+                authority: BytesStr::from_static("example.com:8443").into(),
+                ..Default::default()
+            }
+        );
+
+        assert_eq!(
+            Pseudo::request(
+                Method::CONNECT,
+                Uri::from_static("https://example.com/test"),
+                None
+            ),
+            Pseudo {
+                method: Method::CONNECT.into(),
+                authority: BytesStr::from_static("example.com").into(),
+                ..Default::default()
+            }
+        );
+
+        assert_eq!(
+            Pseudo::request(Method::CONNECT, Uri::from_static("example.com:8443"), None),
+            Pseudo {
+                method: Method::CONNECT.into(),
+                authority: BytesStr::from_static("example.com:8443").into(),
+                ..Default::default()
+            }
+        );
+    }
+
+    #[test]
+    fn test_extended_connect_request_pseudo_headers_includes_path_and_scheme() {
+        // On requests that contain the :protocol pseudo-header field, the
+        // :scheme and :path pseudo-header fields of the target URI (see
+        // Section 5) MUST also be included.
+        // See: https://datatracker.ietf.org/doc/html/rfc8441#section-4
+
+        assert_eq!(
+            Pseudo::request(
+                Method::CONNECT,
+                Uri::from_static("https://example.com:8443"),
+                Protocol::from_static("the-bread-protocol").into()
+            ),
+            Pseudo {
+                method: Method::CONNECT.into(),
+                authority: BytesStr::from_static("example.com:8443").into(),
+                scheme: BytesStr::from_static("https").into(),
+                path: BytesStr::from_static("/").into(),
+                protocol: Protocol::from_static("the-bread-protocol").into(),
+                ..Default::default()
+            }
+        );
+
+        assert_eq!(
+            Pseudo::request(
+                Method::CONNECT,
+                Uri::from_static("https://example.com:8443/test"),
+                Protocol::from_static("the-bread-protocol").into()
+            ),
+            Pseudo {
+                method: Method::CONNECT.into(),
+                authority: BytesStr::from_static("example.com:8443").into(),
+                scheme: BytesStr::from_static("https").into(),
+                path: BytesStr::from_static("/test").into(),
+                protocol: Protocol::from_static("the-bread-protocol").into(),
+                ..Default::default()
+            }
+        );
+
+        assert_eq!(
+            Pseudo::request(
+                Method::CONNECT,
+                Uri::from_static("http://example.com/a/b/c"),
+                Protocol::from_static("the-bread-protocol").into()
+            ),
+            Pseudo {
+                method: Method::CONNECT.into(),
+                authority: BytesStr::from_static("example.com").into(),
+                scheme: BytesStr::from_static("http").into(),
+                path: BytesStr::from_static("/a/b/c").into(),
+                protocol: Protocol::from_static("the-bread-protocol").into(),
+                ..Default::default()
+            }
+        );
+    }
+
+    #[test]
+    fn test_options_request_with_empty_path_has_asterisk_as_pseudo_path() {
+        // an OPTIONS request for an "http" or "https" URI that does not include a path component;
+        // these MUST include a ":path" pseudo-header field with a value of '*' (see Section 7.1 of [HTTP]).
+        // See: https://datatracker.ietf.org/doc/html/rfc9113#section-8.3.1
+        assert_eq!(
+            Pseudo::request(Method::OPTIONS, Uri::from_static("example.com:8080"), None,),
+            Pseudo {
+                method: Method::OPTIONS.into(),
+                authority: BytesStr::from_static("example.com:8080").into(),
+                path: BytesStr::from_static("*").into(),
+                ..Default::default()
+            }
+        );
+    }
+
+    #[test]
+    fn test_try_append_prevents_panic_on_max_size_reached() {
+        // Verify that decoding >24,577 unique headers sets `is_over_size`
+        // instead of panicking via HeaderMap::append().
+        //
+        // HeaderMap::MAX_SIZE = 32,768. With 75% load factor, max entries = 24,576.
+        // try_append returns Err(MaxSizeReached) at entry 24,577.
+        // Before the fix (using append), this panicked.
+        //
+        // We manually construct HPACK bytes for 25,000 unique headers because
+        // creating a HeaderMap with that many entries also panics on construction.
+
+        // Build HPACK-encoded block:
+        // Pseudo-headers (indexed refs to static table):
+        //   :method GET         → 0x82 (static index 2)
+        //   :scheme http        → 0x86 (static index 6)
+        //   :path /             → 0x84 (static index 4)
+        //   :authority "localhost" → literal with indexing (name index 0)
+        //
+        // Then 25,000 unique headers: "literal without indexing, new name"
+        //   0x00 → literal without indexing, name index 0
+        //   <name_len> <name_bytes>
+        //   <value_len> <value_bytes>
+
+        let num_headers = 25_000;
+
+        // Build the HPACK block
+        let mut hpack = Vec::new();
+
+        // Pseudo-headers
+        hpack.push(0x82u8); // :method GET (static index 2)
+        hpack.push(0x86); // :scheme http (static index 6)
+        hpack.push(0x84); // :path / (static index 4)
+
+        // :authority "localhost" — literal with incremental indexing
+        hpack.push(0x41); // literal with indexing, name index 1 (= ":authority")
+        hpack.push(0x09); // value length 9
+        hpack.extend_from_slice(b"localhost");
+
+        // 25,000 unique headers: "literal without indexing, new name"
+        // Format: 0x00 + name_len + name + value_len + value
+        for i in 0..num_headers {
+            let name = format!("x-h-{i}");
+            hpack.push(0x00u8); // literal without indexing, name index 0
+            hpack.push(name.len() as u8);
+            hpack.extend_from_slice(name.as_bytes());
+            hpack.push(1u8); // value length 1
+            hpack.push(b'v');
+        }
+
+        // Build the HTTP/2 HEADERS frame: 9-byte header + HPACK payload
+        let payload_len = hpack.len();
+        let mut frame = BytesMut::with_capacity(9 + payload_len);
+
+        // Frame header: 3 bytes length, 1 byte type (0x01=HEADERS), 1 byte flags, 4 bytes stream_id
+        frame.put_u8(((payload_len >> 16) & 0xFF) as u8);
+        frame.put_u8(((payload_len >> 8) & 0xFF) as u8);
+        frame.put_u8((payload_len & 0xFF) as u8);
+        frame.put_u8(0x01); // type: HEADERS
+        frame.put_u8(0x04); // flags: END_HEADERS
+        frame.put_u32(1); // stream_id: 1
+
+        frame.extend_from_slice(&hpack);
+
+        // Parse the HEADERS frame
+        let head = Head::parse(&frame[..9]);
+        let payload = BytesMut::from(&frame[9..]);
+        let (mut headers, mut hpack_data) = Headers::load(head, payload).unwrap();
+        // hpack_data contains the HPACK payload (no padding/priority in our frame)
+
+        // Decode the HPACK block — this should NOT panic
+        let mut decoder = hpack::Decoder::new(4096);
+        const DEFAULT_MAX_HEADER_LIST_SIZE: usize = 16 << 20; // 16 MB
+        headers
+            .load_hpack(&mut hpack_data, DEFAULT_MAX_HEADER_LIST_SIZE, &mut decoder)
+            .expect("load_hpack should return Ok");
+
+        // Verify that is_over_size was set (try_append returned Err)
+        assert!(
+            headers.is_over_size(),
+            "is_over_size should be true when HeaderMap capacity is exceeded"
+        );
+    }
+
+    #[test]
+    fn test_non_option_and_non_connect_requests_include_path_and_scheme() {
+        let methods = [
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::HEAD,
+            Method::PATCH,
+            Method::TRACE,
+        ];
+
+        for method in methods {
+            assert_eq!(
+                Pseudo::request(
+                    method.clone(),
+                    Uri::from_static("http://example.com:8080"),
+                    None,
+                ),
+                Pseudo {
+                    method: method.clone().into(),
+                    authority: BytesStr::from_static("example.com:8080").into(),
+                    scheme: BytesStr::from_static("http").into(),
+                    path: BytesStr::from_static("/").into(),
+                    ..Default::default()
+                }
+            );
+            assert_eq!(
+                Pseudo::request(
+                    method.clone(),
+                    Uri::from_static("https://example.com/a/b/c"),
+                    None,
+                ),
+                Pseudo {
+                    method: method.into(),
+                    authority: BytesStr::from_static("example.com").into(),
+                    scheme: BytesStr::from_static("https").into(),
+                    path: BytesStr::from_static("/a/b/c").into(),
+                    ..Default::default()
+                }
+            );
+        }
     }
 }

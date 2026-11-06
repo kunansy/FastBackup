@@ -1,8 +1,8 @@
-use once_cell::sync::Lazy;
 use prost_types::source_code_info::Location;
 #[cfg(feature = "cleanup-markdown")]
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag};
 use regex::Regex;
+use std::sync::LazyLock;
 
 /// Comments on a Protobuf item.
 #[derive(Debug, Default, Clone)]
@@ -103,16 +103,17 @@ impl Comments {
         let mut chars = sanitized_line.chars();
         chars
             .next()
-            .map_or(false, |c| c != ' ' || chars.next() == Some(' '))
+            .is_some_and(|c| c != ' ' || chars.next() == Some(' '))
     }
 
     /// Sanitizes the line for rustdoc by performing the following operations:
     ///     - escape urls as <http://foo.com>
     ///     - escape `[` & `]` if not already escaped and not followed by a parenthesis or bracket
     fn sanitize_line(line: &str) -> String {
-        static RULE_URL: Lazy<Regex> = Lazy::new(|| Regex::new(r"https?://[^\s)]+").unwrap());
-        static RULE_BRACKETS: Lazy<Regex> =
-            Lazy::new(|| Regex::new(r"(^|[^\]\\])\[(([^\]]*[^\\])?)\]([^(\[]|$)").unwrap());
+        static RULE_URL: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"https?://[^\s)]+").unwrap());
+        static RULE_BRACKETS: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"(^|[^\]\\])\[(([^\]]*[^\\])?)\]([^(\[]|$)").unwrap());
 
         let mut s = RULE_URL.replace_all(line, r"<$0>").to_string();
         s = RULE_BRACKETS.replace_all(&s, r"$1\[$2\]$4").to_string();
@@ -190,10 +191,10 @@ where
                 fn map_codeblock(kind: CodeBlockKind) -> CodeBlockKind {
                     match kind {
                         CodeBlockKind::Fenced(s) => {
-                            if &*s == "rust" {
+                            if s.as_ref() == "rust" {
                                 CodeBlockKind::Fenced("compile_fail".into())
                             } else {
-                                CodeBlockKind::Fenced(format!("text,{}", s).into())
+                                CodeBlockKind::Fenced(format!("text,{s}").into())
                             }
                         }
                         CodeBlockKind::Indented => CodeBlockKind::Fenced("text".into()),
@@ -202,9 +203,6 @@ where
                 match event {
                     Event::Start(Tag::CodeBlock(kind)) => {
                         Event::Start(Tag::CodeBlock(map_codeblock(kind)))
-                    }
-                    Event::End(Tag::CodeBlock(kind)) => {
-                        Event::End(Tag::CodeBlock(map_codeblock(kind)))
                     }
                     e => e,
                 }

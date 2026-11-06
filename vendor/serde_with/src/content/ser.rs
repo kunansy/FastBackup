@@ -61,8 +61,8 @@ pub(crate) enum Content {
 impl Content {
     pub(crate) fn as_str(&self) -> Option<&str> {
         match self {
-            Self::String(ref x) => Some(x),
-            Self::Bytes(x) => core::str::from_utf8(x).ok(),
+            Self::String(x) => Some(x),
+            Self::Bytes(x) => str::from_utf8(x).ok(),
             _ => None,
         }
     }
@@ -181,10 +181,6 @@ where
     type SerializeStruct = StructSerialize<E>;
     type SerializeStructVariant = StructVariantSerialize<E>;
 
-    fn is_human_readable(&self) -> bool {
-        self.is_human_readable
-    }
-
     fn serialize_bool(self, v: bool) -> Result<Content, E> {
         Ok(Content::Bool(v))
     }
@@ -253,9 +249,9 @@ where
         Ok(Content::None)
     }
 
-    fn serialize_some<T: ?Sized>(self, value: &T) -> Result<Content, E>
+    fn serialize_some<T>(self, value: &T) -> Result<Content, E>
     where
-        T: Serialize,
+        T: Serialize + ?Sized,
     {
         Ok(Content::Some(Box::new(value.serialize(self)?)))
     }
@@ -277,13 +273,9 @@ where
         Ok(Content::UnitVariant(name, variant_index, variant))
     }
 
-    fn serialize_newtype_struct<T: ?Sized>(
-        self,
-        name: &'static str,
-        value: &T,
-    ) -> Result<Content, E>
+    fn serialize_newtype_struct<T>(self, name: &'static str, value: &T) -> Result<Content, E>
     where
-        T: Serialize,
+        T: Serialize + ?Sized,
     {
         Ok(Content::NewtypeStruct(
             name,
@@ -291,7 +283,7 @@ where
         ))
     }
 
-    fn serialize_newtype_variant<T: ?Sized>(
+    fn serialize_newtype_variant<T>(
         self,
         name: &'static str,
         variant_index: u32,
@@ -299,7 +291,7 @@ where
         value: &T,
     ) -> Result<Content, E>
     where
-        T: Serialize,
+        T: Serialize + ?Sized,
     {
         Ok(Content::NewtypeVariant(
             name,
@@ -312,7 +304,7 @@ where
     fn serialize_seq(self, len: Option<usize>) -> Result<Self::SerializeSeq, E> {
         Ok(SeqSerialize {
             is_human_readable: self.is_human_readable,
-            elements: Vec::with_capacity(len.unwrap_or(0)),
+            elements: utils::vec_with_capacity_cautious(len),
             error: PhantomData,
         })
     }
@@ -320,7 +312,7 @@ where
     fn serialize_tuple(self, len: usize) -> Result<Self::SerializeTuple, E> {
         Ok(TupleSerialize {
             is_human_readable: self.is_human_readable,
-            elements: Vec::with_capacity(len),
+            elements: utils::vec_with_capacity_cautious(Some(len)),
             error: PhantomData,
         })
     }
@@ -333,7 +325,7 @@ where
         Ok(TupleStructSerialize {
             is_human_readable: self.is_human_readable,
             name,
-            fields: Vec::with_capacity(len),
+            fields: utils::vec_with_capacity_cautious(Some(len)),
             error: PhantomData,
         })
     }
@@ -350,7 +342,7 @@ where
             name,
             variant_index,
             variant,
-            fields: Vec::with_capacity(len),
+            fields: utils::vec_with_capacity_cautious(Some(len)),
             error: PhantomData,
         })
     }
@@ -358,7 +350,7 @@ where
     fn serialize_map(self, len: Option<usize>) -> Result<Self::SerializeMap, E> {
         Ok(MapSerialize {
             is_human_readable: self.is_human_readable,
-            entries: Vec::with_capacity(len.unwrap_or(0)),
+            entries: utils::vec_with_capacity_cautious(len),
             key: None,
             error: PhantomData,
         })
@@ -368,7 +360,7 @@ where
         Ok(StructSerialize {
             is_human_readable: self.is_human_readable,
             name,
-            fields: Vec::with_capacity(len),
+            fields: utils::vec_with_capacity_cautious(Some(len)),
             error: PhantomData,
         })
     }
@@ -385,9 +377,13 @@ where
             name,
             variant_index,
             variant,
-            fields: Vec::with_capacity(len),
+            fields: utils::vec_with_capacity_cautious(Some(len)),
             error: PhantomData,
         })
+    }
+
+    fn is_human_readable(&self) -> bool {
+        self.is_human_readable
     }
 }
 
@@ -404,9 +400,9 @@ where
     type Ok = Content;
     type Error = E;
 
-    fn serialize_element<T: ?Sized>(&mut self, value: &T) -> Result<(), E>
+    fn serialize_element<T>(&mut self, value: &T) -> Result<(), E>
     where
-        T: Serialize,
+        T: Serialize + ?Sized,
     {
         let value = value.serialize(ContentSerializer::<E>::new(self.is_human_readable))?;
         self.elements.push(value);
@@ -431,9 +427,9 @@ where
     type Ok = Content;
     type Error = E;
 
-    fn serialize_element<T: ?Sized>(&mut self, value: &T) -> Result<(), E>
+    fn serialize_element<T>(&mut self, value: &T) -> Result<(), E>
     where
-        T: Serialize,
+        T: Serialize + ?Sized,
     {
         let value = value.serialize(ContentSerializer::<E>::new(self.is_human_readable))?;
         self.elements.push(value);
@@ -459,9 +455,9 @@ where
     type Ok = Content;
     type Error = E;
 
-    fn serialize_field<T: ?Sized>(&mut self, value: &T) -> Result<(), E>
+    fn serialize_field<T>(&mut self, value: &T) -> Result<(), E>
     where
-        T: Serialize,
+        T: Serialize + ?Sized,
     {
         let value = value.serialize(ContentSerializer::<E>::new(self.is_human_readable))?;
         self.fields.push(value);
@@ -489,9 +485,9 @@ where
     type Ok = Content;
     type Error = E;
 
-    fn serialize_field<T: ?Sized>(&mut self, value: &T) -> Result<(), E>
+    fn serialize_field<T>(&mut self, value: &T) -> Result<(), E>
     where
-        T: Serialize,
+        T: Serialize + ?Sized,
     {
         let value = value.serialize(ContentSerializer::<E>::new(self.is_human_readable))?;
         self.fields.push(value);
@@ -522,18 +518,18 @@ where
     type Ok = Content;
     type Error = E;
 
-    fn serialize_key<T: ?Sized>(&mut self, key: &T) -> Result<(), E>
+    fn serialize_key<T>(&mut self, key: &T) -> Result<(), E>
     where
-        T: Serialize,
+        T: Serialize + ?Sized,
     {
         let key = key.serialize(ContentSerializer::<E>::new(self.is_human_readable))?;
         self.key = Some(key);
         Ok(())
     }
 
-    fn serialize_value<T: ?Sized>(&mut self, value: &T) -> Result<(), E>
+    fn serialize_value<T>(&mut self, value: &T) -> Result<(), E>
     where
-        T: Serialize,
+        T: Serialize + ?Sized,
     {
         let key = self
             .key
@@ -544,19 +540,19 @@ where
         Ok(())
     }
 
-    fn end(self) -> Result<Content, E> {
-        Ok(Content::Map(self.entries))
-    }
-
-    fn serialize_entry<K: ?Sized, V: ?Sized>(&mut self, key: &K, value: &V) -> Result<(), E>
+    fn serialize_entry<K, V>(&mut self, key: &K, value: &V) -> Result<(), E>
     where
-        K: Serialize,
-        V: Serialize,
+        K: Serialize + ?Sized,
+        V: Serialize + ?Sized,
     {
         let key = key.serialize(ContentSerializer::<E>::new(self.is_human_readable))?;
         let value = value.serialize(ContentSerializer::<E>::new(self.is_human_readable))?;
         self.entries.push((key, value));
         Ok(())
+    }
+
+    fn end(self) -> Result<Content, E> {
+        Ok(Content::Map(self.entries))
     }
 }
 
@@ -574,9 +570,9 @@ where
     type Ok = Content;
     type Error = E;
 
-    fn serialize_field<T: ?Sized>(&mut self, key: &'static str, value: &T) -> Result<(), E>
+    fn serialize_field<T>(&mut self, key: &'static str, value: &T) -> Result<(), E>
     where
-        T: Serialize,
+        T: Serialize + ?Sized,
     {
         let value = value.serialize(ContentSerializer::<E>::new(self.is_human_readable))?;
         self.fields.push((key, value));
@@ -604,9 +600,9 @@ where
     type Ok = Content;
     type Error = E;
 
-    fn serialize_field<T: ?Sized>(&mut self, key: &'static str, value: &T) -> Result<(), E>
+    fn serialize_field<T>(&mut self, key: &'static str, value: &T) -> Result<(), E>
     where
-        T: Serialize,
+        T: Serialize + ?Sized,
     {
         let value = value.serialize(ContentSerializer::<E>::new(self.is_human_readable))?;
         self.fields.push((key, value));

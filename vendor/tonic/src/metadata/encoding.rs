@@ -1,3 +1,27 @@
+/*
+ *
+ * Copyright 2025 gRPC authors.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to
+ * deal in the Software without restriction, including without limitation the
+ * rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+ * sell copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+ * IN THE SOFTWARE.
+ *
+ */
+
 use base64::Engine as _;
 use bytes::Bytes;
 use http::header::HeaderValue;
@@ -139,7 +163,7 @@ impl self::value_encoding::Sealed for Binary {
 
     fn from_static(value: &'static str) -> HeaderValue {
         if crate::util::base64::STANDARD.decode(value).is_err() {
-            panic!("Invalid base64 passed to from_static: {}", value);
+            panic!("Invalid base64 passed to from_static: {value}");
         }
         unsafe {
             // Because this is valid base64 this must be a valid HTTP header value,
@@ -173,9 +197,9 @@ impl self::value_encoding::Sealed for Binary {
 
     fn fmt(value: &HeaderValue, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Ok(decoded) = Self::decode(value.as_bytes()) {
-            write!(f, "{:?}", decoded)
+            write!(f, "{decoded:?}")
         } else {
-            write!(f, "b[invalid]{:?}", value)
+            write!(f, "b[invalid]{value:?}")
         }
     }
 }

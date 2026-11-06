@@ -1,9 +1,5 @@
+//! Test Cases
 #![allow(
-    // clippy is broken and shows wrong warnings
-    // clippy on stable does not know yet about the lint name
-    unknown_lints,
-    // https://github.com/rust-lang/rust-clippy/issues/8867
-    clippy::derive_partial_eq_without_eq,
     // This allows the tests to be written more uniform and not have to special case the last clone().
     clippy::redundant_clone,
 )]
@@ -43,11 +39,13 @@ fn base64_vec() {
 
     check_error_deserialization::<BDefault>(
         r#"["0"]"#,
-        expect!["Encoded text cannot have a 6-bit remainder. at line 1 column 4"],
+        expect!["Invalid input length: 1 at line 1 column 4"],
     );
     check_error_deserialization::<BDefault>(
         r#"["zz"]"#,
-        expect!["Invalid last symbol 122, offset 1. at line 1 column 5"],
+        expect![
+            "Invalid last symbol 0x7a ('z') at offset 1, decoded as 0b00110011. at line 1 column 5"
+        ],
     );
 
     #[serde_as]
@@ -139,6 +137,6 @@ fn base64_different_charsets() {
 
     is_equal(
         B64BinHex(bytes.to_vec()),
-        expect![[r##""CDEFGHIJKLMNPQRSTUVXYZ[`ab!\"#$%&'()*+,-0123456789@ABcdehijklmpqr!!==""##]],
+        expect![[r##""DEFGHIJKLMNPQRSTUVXYZ[`abc!\"#$%&'()*+,-012345689@ABCdefhijklmpqr!!==""##]],
     );
 }

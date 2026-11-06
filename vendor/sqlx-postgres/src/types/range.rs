@@ -26,7 +26,7 @@ bitflags! {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct PgRange<T> {
     pub start: Bound<T>,
     pub end: Bound<T>,
@@ -292,7 +292,7 @@ impl<'q, T> Encode<'q, Postgres> for PgRange<T>
 where
     T: Encode<'q, Postgres>,
 {
-    fn encode_by_ref(&self, buf: &mut PgArgumentBuffer) -> IsNull {
+    fn encode_by_ref(&self, buf: &mut PgArgumentBuffer) -> Result<IsNull, BoxDynError> {
         // https://github.com/postgres/postgres/blob/2f48ede080f42b97b594fb14102c82ca1001b80c/src/backend/utils/adt/rangetypes.c#L245
 
         let mut flags = RangeFlags::empty();
@@ -312,15 +312,15 @@ where
         buf.push(flags.bits());
 
         if let Bound::Included(v) | Bound::Excluded(v) = &self.start {
-            buf.encode(v);
+            buf.encode(v)?;
         }
 
         if let Bound::Included(v) | Bound::Excluded(v) = &self.end {
-            buf.encode(v);
+            buf.encode(v)?;
         }
 
         // ranges are themselves never null
-        IsNull::No
+        Ok(IsNull::No)
     }
 }
 
@@ -350,7 +350,7 @@ where
 
                 if !flags.contains(RangeFlags::LB_INF) {
                     let value =
-                        T::decode(PgValueRef::get(&mut buf, value.format, element_ty.clone()))?;
+                        T::decode(PgValueRef::get(&mut buf, value.format, element_ty.clone())?)?;
 
                     start = if flags.contains(RangeFlags::LB_INC) {
                         Bound::Included(value)
@@ -361,7 +361,7 @@ where
 
                 if !flags.contains(RangeFlags::UB_INF) {
                     let value =
-                        T::decode(PgValueRef::get(&mut buf, value.format, element_ty.clone()))?;
+                        T::decode(PgValueRef::get(&mut buf, value.format, element_ty.clone())?)?;
 
                     end = if flags.contains(RangeFlags::UB_INC) {
                         Bound::Included(value)
@@ -445,7 +445,7 @@ where
                     }
 
                     count += 1;
-                    if !(element.is_empty() && !quoted) {
+                    if !element.is_empty() || quoted {
                         let value = Some(T::decode(PgValueRef {
                             type_info: T::type_info(),
                             format: PgValueFormat::Text,
@@ -515,7 +515,7 @@ fn range_compatible<E: Type<Postgres>>(ty: &PgTypeInfo) -> bool {
     // we require the declared type to be a _range_ with an
     // element type that is acceptable
     if let PgTypeKind::Range(element) = &ty.kind() {
-        return E::compatible(&element);
+        return E::compatible(element);
     }
 
     false

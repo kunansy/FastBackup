@@ -1,13 +1,13 @@
-use super::hmac;
-use super::ActiveKeyExchange;
-use crate::error::Error;
-
 use alloc::boxed::Box;
+
+use super::{ActiveKeyExchange, hmac};
+use crate::error::Error;
+use crate::version::TLS12;
 
 /// Implements [`Prf`] using a [`hmac::Hmac`].
 pub struct PrfUsingHmac<'a>(pub &'a dyn hmac::Hmac);
 
-impl<'a> Prf for PrfUsingHmac<'a> {
+impl Prf for PrfUsingHmac<'_> {
     fn for_key_exchange(
         &self,
         output: &mut [u8; 48],
@@ -20,7 +20,7 @@ impl<'a> Prf for PrfUsingHmac<'a> {
             output,
             self.0
                 .with_key(
-                    kx.complete(peer_pub_key)?
+                    kx.complete_for_tls_version(peer_pub_key, &TLS12)?
                         .secret_bytes(),
                 )
                 .as_ref(),
@@ -63,6 +63,11 @@ pub trait Prf: Send + Sync {
     ///
     /// The caller guarantees that `secret`, `label`, and `seed` are non-empty.
     fn for_secret(&self, output: &mut [u8], secret: &[u8], label: &[u8], seed: &[u8]);
+
+    /// Return `true` if this is backed by a FIPS-approved implementation.
+    fn fips(&self) -> bool {
+        false
+    }
 }
 
 pub(crate) fn prf(out: &mut [u8], hmac_key: &dyn hmac::Key, label: &[u8], seed: &[u8]) {
@@ -83,7 +88,9 @@ pub(crate) fn prf(out: &mut [u8], hmac_key: &dyn hmac::Key, label: &[u8], seed: 
 #[cfg(all(test, feature = "ring"))]
 mod tests {
     use crate::crypto::hmac::Hmac;
-    use crate::test_provider::hmac;
+    // nb: crypto::aws_lc_rs provider doesn't provide (or need) hmac,
+    // so cannot be used for this test.
+    use crate::crypto::ring::hmac;
 
     // Below known answer tests come from https://mailarchive.ietf.org/arch/msg/tls/fzVCzk-z3FShgGJ6DOXqM1ydxms/
 
@@ -142,12 +149,12 @@ mod tests {
     }
 }
 
-#[cfg(all(bench, any(feature = "ring", feature = "aws_lc_rs")))]
+#[cfg(all(bench, feature = "ring"))]
 mod benchmarks {
     #[bench]
     fn bench_sha256(b: &mut test::Bencher) {
         use crate::crypto::hmac::Hmac;
-        use crate::test_provider::hmac;
+        use crate::crypto::ring::hmac;
 
         let label = &b"extended master secret"[..];
         let seed = [0u8; 32];

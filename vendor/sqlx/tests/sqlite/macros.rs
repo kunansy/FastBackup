@@ -115,24 +115,24 @@ async fn test_query_scalar() -> anyhow::Result<()> {
     let mut conn = new::<Sqlite>().await?;
 
     let id = sqlx::query_scalar!("select 1").fetch_one(&mut conn).await?;
-    assert_eq!(id, 1i32);
+    assert_eq!(id, 1i64);
 
     // invalid column names are ignored
     let id = sqlx::query_scalar!(r#"select 1 as "&foo""#)
         .fetch_one(&mut conn)
         .await?;
-    assert_eq!(id, 1i32);
+    assert_eq!(id, 1i64);
 
     let id = sqlx::query_scalar!(r#"select 1 as "foo!""#)
         .fetch_one(&mut conn)
         .await?;
-    assert_eq!(id, 1i32);
+    assert_eq!(id, 1i64);
 
     let id = sqlx::query_scalar!(r#"select 1 as "foo?""#)
         .fetch_one(&mut conn)
         .await?;
 
-    assert_eq!(id, Some(1i32));
+    assert_eq!(id, Some(1i64));
 
     let id = sqlx::query_scalar!(r#"select 1 as "foo: MyInt""#)
         .fetch_one(&mut conn)
@@ -171,6 +171,31 @@ async fn test_query_scalar() -> anyhow::Result<()> {
         .await?;
 
     assert_eq!(id, MyInt(1i64));
+
+    Ok(())
+}
+
+#[sqlx_macros::test]
+async fn query_by_string() -> anyhow::Result<()> {
+    let mut conn = new::<Sqlite>().await?;
+
+    let string = "Hello, world!".to_string();
+    let ref tuple = ("Hello, world!".to_string(),);
+
+    let result = sqlx::query!(
+        "SELECT 'Hello, world!' as string where 'Hello, world!' in (?, ?, ?, ?, ?, ?, ?)",
+        string, // make sure we don't actually take ownership here
+        &string[..],
+        Some(&string),
+        Some(&string[..]),
+        Option::<String>::None,
+        string.clone(),
+        tuple.0 // make sure we're not trying to move out of a field expression
+    )
+    .fetch_one(&mut conn)
+    .await?;
+
+    assert_eq!(result.string, string);
 
     Ok(())
 }

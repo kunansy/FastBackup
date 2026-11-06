@@ -11,34 +11,108 @@
 
 [package]
 edition = "2021"
+rust-version = "1.94.0"
 name = "sqlx-sqlite"
-version = "0.7.3"
+version = "0.9.0"
 authors = [
     "Ryan Leckey <leckey.ryan@gmail.com>",
     "Austin Bonander <austin.bonander@gmail.com>",
     "Chloe Ross <orangesnowfox@gmail.com>",
     "Daniel Akhterov <akhterovd@gmail.com>",
 ]
+build = false
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
 description = "SQLite driver implementation for SQLx. Not for direct use; see the `sqlx` crate for details."
 documentation = "https://docs.rs/sqlx"
+readme = false
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/launchbadge/sqlx"
+
+[package.metadata.docs.rs]
+features = ["__unstable_docs"]
+
+[features]
+_unstable-all-sqlite-features = [
+    "deserialize",
+    "load-extension",
+    "preupdate-hook",
+    "unlock-notify",
+]
+_unstable-all-types = [
+    "json",
+    "chrono",
+    "time",
+    "uuid",
+]
+_unstable-docs = [
+    "bundled",
+    "any",
+    "_unstable-all-types",
+    "_unstable-all-sqlite-features",
+]
+any = ["sqlx-core/any"]
+bigdecimal = []
+bundled = ["libsqlite3-sys/bundled"]
+chrono = [
+    "dep:chrono",
+    "sqlx-core/chrono",
+]
+deserialize = []
+json = [
+    "sqlx-core/json",
+    "serde",
+]
+load-extension = []
+migrate = ["sqlx-core/migrate"]
+offline = [
+    "sqlx-core/offline",
+    "serde",
+]
+preupdate-hook = ["libsqlite3-sys/preupdate_hook"]
+regexp = ["dep:regex"]
+rust_decimal = []
+sqlx-toml = ["sqlx-core/sqlx-toml"]
+time = [
+    "dep:time",
+    "sqlx-core/time",
+]
+unbundled = ["libsqlite3-sys/buildtime_bindgen"]
+unlock-notify = ["libsqlite3-sys/unlock_notify"]
+uuid = [
+    "dep:uuid",
+    "sqlx-core/uuid",
+]
+
+[lib]
+name = "sqlx_sqlite"
+path = "src/lib.rs"
 
 [dependencies.atoi]
 version = "2.0"
 
 [dependencies.chrono]
-version = "0.4.22"
+version = "0.4.34"
+features = [
+    "std",
+    "clock",
+]
 optional = true
 default-features = false
 
 [dependencies.flume]
-version = "0.11.0"
+version = "0.12.0"
 features = ["async"]
 default-features = false
 
+[dependencies.form_urlencoded]
+version = "1.2.2"
+
 [dependencies.futures-channel]
-version = "0.3.19"
+version = "0.3.32"
 features = [
     "sink",
     "alloc",
@@ -47,17 +121,17 @@ features = [
 default-features = false
 
 [dependencies.futures-core]
-version = "0.3.19"
+version = "0.3.32"
 default-features = false
 
 [dependencies.futures-executor]
-version = "0.3.19"
+version = "0.3.32"
 
 [dependencies.futures-intrusive]
 version = "0.5.0"
 
 [dependencies.futures-util]
-version = "0.3.19"
+version = "0.3.32"
 features = [
     "alloc",
     "sink",
@@ -65,35 +139,38 @@ features = [
 default-features = false
 
 [dependencies.libsqlite3-sys]
-version = "0.27.0"
+version = ">=0.30.1, <0.38.0"
 features = [
     "pkg-config",
     "vcpkg",
-    "bundled",
-    "unlock_notify",
 ]
 default-features = false
 
 [dependencies.log]
-version = "0.4.17"
+version = "0.4.18"
 
 [dependencies.percent-encoding]
-version = "2.1.0"
+version = "2.3.0"
 
 [dependencies.regex]
-version = "1.5.5"
+version = "1.6.0"
 optional = true
 
 [dependencies.serde]
-version = "1.0.145"
+version = "1.0.219"
 features = ["derive"]
 optional = true
 
 [dependencies.sqlx-core]
-version = "=0.7.3"
+version = "=0.9.0"
+
+[dependencies.thiserror]
+version = "2.0.18"
+features = ["std"]
+default-features = false
 
 [dependencies.time]
-version = "0.3.14"
+version = "0.3.47"
 features = [
     "formatting",
     "parsing",
@@ -107,34 +184,15 @@ features = ["log"]
 
 [dependencies.url]
 version = "2.2.2"
-default-features = false
-
-[dependencies.urlencoding]
-version = "2.1.3"
 
 [dependencies.uuid]
-version = "1.1.2"
+version = "1.12.1"
 optional = true
 
-[dev-dependencies.sqlx]
-version = "=0.7.3"
-features = [
-    "macros",
-    "runtime-tokio",
-    "tls-none",
-]
-default-features = false
+[dev-dependencies]
 
-[features]
-any = ["sqlx-core/any"]
-chrono = ["dep:chrono"]
-json = [
-    "sqlx-core/json",
-    "serde",
-]
-migrate = ["sqlx-core/migrate"]
-offline = [
-    "sqlx-core/offline",
-    "serde",
-]
-regexp = ["dep:regex"]
+[lints.clippy]
+cast_possible_truncation = "deny"
+cast_possible_wrap = "deny"
+cast_sign_loss = "deny"
+disallowed_methods = "deny"

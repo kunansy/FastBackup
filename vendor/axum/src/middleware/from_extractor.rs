@@ -2,7 +2,7 @@ use crate::{
     extract::FromRequestParts,
     response::{IntoResponse, Response},
 };
-use futures_util::{future::BoxFuture, ready};
+use futures_util::future::BoxFuture;
 use http::Request;
 use pin_project_lite::pin_project;
 use std::{
@@ -10,7 +10,7 @@ use std::{
     future::Future,
     marker::PhantomData,
     pin::Pin,
-    task::{Context, Poll},
+    task::{ready, Context, Poll},
 };
 use tower_layer::Layer;
 use tower_service::Service;
@@ -26,7 +26,7 @@ use tower_service::Service;
 /// without repeating it in the function signature.
 ///
 /// Note that if the extractor consumes the request body, as `String` or
-/// [`Bytes`] does, an empty body will be left in its place. Thus wont be
+/// [`Bytes`] does, an empty body will be left in its place. Thus won't be
 /// accessible to subsequent extractors or handlers.
 ///
 /// # Example
@@ -39,12 +39,10 @@ use tower_service::Service;
 ///     Router,
 ///     http::{header, StatusCode, request::Parts},
 /// };
-/// use async_trait::async_trait;
 ///
 /// // An extractor that performs authorization.
 /// struct RequireAuth;
 ///
-/// #[async_trait]
 /// impl<S> FromRequestParts<S> for RequireAuth
 /// where
 ///     S: Send + Sync,
@@ -84,9 +82,7 @@ use tower_service::Service;
 ///     .route("/foo", post(other_handler))
 ///     // The extractor will run before all routes
 ///     .route_layer(from_extractor::<RequireAuth>());
-/// # async {
-/// # axum::Server::bind(&"".parse().unwrap()).serve(app.into_make_service()).await.unwrap();
-/// # };
+/// # let _: Router = app;
 /// ```
 ///
 /// [`Bytes`]: bytes::Bytes
@@ -218,8 +214,9 @@ where
 
     fn call(&mut self, req: Request<B>) -> Self::Future {
         let state = self.state.clone();
+        let (mut parts, body) = req.into_parts();
+
         let extract_future = Box::pin(async move {
-            let (mut parts, body) = req.into_parts();
             let extracted = E::from_request_parts(&mut parts, &state).await;
             let req = Request::from_parts(parts, body);
             (req, extracted)
@@ -305,7 +302,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{async_trait, handler::Handler, routing::get, test_helpers::*, Router};
+    use crate::{handler::Handler, routing::get, test_helpers::*, Router};
     use axum_core::extract::FromRef;
     use http::{header, request::Parts, StatusCode};
     use tower_http::limit::RequestBodyLimitLayer;
@@ -317,7 +314,6 @@ mod tests {
 
         struct RequireAuth;
 
-        #[async_trait::async_trait]
         impl<S> FromRequestParts<S> for RequireAuth
         where
             S: Send + Sync,
@@ -354,13 +350,12 @@ mod tests {
 
         let client = TestClient::new(app);
 
-        let res = client.get("/").send().await;
+        let res = client.get("/").await;
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
 
         let res = client
             .get("/")
             .header(http::header::AUTHORIZATION, "secret")
-            .send()
             .await;
         assert_eq!(res.status(), StatusCode::OK);
     }
@@ -370,7 +365,6 @@ mod tests {
     fn works_with_request_body_limit() {
         struct MyExtractor;
 
-        #[async_trait]
         impl<S> FromRequestParts<S> for MyExtractor
         where
             S: Send + Sync,

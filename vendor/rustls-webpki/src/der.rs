@@ -12,10 +12,13 @@
 // ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 // OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
+#[cfg(feature = "alloc")]
+use alloc::vec::Vec;
 use core::marker::PhantomData;
 
-use crate::{error::DerTypeId, Error};
+use crate::{Error, error::DerTypeId};
 
+/// Iterator to parse a sequence of DER-encoded values of type `T`.
 #[derive(Debug)]
 pub struct DerIterator<'a, T> {
     reader: untrusted::Reader<'a>,
@@ -109,9 +112,10 @@ pub(crate) fn nested_limited<'a, R>(
     decoder: impl FnOnce(&mut untrusted::Reader<'a>) -> Result<R, Error>,
     size_limit: usize,
 ) -> Result<R, Error> {
-    expect_tag_and_get_value_limited(input, tag, size_limit)
-        .map_err(|_| error)?
-        .read_all(error, decoder)
+    match expect_tag_and_get_value_limited(input, tag, size_limit) {
+        Ok(value) => value.read_all(error, decoder),
+        Err(_) => Err(error),
+    }
 }
 
 // TODO: investigate taking decoder as a reference to reduce generated code
@@ -212,6 +216,47 @@ pub(crate) fn read_tag_and_get_value_limited<'a>(
     Ok((tag, inner))
 }
 
+/// Prepend `bytes` with the given ASN.1 [`Tag`] and appropriately encoded length byte(s).
+/// Useful for "adding back" ASN.1 bytes to parsed content.
+#[cfg(feature = "alloc")]
+#[allow(clippy::as_conversions)]
+pub(crate) fn asn1_wrap(tag: Tag, bytes: &[u8]) -> Vec<u8> {
+    let len = bytes.len();
+    // The length is encoded differently depending on how many bytes there are
+    if len < usize::from(SHORT_FORM_LEN_MAX) {
+        // Short form: the length is encoded using a single byte
+        // Contents: Tag byte, single length byte, and passed bytes
+        let mut ret = Vec::with_capacity(2 + len);
+        ret.push(tag.into()); // Tag byte
+        ret.push(len as u8); // Single length byte
+        ret.extend_from_slice(bytes); // Passed bytes
+        ret
+    } else {
+        // Long form: The length is encoded using multiple bytes
+        // Contents: Tag byte, number-of-length-bytes byte, length bytes, and passed bytes
+        // The first byte indicates how many more bytes will be used to encode the length
+        // First, get a big-endian representation of the byte slice's length
+        let size = len.to_be_bytes();
+        // Find the number of leading empty bytes in that representation
+        // This will determine the smallest number of bytes we need to encode the length
+        let leading_zero_bytes = size
+            .iter()
+            .position(|&byte| byte != 0)
+            .unwrap_or(size.len());
+        assert!(leading_zero_bytes < size.len());
+        // Number of bytes used - number of not needed bytes = smallest number needed
+        let encoded_bytes = size.len() - leading_zero_bytes;
+        let mut ret = Vec::with_capacity(2 + encoded_bytes + len);
+        // Indicate this is a number-of-length-bytes byte by setting the high order bit
+        let number_of_length_bytes_byte = SHORT_FORM_LEN_MAX + encoded_bytes as u8;
+        ret.push(tag.into()); // Tag byte
+        ret.push(number_of_length_bytes_byte); // Number-of-length-bytes byte
+        ret.extend_from_slice(&size[leading_zero_bytes..]); // Length bytes
+        ret.extend_from_slice(bytes); // Passed bytes
+        ret
+    }
+}
+
 // Long-form DER encoded lengths of two bytes can express lengths up to the following limit.
 //
 // The upstream ring::io::der::read_tag_and_get_value() function limits itself to up to two byte
@@ -267,11 +312,15 @@ pub(crate) fn nested_of_mut<'a>(
     outer_tag: Tag,
     inner_tag: Tag,
     error: Error,
+    allow_empty: bool,
     mut decoder: impl FnMut(&mut untrusted::Reader<'a>) -> Result<(), Error>,
 ) -> Result<(), Error> {
-    nested(input, outer_tag, error, |outer| {
+    nested(input, outer_tag, error.clone(), |outer| {
+        if allow_empty && outer.at_end() {
+            return Ok(());
+        }
         loop {
-            nested(outer, inner_tag, error, |inner| decoder(inner))?;
+            nested(outer, inner_tag, error.clone(), |inner| decoder(inner))?;
             if outer.at_end() {
                 break;
             }
@@ -301,7 +350,7 @@ pub(crate) struct BitStringFlags<'a> {
     raw_bits: &'a [u8],
 }
 
-impl<'a> BitStringFlags<'a> {
+impl BitStringFlags<'_> {
     pub(crate) fn bit_set(&self, bit: usize) -> bool {
         let byte_index = bit / 8;
         let bit_shift = 7 - (bit % 8);
@@ -321,7 +370,7 @@ impl<'a> BitStringFlags<'a> {
 //
 // [0]: https://security.stackexchange.com/a/10396
 // [1]: https://www.itu.int/ITU-T/studygroups/com17/languages/X.690-0207.pdf
-pub(crate) fn bit_string_flags(input: untrusted::Input) -> Result<BitStringFlags<'_>, Error> {
+pub(crate) fn bit_string_flags(input: untrusted::Input<'_>) -> Result<BitStringFlags<'_>, Error> {
     input.read_all(Error::BadDer, |bit_string| {
         // ITU X690-0207 11.2:
         //   "The initial octet shall encode, as an unsigned binary integer with bit 1 as the least
@@ -330,20 +379,19 @@ pub(crate) fn bit_string_flags(input: untrusted::Input) -> Result<BitStringFlags
         let padding_bits = bit_string.read_byte().map_err(|_| Error::BadDer)?;
         let raw_bits = bit_string.read_bytes_to_end().as_slice_less_safe();
 
-        // It's illegal to have more than 7 bits of padding. Similarly, if the raw bitflags
-        // are empty there should be no padding.
-        if padding_bits > 7 || (raw_bits.is_empty() && padding_bits != 0) {
-            return Err(Error::BadDer);
-        }
+        match (padding_bits, raw_bits.last()) {
+            // It's illegal to have more than 7 bits of padding.
+            (8.., _) => Err(Error::BadDer),
 
-        // If there are padding bits then the last bit of the last raw byte must be 0 or the
-        // distinguished encoding rules are not being followed.
-        let last_byte = raw_bits[raw_bits.len() - 1];
-        let padding_mask = (1 << padding_bits) - 1;
+            // If the raw bitflags are empty there should be no padding.
+            (0, None) => Ok(BitStringFlags { raw_bits }),
+            (_, None) => Err(Error::BadDer),
 
-        match padding_bits > 0 && (last_byte & padding_mask) != 0 {
-            true => Err(Error::BadDer),
-            false => Ok(BitStringFlags { raw_bits }),
+            // If there are padding bits then the last bit of the last raw byte must be 0 or the
+            // distinguished encoding rules are not being followed.
+            (1..=7, Some(last)) if last & ((1 << padding_bits) - 1) != 0 => Err(Error::BadDer),
+
+            (_, Some(_)) => Ok(BitStringFlags { raw_bits }),
         }
     })
 }
@@ -423,6 +471,65 @@ macro_rules! oid {
 #[cfg(test)]
 mod tests {
     use super::DerTypeId;
+    #[cfg(feature = "alloc")]
+    use alloc::vec::Vec;
+
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn test_asn1_wrap() {
+        // Prepend stuff to `bytes` to put it in a DER SEQUENCE.
+        let wrap_in_sequence = |bytes: &[u8]| super::asn1_wrap(super::Tag::Sequence, bytes);
+
+        // Empty slice
+        assert_eq!(vec![0x30, 0x00], wrap_in_sequence(&[]));
+
+        // Small size
+        assert_eq!(
+            vec![0x30, 0x04, 0x00, 0x11, 0x22, 0x33],
+            wrap_in_sequence(&[0x00, 0x11, 0x22, 0x33])
+        );
+
+        // Medium size
+        let mut val = Vec::new();
+        val.resize(255, 0x12);
+        assert_eq!(
+            vec![0x30, 0x81, 0xff, 0x12, 0x12, 0x12],
+            wrap_in_sequence(&val)[..6]
+        );
+
+        // Large size
+        let mut val = Vec::new();
+        val.resize(4660, 0x12);
+        wrap_in_sequence(&val);
+        assert_eq!(
+            vec![0x30, 0x82, 0x12, 0x34, 0x12, 0x12],
+            wrap_in_sequence(&val)[..6]
+        );
+
+        // Huge size
+        let mut val = Vec::new();
+        val.resize(0xffff, 0x12);
+        let result = wrap_in_sequence(&val);
+        assert_eq!(vec![0x30, 0x82, 0xff, 0xff, 0x12, 0x12], result[..6]);
+        assert_eq!(result.len(), 0xffff + 4);
+
+        // Gigantic size
+        let mut val = Vec::new();
+        val.resize(0x100000, 0x12);
+        let result = wrap_in_sequence(&val);
+        assert_eq!(vec![0x30, 0x83, 0x10, 0x00, 0x00, 0x12, 0x12], result[..7]);
+        assert_eq!(result.len(), 0x100000 + 5);
+
+        // Ludicrous size
+        let mut val = Vec::new();
+        val.resize(0x1000000, 0x12);
+        let result = wrap_in_sequence(&val);
+        assert_eq!(
+            vec![0x30, 0x84, 0x01, 0x00, 0x00, 0x00, 0x12, 0x12],
+            result[..8]
+        );
+        assert_eq!(result.len(), 0x1000000 + 6);
+    }
 
     #[test]
     fn test_optional_boolean() {
@@ -449,7 +556,7 @@ mod tests {
 
     #[test]
     fn test_bit_string_with_no_unused_bits() {
-        use super::{bit_string_with_no_unused_bits, Error};
+        use super::{Error, bit_string_with_no_unused_bits};
 
         // Unexpected type
         assert_eq!(
@@ -485,13 +592,13 @@ mod tests {
         );
     }
 
-    fn bytes_reader(bytes: &[u8]) -> untrusted::Reader {
-        return untrusted::Reader::new(untrusted::Input::from(bytes));
+    fn bytes_reader(bytes: &[u8]) -> untrusted::Reader<'_> {
+        untrusted::Reader::new(untrusted::Input::from(bytes))
     }
 
     #[test]
     fn read_tag_and_get_value_default_limit() {
-        use super::{read_tag_and_get_value, Error};
+        use super::{Error, read_tag_and_get_value};
 
         let inputs = &[
             // DER with short-form length encoded as three bytes.
@@ -513,7 +620,7 @@ mod tests {
 
     #[test]
     fn read_tag_and_get_value_limited_high_form() {
-        use super::{read_tag_and_get_value_limited, Error, LONG_FORM_LEN_TWO_BYTES_MAX};
+        use super::{Error, LONG_FORM_LEN_TWO_BYTES_MAX, read_tag_and_get_value_limited};
 
         let mut bytes = untrusted::Reader::new(untrusted::Input::from(&[0xFF]));
         // read_tag_and_get_value_limited_high_form should reject DER with "high tag number form" tags.
@@ -525,7 +632,7 @@ mod tests {
 
     #[test]
     fn read_tag_and_get_value_limited_non_canonical() {
-        use super::{read_tag_and_get_value_limited, Error, LONG_FORM_LEN_TWO_BYTES_MAX};
+        use super::{Error, LONG_FORM_LEN_TWO_BYTES_MAX, read_tag_and_get_value_limited};
 
         let inputs = &[
             // Two byte length, with expressed length < 128.
@@ -551,7 +658,7 @@ mod tests {
     #[test]
     #[cfg(feature = "alloc")]
     fn read_tag_and_get_value_limited_limits() {
-        use super::{read_tag_and_get_value_limited, Error};
+        use super::{Error, read_tag_and_get_value_limited};
 
         let short_input = &[0xFF];
         let short_input_encoded = &[
@@ -602,11 +709,11 @@ mod tests {
             let mut bytes = untrusted::Reader::new(untrusted::Input::from(tc.input));
 
             let res = read_tag_and_get_value_limited(&mut bytes, tc.limit);
-            match tc.err {
+            match &tc.err {
                 None => assert!(res.is_ok()),
                 Some(e) => {
                     let actual = res.unwrap_err();
-                    assert_eq!(actual, e)
+                    assert_eq!(&actual, e)
                 }
             }
         }
@@ -639,7 +746,7 @@ mod tests {
 
     #[test]
     fn misencoded_bit_string_flags() {
-        use super::{bit_string_flags, Error};
+        use super::{Error, bit_string_flags};
 
         let bad_padding_example = untrusted::Input::from(&[
             0x08, // 8 bit of padding (illegal!).
@@ -658,6 +765,14 @@ mod tests {
             bit_string_flags(bad_padding_example),
             Err(Error::BadDer)
         ));
+
+        // invalid padding for empty set
+        for pad in 1..=255 {
+            assert_eq!(
+                bit_string_flags(untrusted::Input::from(&[pad])).err(),
+                Some(Error::BadDer)
+            );
+        }
     }
 
     #[test]
@@ -682,6 +797,24 @@ mod tests {
         assert!(!res.bit_set(8));
         // Bits outside the range of values shouldn't be considered set.
         assert!(!res.bit_set(256));
+    }
+
+    #[test]
+    fn empty_bit_string_flags() {
+        let bs = super::bit_string_flags(untrusted::Input::from(&[0x00])).unwrap();
+
+        // all bits are unset
+        for b in 0..256 {
+            assert!(!bs.bit_set(b));
+        }
+    }
+
+    #[test]
+    fn mispadded_bit_string_flags() {
+        assert_eq!(
+            super::bit_string_flags(untrusted::Input::from(&[0x04, 0xff])).err(),
+            Some(super::Error::BadDer)
+        );
     }
 
     #[test]

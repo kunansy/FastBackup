@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::fmt::{self, Write};
 use std::str;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[cfg(feature = "http2")]
 use http::header::HeaderValue;
@@ -14,14 +14,14 @@ pub(crate) const DATE_VALUE_LENGTH: usize = 29;
 pub(crate) fn extend(dst: &mut Vec<u8>) {
     CACHED.with(|cache| {
         dst.extend_from_slice(cache.borrow().buffer());
-    })
+    });
 }
 
 #[cfg(feature = "http1")]
 pub(crate) fn update() {
     CACHED.with(|cache| {
         cache.borrow_mut().check();
-    })
+    });
 }
 
 #[cfg(feature = "http2")]
@@ -29,13 +29,15 @@ pub(crate) fn update_and_header_value() -> HeaderValue {
     CACHED.with(|cache| {
         let mut cache = cache.borrow_mut();
         cache.check();
-        HeaderValue::from_bytes(cache.buffer()).expect("Date format should be valid HeaderValue")
+        cache.header_value.clone()
     })
 }
 
 struct CachedDate {
     bytes: [u8; DATE_VALUE_LENGTH],
     pos: usize,
+    #[cfg(feature = "http2")]
+    header_value: HeaderValue,
     next_update: SystemTime,
 }
 
@@ -46,6 +48,8 @@ impl CachedDate {
         let mut cache = CachedDate {
             bytes: [0; DATE_VALUE_LENGTH],
             pos: 0,
+            #[cfg(feature = "http2")]
+            header_value: HeaderValue::from_static(""),
             next_update: SystemTime::now(),
         };
         cache.update(cache.next_update);
@@ -64,15 +68,30 @@ impl CachedDate {
     }
 
     fn update(&mut self, now: SystemTime) {
+        let nanos = now
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_nanos();
+
         self.render(now);
-        self.next_update = now + Duration::new(1, 0);
+        self.next_update = now + Duration::new(1, 0) - Duration::from_nanos(u64::from(nanos));
     }
 
     fn render(&mut self, now: SystemTime) {
         self.pos = 0;
         let _ = write!(self, "{}", HttpDate::from(now));
-        debug_assert!(self.pos == DATE_VALUE_LENGTH);
+        debug_assert_eq!(self.pos, DATE_VALUE_LENGTH);
+        self.render_http2();
     }
+
+    #[cfg(feature = "http2")]
+    fn render_http2(&mut self) {
+        self.header_value = HeaderValue::from_bytes(self.buffer())
+            .expect("Date format should be valid HeaderValue");
+    }
+
+    #[cfg(not(feature = "http2"))]
+    fn render_http2(&mut self) {}
 }
 
 impl fmt::Write for CachedDate {

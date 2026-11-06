@@ -7,7 +7,10 @@
 // <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
-use core::fmt::{self, Write};
+use core::{
+    fmt::{self, Write},
+    iter::FusedIterator,
+};
 use tinyvec::ArrayVec;
 
 /// External iterator for replacements for a string's characters.
@@ -19,9 +22,18 @@ pub struct Replacements<I> {
     buffer: Option<char>,
 }
 
-#[inline]
-pub fn new_cjk_compat_variants<I: Iterator<Item = char>>(iter: I) -> Replacements<I> {
-    Replacements { iter, buffer: None }
+impl<I: Iterator<Item = char>> Replacements<I> {
+    /// Create a new iterator that replaces [CJK Compatibility Ideograph] codepoints with normal forms using [Standardized Variation Sequences].
+    ///
+    /// Note that this iterator can also be obtained by directly calling [`.cjk_compat_variants()`] on the iterator.
+    ///
+    /// [CJK Compatibility Ideograph]: https://www.unicode.org/glossary/#compatibility_ideograph
+    /// [Standardized Variation Sequences]: https://www.unicode.org/glossary/#standardized_variation_sequence
+    /// [`.cjk_compat_variants()`]: crate::UnicodeNormalization::cjk_compat_variants
+    #[inline]
+    pub fn new_cjk_compat_variants(iter: I) -> Replacements<I> {
+        Replacements { iter, buffer: None }
+    }
 }
 
 impl<I: Iterator<Item = char>> Iterator for Replacements<I> {
@@ -50,6 +62,8 @@ impl<I: Iterator<Item = char>> Iterator for Replacements<I> {
         (lower, None)
     }
 }
+
+impl<I: Iterator<Item = char> + FusedIterator> FusedIterator for Replacements<I> {}
 
 impl<I: Iterator<Item = char> + Clone> fmt::Display for Replacements<I> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {

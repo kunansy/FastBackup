@@ -2,19 +2,17 @@ use core::{
     borrow::Borrow,
     fmt,
     hash::{BuildHasher, Hash},
-    usize,
 };
 
-use hashbrown::hash_map;
-
 use crate::linked_hash_map::{self, LinkedHashMap};
+use crate::DefaultHashBuilder;
 
 pub use crate::linked_hash_map::{
     Drain, Entry, IntoIter, Iter, IterMut, OccupiedEntry, RawEntryBuilder, RawEntryBuilderMut,
     RawOccupiedEntryMut, RawVacantEntryMut, VacantEntry,
 };
 
-pub struct LruCache<K, V, S = hash_map::DefaultHashBuilder> {
+pub struct LruCache<K, V, S = DefaultHashBuilder> {
     map: LinkedHashMap<K, V, S>,
     max_size: usize,
 }
@@ -67,18 +65,26 @@ impl<K, V, S> LruCache<K, V, S> {
     }
 
     #[inline]
-    pub fn iter(&self) -> Iter<K, V> {
+    pub fn iter(&self) -> Iter<'_, K, V> {
         self.map.iter()
     }
 
     #[inline]
-    pub fn iter_mut(&mut self) -> IterMut<K, V> {
+    pub fn iter_mut(&mut self) -> IterMut<'_, K, V> {
         self.map.iter_mut()
     }
 
     #[inline]
-    pub fn drain(&mut self) -> Drain<K, V> {
+    pub fn drain(&mut self) -> Drain<'_, K, V> {
         self.map.drain()
+    }
+
+    #[inline]
+    pub fn retain<F>(&mut self, f: F)
+    where
+        F: FnMut(&K, &mut V) -> bool,
+    {
+        self.map.retain(f);
     }
 }
 
@@ -87,12 +93,12 @@ where
     S: BuildHasher,
 {
     #[inline]
-    pub fn contains_key<Q>(&mut self, key: &Q) -> bool
+    pub fn contains_key<Q>(&self, key: &Q) -> bool
     where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        self.get_mut(key).is_some()
+        self.map.contains_key(key)
     }
 
     /// Insert a new value into the `LruCache`.

@@ -1,10 +1,13 @@
-#[cfg(feature = "http1")]
+#[cfg(all(feature = "client", feature = "http1"))]
 use bytes::BytesMut;
-use http::header::CONTENT_LENGTH;
-use http::header::{HeaderValue, ValueIter};
-use http::HeaderMap;
+use http::header::HeaderValue;
 #[cfg(all(feature = "http2", feature = "client"))]
 use http::Method;
+#[cfg(any(feature = "client", all(feature = "server", feature = "http2")))]
+use http::{
+    header::{ValueIter, CONTENT_LENGTH},
+    HeaderMap,
+};
 
 #[cfg(feature = "http1")]
 pub(super) fn connection_keep_alive(value: &HeaderValue) -> bool {
@@ -14,6 +17,17 @@ pub(super) fn connection_keep_alive(value: &HeaderValue) -> bool {
 #[cfg(feature = "http1")]
 pub(super) fn connection_close(value: &HeaderValue) -> bool {
     connection_has(value, "close")
+}
+
+// Returns true if any `Connection` header field carries a `close` token.
+// A message may have more than one `Connection` header line, so all of them
+// must be inspected (`get`/`connection_close` alone only sees the first).
+#[cfg(feature = "http1")]
+pub(super) fn connection_any_close(headers: &http::HeaderMap) -> bool {
+    headers
+        .get_all(http::header::CONNECTION)
+        .iter()
+        .any(connection_close)
 }
 
 #[cfg(feature = "http1")]
@@ -28,15 +42,37 @@ fn connection_has(value: &HeaderValue, needle: &str) -> bool {
     false
 }
 
+#[cfg(feature = "http1")]
+pub(super) fn te_is_trailers(headers: &http::HeaderMap) -> bool {
+    header_value_list_has(headers.get_all(http::header::TE).into_iter(), "trailers")
+}
+
+#[cfg(feature = "http1")]
+fn header_value_list_has(values: http::header::ValueIter<'_, HeaderValue>, needle: &str) -> bool {
+    for value in values {
+        if let Ok(line) = value.to_str() {
+            for token in line.split(',') {
+                if token.trim().eq_ignore_ascii_case(needle) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
+}
+
 #[cfg(all(feature = "http1", feature = "server"))]
 pub(super) fn content_length_parse(value: &HeaderValue) -> Option<u64> {
     from_digits(value.as_bytes())
 }
 
+#[cfg(any(feature = "client", all(feature = "server", feature = "http2")))]
 pub(super) fn content_length_parse_all(headers: &HeaderMap) -> Option<u64> {
     content_length_parse_all_values(headers.get_all(CONTENT_LENGTH).into_iter())
 }
 
+#[cfg(any(feature = "client", all(feature = "server", feature = "http2")))]
 pub(super) fn content_length_parse_all_values(values: ValueIter<'_, HeaderValue>) -> Option<u64> {
     // If multiple Content-Length headers were sent, everything can still
     // be alright if they all contain the same value, and all parse
@@ -46,13 +82,11 @@ pub(super) fn content_length_parse_all_values(values: ValueIter<'_, HeaderValue>
     for h in values {
         if let Ok(line) = h.to_str() {
             for v in line.split(',') {
-                if let Some(n) = from_digits(v.trim().as_bytes()) {
-                    if content_length.is_none() {
-                        content_length = Some(n)
-                    } else if content_length != Some(n) {
-                        return None;
-                    }
-                } else {
+                let n = from_digits(v.trim().as_bytes())?;
+
+                if content_length.is_none() {
+                    content_length = Some(n);
+                } else if content_length != Some(n) {
                     return None;
                 }
             }
@@ -79,7 +113,7 @@ fn from_digits(bytes: &[u8]) -> Option<u64> {
         match b {
             b'0'..=b'9' => {
                 result = result.checked_mul(RADIX)?;
-                result = result.checked_add((b - b'0') as u64)?;
+                result = result.checked_add(u64::from(b - b'0'))?;
             }
             _ => {
                 // not a DIGIT, get outta here!
@@ -93,10 +127,10 @@ fn from_digits(bytes: &[u8]) -> Option<u64> {
 
 #[cfg(all(feature = "http2", feature = "client"))]
 pub(super) fn method_has_defined_payload_semantics(method: &Method) -> bool {
-    match *method {
-        Method::GET | Method::HEAD | Method::DELETE | Method::CONNECT => false,
-        _ => true,
-    }
+    !matches!(
+        *method,
+        Method::GET | Method::HEAD | Method::DELETE | Method::CONNECT
+    )
 }
 
 #[cfg(feature = "http2")]
@@ -106,12 +140,12 @@ pub(super) fn set_content_length_if_missing(headers: &mut HeaderMap, len: u64) {
         .or_insert_with(|| HeaderValue::from(len));
 }
 
-#[cfg(feature = "http1")]
+#[cfg(all(feature = "client", feature = "http1"))]
 pub(super) fn transfer_encoding_is_chunked(headers: &HeaderMap) -> bool {
     is_chunked(headers.get_all(http::header::TRANSFER_ENCODING).into_iter())
 }
 
-#[cfg(feature = "http1")]
+#[cfg(all(feature = "client", feature = "http1"))]
 pub(super) fn is_chunked(mut encodings: ValueIter<'_, HeaderValue>) -> bool {
     // chunked must always be the last encoding, according to spec
     if let Some(line) = encodings.next_back() {
@@ -133,7 +167,7 @@ pub(super) fn is_chunked_(value: &HeaderValue) -> bool {
     false
 }
 
-#[cfg(feature = "http1")]
+#[cfg(all(feature = "client", feature = "http1"))]
 pub(super) fn add_chunked(mut entry: http::header::OccupiedEntry<'_, HeaderValue>) {
     const CHUNKED: &str = "chunked";
 
@@ -151,4 +185,36 @@ pub(super) fn add_chunked(mut entry: http::header::OccupiedEntry<'_, HeaderValue
     }
 
     entry.insert(HeaderValue::from_static(CHUNKED));
+}
+
+#[cfg(all(test, feature = "http1"))]
+mod tests {
+    use super::te_is_trailers;
+    use http::header::{HeaderValue, TE};
+    use http::HeaderMap;
+
+    #[test]
+    fn te_is_trailers_accepts_comma_separated_values() {
+        let mut headers = HeaderMap::new();
+        headers.insert(TE, HeaderValue::from_static("gzip, Trailers"));
+
+        assert!(te_is_trailers(&headers));
+    }
+
+    #[test]
+    fn te_is_trailers_accepts_multiple_header_lines() {
+        let mut headers = HeaderMap::new();
+        headers.append(TE, HeaderValue::from_static("gzip"));
+        headers.append(TE, HeaderValue::from_static("trailers"));
+
+        assert!(te_is_trailers(&headers));
+    }
+
+    #[test]
+    fn te_is_trailers_rejects_missing_trailers_token() {
+        let mut headers = HeaderMap::new();
+        headers.insert(TE, HeaderValue::from_static("gzip"));
+
+        assert!(!te_is_trailers(&headers));
+    }
 }

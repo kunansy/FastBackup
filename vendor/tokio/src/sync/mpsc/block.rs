@@ -163,9 +163,28 @@ impl<T> Block<T> {
         }
 
         // Get the value
-        let value = self.values[offset].with(|ptr| ptr::read(ptr));
+        //
+        // Safety:
+        //
+        // 1. The caller guarantees that there is no concurrent access to the slot.
+        // 2. The `UnsafeCell` always give us a valid pointer to the value.
+        let value = self.values[offset].with(|ptr| unsafe { ptr::read(ptr) });
 
-        Some(Read::Value(value.assume_init()))
+        // Safety: the ready bit is set, so the value has been initialized.
+        Some(Read::Value(unsafe { value.assume_init() }))
+    }
+
+    /// Returns true if *this* block has a value in the given slot.
+    ///
+    /// Always returns false when given an index from a different block.
+    pub(crate) fn has_value(&self, slot_index: usize) -> bool {
+        if start_index(slot_index) != self.header.start_index {
+            return false;
+        }
+
+        let offset = offset(slot_index);
+        let ready_bits = self.header.ready_slots.load(Acquire);
+        is_ready(ready_bits, offset)
     }
 
     /// Writes a value to the block at the given offset.
@@ -181,7 +200,10 @@ impl<T> Block<T> {
         let slot_offset = offset(slot_index);
 
         self.values[slot_offset].with_mut(|ptr| {
-            ptr::write(ptr, MaybeUninit::new(value));
+            // Safety: the caller guarantees that there is no concurrent access to the slot
+            unsafe {
+                ptr::write(ptr, MaybeUninit::new(value));
+            }
         });
 
         // Release the value. After this point, the slot ref may no longer
@@ -225,7 +247,11 @@ impl<T> Block<T> {
         // tail_position is guaranteed to not access this block.
         self.header
             .observed_tail_position
-            .with_mut(|ptr| *ptr = tail_position);
+            // Safety:
+            //
+            // 1. The caller guarantees unique access to the block.
+            // 2. The `UnsafeCell` always gives us a valid pointer.
+            .with_mut(|ptr| unsafe { *ptr = tail_position });
 
         // Set the released bit, signalling to the receiver that it is safe to
         // free the block's memory as soon as all slots **prior** to
@@ -243,13 +269,6 @@ impl<T> Block<T> {
     ///
     /// This indicates that the block is in its final state and will no longer
     /// be mutated.
-    ///
-    /// # Implementation
-    ///
-    /// The implementation walks each slot checking the `ready` flag. It might
-    /// be that it would make more sense to coalesce ready flags as bits in a
-    /// single atomic cell. However, this could have negative impact on cache
-    /// behavior as there would be many more mutations to a single slot.
     pub(crate) fn is_final(&self) -> bool {
         self.header.ready_slots.load(Acquire) & READY_MASK == READY_MASK
     }
@@ -272,7 +291,7 @@ impl<T> Block<T> {
         let ret = NonNull::new(self.header.next.load(ordering));
 
         debug_assert!(unsafe {
-            ret.map_or(true, |block| {
+            ret.is_none_or(|block| {
                 block.as_ref().header.start_index == self.header.start_index.wrapping_add(BLOCK_CAP)
             })
         });
@@ -302,7 +321,9 @@ impl<T> Block<T> {
         success: Ordering,
         failure: Ordering,
     ) -> Result<(), NonNull<Block<T>>> {
-        block.as_mut().header.start_index = self.header.start_index.wrapping_add(BLOCK_CAP);
+        // Safety: caller guarantees that `block` is valid.
+        unsafe { block.as_mut() }.header.start_index =
+            self.header.start_index.wrapping_add(BLOCK_CAP);
 
         let next_ptr = self
             .header
@@ -334,7 +355,7 @@ impl<T> Block<T> {
         // Create the new block. It is assumed that the block will become the
         // next one after `&self`. If this turns out to not be the case,
         // `start_index` is updated accordingly.
-        let new_block = Block::new(self.header.start_index + BLOCK_CAP);
+        let new_block = Block::new(self.header.start_index.wrapping_add(BLOCK_CAP));
 
         let mut new_block = unsafe { NonNull::new_unchecked(Box::into_raw(new_block)) };
 
@@ -414,8 +435,9 @@ impl<T> Values<T> {
         if_loom! {
             let p = _value.as_ptr() as *mut UnsafeCell<MaybeUninit<T>>;
             for i in 0..BLOCK_CAP {
-                p.add(i)
-                    .write(UnsafeCell::new(MaybeUninit::uninit()));
+                unsafe {
+                    p.add(i).write(UnsafeCell::new(MaybeUninit::uninit()));
+                }
             }
         }
     }

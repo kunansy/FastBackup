@@ -29,7 +29,7 @@ impl Field {
                         ..
                     }) => parse_str::<Path>(&lit.value())?,
                     Meta::List(ref list) => list.parse_args::<Ident>()?.into(),
-                    _ => bail!("invalid oneof attribute: {:?}", attr),
+                    _ => bail!("invalid oneof attribute: {attr:?}"),
                 };
                 set_option(&mut ty, t, "duplicate oneof attribute")?;
             } else if let Some(t) = tags_attr(attr)? {
@@ -44,13 +44,11 @@ impl Field {
             None => return Ok(None),
         };
 
-        match unknown_attrs.len() {
-            0 => (),
-            1 => bail!(
-                "unknown attribute for message field: {:?}",
-                unknown_attrs[0]
-            ),
-            _ => bail!("unknown attributes for message field: {:?}", unknown_attrs),
+        if !unknown_attrs.is_empty() {
+            bail!(
+                "unknown attribute(s) for message field: #[prost({})]",
+                quote!(#(#unknown_attrs),*)
+            );
         }
 
         let tags = match tags {

@@ -1,10 +1,4 @@
-#![allow(
-    // clippy is broken and shows wrong warnings
-    // clippy on stable does not know yet about the lint name
-    unknown_lints,
-    // https://github.com/rust-lang/rust-clippy/issues/8867
-    clippy::derive_partial_eq_without_eq,
-)]
+//! Test Cases
 
 extern crate alloc;
 
@@ -12,11 +6,9 @@ mod utils;
 
 use crate::utils::is_equal;
 use alloc::collections::BTreeMap;
-use core::iter::FromIterator;
 use expect_test::expect;
 use serde::{Deserialize, Serialize};
 use serde_with::with_prefix;
-use std::collections::HashMap;
 
 #[test]
 fn test_flatten_with_prefix() {
@@ -29,7 +21,7 @@ fn test_flatten_with_prefix() {
         #[serde(flatten, with = "prefix_player3")]
         player3: Option<Player>,
         #[serde(flatten, with = "prefix_tag")]
-        tags: HashMap<String, String>,
+        tags: BTreeMap<String, String>,
     }
 
     #[derive(Serialize, Deserialize, PartialEq, Debug)]
@@ -53,7 +45,7 @@ fn test_flatten_with_prefix() {
             votes: 2,
         }),
         player3: None,
-        tags: HashMap::from_iter(vec![("t".to_owned(), "T".to_owned())]),
+        tags: BTreeMap::from_iter(vec![("t".to_owned(), "T".to_owned())]),
     };
 
     is_equal(
@@ -80,7 +72,7 @@ fn test_plain_with_prefix() {
         #[serde(with = "prefix_player3")]
         player3: Option<Player>,
         #[serde(with = "prefix_tag")]
-        tags: HashMap<String, String>,
+        tags: BTreeMap<String, String>,
     }
 
     #[derive(Serialize, Deserialize, PartialEq, Debug)]
@@ -104,7 +96,7 @@ fn test_plain_with_prefix() {
             votes: 2,
         }),
         player3: None,
-        tags: HashMap::from_iter(vec![("t".to_owned(), "T".to_owned())]),
+        tags: BTreeMap::from_iter(vec![("t".to_owned(), "T".to_owned())]),
     };
 
     is_equal(
@@ -127,7 +119,7 @@ fn test_plain_with_prefix() {
     );
 }
 
-/// Ensure that with_prefix works for unit type enum variants.
+/// Ensure that `with_prefix` works for unit type enum variants.
 #[test]
 fn test_enum_unit_variant_with_prefix() {
     #[derive(Hash, PartialEq, Eq, Debug, Serialize, Deserialize, Ord, PartialOrd)]

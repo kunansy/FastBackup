@@ -16,33 +16,44 @@
 
 #![cfg_attr(
     any(sqlx_macros_unstable, procmacro2_semver_exempt),
-    feature(track_path)
+    feature(proc_macro_tracked_path, proc_macro_tracked_env)
 )]
 
+#[cfg(any(sqlx_macros_unstable, procmacro2_semver_exempt))]
+extern crate proc_macro;
+
+use cfg_if::cfg_if;
+use std::path::PathBuf;
+
+#[cfg(feature = "macros")]
 use crate::query::QueryDriver;
 
 pub type Error = Box<dyn std::error::Error>;
 
-pub type Result<T> = std::result::Result<T, Error>;
+pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 mod common;
-mod database;
+pub mod database;
 
+#[cfg(feature = "derive")]
 pub mod derives;
+#[cfg(feature = "macros")]
 pub mod query;
 
+#[cfg(feature = "macros")]
 // The compiler gives misleading help messages about `#[cfg(test)]` when this is just named `test`.
 pub mod test_attr;
 
 #[cfg(feature = "migrate")]
 pub mod migrate;
 
+#[cfg(feature = "macros")]
 pub const FOSS_DRIVERS: &[QueryDriver] = &[
     #[cfg(feature = "mysql")]
     QueryDriver::new::<sqlx_mysql::MySql>(),
     #[cfg(feature = "postgres")]
     QueryDriver::new::<sqlx_postgres::Postgres>(),
-    #[cfg(feature = "sqlite")]
+    #[cfg(feature = "_sqlite")]
     QueryDriver::new::<sqlx_sqlite::Sqlite>(),
 ];
 
@@ -50,26 +61,56 @@ pub fn block_on<F>(f: F) -> F::Output
 where
     F: std::future::Future,
 {
-    #[cfg(feature = "_rt-tokio")]
-    {
-        use once_cell::sync::Lazy;
-        use tokio::runtime::{self, Runtime};
+    cfg_if! {
+        if #[cfg(feature = "_rt-async-global-executor")] {
+            sqlx_core::rt::test_block_on(f)
+        } else if #[cfg(feature = "_rt-async-std")] {
+            async_std::task::block_on(f)
+        } else if #[cfg(feature = "_rt-smol")] {
+            sqlx_core::rt::test_block_on(f)
+        } else if #[cfg(feature = "_rt-tokio")] {
+            use std::sync::LazyLock;
 
-        // We need a single, persistent Tokio runtime since we're caching connections,
-        // otherwise we'll get "IO driver has terminated" errors.
-        static TOKIO_RT: Lazy<Runtime> = Lazy::new(|| {
-            runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("failed to start Tokio runtime")
-        });
+            use tokio::runtime::{self, Runtime};
 
-        return TOKIO_RT.block_on(f);
+            // We need a single, persistent Tokio runtime since we're caching connections,
+            // otherwise we'll get "IO driver has terminated" errors.
+            static TOKIO_RT: LazyLock<Runtime> = LazyLock::new(|| {
+                runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("failed to start Tokio runtime")
+            });
+
+            TOKIO_RT.block_on(f)
+        } else {
+            sqlx_core::rt::missing_rt(f)
+        }
     }
+}
 
-    #[cfg(all(feature = "_rt-async-std", not(feature = "tokio")))]
-    return async_std::task::block_on(f);
+pub fn env(var: &str) -> Result<String> {
+    env_opt(var)?
+        .ok_or_else(|| format!("env var {var:?} must be set to use the query macros").into())
+}
 
-    #[cfg(not(any(feature = "_rt-async-std", feature = "tokio")))]
-    sqlx_core::rt::missing_rt(f)
+#[allow(clippy::disallowed_methods)]
+pub fn env_opt(var: &str) -> Result<Option<String>> {
+    use std::env::VarError;
+
+    #[cfg(any(sqlx_macros_unstable, procmacro2_semver_exempt))]
+    let res: Result<String, VarError> = proc_macro::tracked::env_var(var);
+
+    #[cfg(not(any(sqlx_macros_unstable, procmacro2_semver_exempt)))]
+    let res: Result<String, VarError> = std::env::var(var);
+
+    match res {
+        Ok(val) => Ok(Some(val)),
+        Err(VarError::NotPresent) => Ok(None),
+        Err(VarError::NotUnicode(_)) => Err(format!("env var {var:?} is not valid UTF-8").into()),
+    }
+}
+
+pub fn manifest_dir() -> Result<PathBuf> {
+    Ok(env("CARGO_MANIFEST_DIR")?.into())
 }

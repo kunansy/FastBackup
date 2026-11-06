@@ -1,29 +1,66 @@
-use bitflags::bitflags;
 use http::Method;
 use std::{
     fmt,
     fmt::{Debug, Formatter},
 };
 
-bitflags! {
-    /// A filter that matches one or more HTTP methods.
-    pub struct MethodFilter: u16 {
-        /// Match `DELETE` requests.
-        const DELETE =  0b000000010;
-        /// Match `GET` requests.
-        const GET =     0b000000100;
-        /// Match `HEAD` requests.
-        const HEAD =    0b000001000;
-        /// Match `OPTIONS` requests.
-        const OPTIONS = 0b000010000;
-        /// Match `PATCH` requests.
-        const PATCH =   0b000100000;
-        /// Match `POST` requests.
-        const POST =    0b001000000;
-        /// Match `PUT` requests.
-        const PUT =     0b010000000;
-        /// Match `TRACE` requests.
-        const TRACE =   0b100000000;
+/// A filter that matches one or more HTTP methods.
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct MethodFilter(u16);
+
+impl MethodFilter {
+    /// Match `CONNECT` requests.
+    ///
+    /// This is useful for implementing HTTP/2's [extended CONNECT method],
+    /// in which the `:protocol` pseudoheader is read
+    /// (using [`hyper::ext::Protocol`])
+    /// and the connection upgraded to a bidirectional byte stream
+    /// (using [`hyper::upgrade::on`]).
+    ///
+    /// As seen in the [HTTP Upgrade Token Registry],
+    /// common uses include WebSockets and proxying UDP or IP –
+    /// though note that when using [`WebSocketUpgrade`]
+    /// it's more useful to use [`any`](crate::routing::any)
+    /// as HTTP/1.1 WebSockets need to support `GET`.
+    ///
+    /// [extended CONNECT]: https://www.rfc-editor.org/rfc/rfc8441.html#section-4
+    /// [HTTP Upgrade Token Registry]: https://www.iana.org/assignments/http-upgrade-tokens/http-upgrade-tokens.xhtml
+    /// [`WebSocketUpgrade`]: crate::extract::WebSocketUpgrade
+    pub const CONNECT: Self = Self::from_bits(0b0_0000_0001);
+    /// Match `DELETE` requests.
+    pub const DELETE: Self = Self::from_bits(0b0_0000_0010);
+    /// Match `GET` requests.
+    pub const GET: Self = Self::from_bits(0b0_0000_0100);
+    /// Match `HEAD` requests.
+    pub const HEAD: Self = Self::from_bits(0b0_0000_1000);
+    /// Match `OPTIONS` requests.
+    pub const OPTIONS: Self = Self::from_bits(0b0_0001_0000);
+    /// Match `PATCH` requests.
+    pub const PATCH: Self = Self::from_bits(0b0_0010_0000);
+    /// Match `POST` requests.
+    pub const POST: Self = Self::from_bits(0b0_0100_0000);
+    /// Match `PUT` requests.
+    pub const PUT: Self = Self::from_bits(0b0_1000_0000);
+    /// Match `TRACE` requests.
+    pub const TRACE: Self = Self::from_bits(0b1_0000_0000);
+
+    const fn bits(&self) -> u16 {
+        let bits = self;
+        bits.0
+    }
+
+    const fn from_bits(bits: u16) -> Self {
+        Self(bits)
+    }
+
+    pub(crate) const fn contains(&self, other: Self) -> bool {
+        self.bits() & other.bits() == other.bits()
+    }
+
+    /// Performs the OR operation between the [`MethodFilter`] in `self` with `other`.
+    #[must_use]
+    pub const fn or(self, other: Self) -> Self {
+        Self(self.0 | other.0)
     }
 }
 
@@ -53,6 +90,7 @@ impl TryFrom<Method> for MethodFilter {
 
     fn try_from(m: Method) -> Result<Self, NoMatchingMethodFilter> {
         match m {
+            Method::CONNECT => Ok(MethodFilter::CONNECT),
             Method::DELETE => Ok(MethodFilter::DELETE),
             Method::GET => Ok(MethodFilter::GET),
             Method::HEAD => Ok(MethodFilter::HEAD),
@@ -72,6 +110,11 @@ mod tests {
 
     #[test]
     fn from_http_method() {
+        assert_eq!(
+            MethodFilter::try_from(Method::CONNECT).unwrap(),
+            MethodFilter::CONNECT
+        );
+
         assert_eq!(
             MethodFilter::try_from(Method::DELETE).unwrap(),
             MethodFilter::DELETE
@@ -112,9 +155,11 @@ mod tests {
             MethodFilter::TRACE
         );
 
-        assert!(MethodFilter::try_from(http::Method::CONNECT)
-            .unwrap_err()
-            .to_string()
-            .contains("CONNECT"));
+        assert!(
+            MethodFilter::try_from(http::Method::from_bytes(b"CUSTOM").unwrap())
+                .unwrap_err()
+                .to_string()
+                .contains("CUSTOM")
+        );
     }
 }

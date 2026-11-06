@@ -1,8 +1,9 @@
-use crate::column::ColumnIndex;
-use crate::database::{Database, HasValueRef};
+use crate::column::{Column, ColumnIndex};
+use crate::database::Database;
 use crate::decode::Decode;
 use crate::error::{mismatched_types, Error};
 
+use crate::type_checking::TypeChecking;
 use crate::type_info::TypeInfo;
 use crate::types::Type;
 use crate::value::ValueRef;
@@ -12,7 +13,7 @@ use crate::value::ValueRef;
 /// [`FromRow`]: crate::row::FromRow
 /// [`Query::fetch`]: crate::query::Query::fetch
 pub trait Row: Unpin + Send + Sync + 'static {
-    type Database: Database;
+    type Database: Database<Row = Self>;
 
     /// Returns `true` if this row has no columns.
     #[inline]
@@ -42,7 +43,7 @@ pub trait Row: Unpin + Send + Sync + 'static {
         self.try_column(index).unwrap()
     }
 
-    /// Gets the column information at `index` or `None` if out of bounds.
+    /// Gets the column information at `index` or a `ColumnIndexOutOfBounds` error if out of bounds.
     fn try_column<I>(&self, index: I) -> Result<&<Self::Database as Database>::Column, Error>
     where
         I: ColumnIndex<Self>,
@@ -64,6 +65,7 @@ pub trait Row: Unpin + Send + Sync + 'static {
     /// See [`try_get`](Self::try_get) for a non-panicking version.
     ///
     #[inline]
+    #[track_caller]
     fn get<'r, T, I>(&'r self, index: I) -> T
     where
         I: ColumnIndex<Self>,
@@ -171,10 +173,36 @@ pub trait Row: Unpin + Send + Sync + 'static {
     /// [`ColumnNotFound`]: Error::ColumnNotFound
     /// [`ColumnIndexOutOfBounds`]: Error::ColumnIndexOutOfBounds
     ///
-    fn try_get_raw<I>(
-        &self,
-        index: I,
-    ) -> Result<<Self::Database as HasValueRef<'_>>::ValueRef, Error>
+    fn try_get_raw<I>(&self, index: I) -> Result<<Self::Database as Database>::ValueRef<'_>, Error>
     where
         I: ColumnIndex<Self>;
+}
+
+pub fn debug_row<R>(row: &R, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result
+where
+    R: Row,
+    usize: ColumnIndex<R>,
+    <R as Row>::Database: TypeChecking,
+{
+    write!(f, "{} ", std::any::type_name::<R>())?;
+
+    let mut debug_map = f.debug_map();
+
+    for column in row.columns().iter() {
+        match row.try_get_raw(column.ordinal()) {
+            Ok(value) => {
+                debug_map.entry(
+                    &column.name(),
+                    &<R as Row>::Database::fmt_value_debug(
+                        &<<R as Row>::Database as Database>::ValueRef::to_owned(&value),
+                    ),
+                );
+            }
+            Err(error) => {
+                debug_map.entry(&column.name(), &format!("decode error: {error:?}"));
+            }
+        }
+    }
+
+    debug_map.finish()
 }

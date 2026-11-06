@@ -1,32 +1,31 @@
 # crc
 
-[![rust](https://github.com/mrhooray/crc-rs/actions/workflows/rust.yaml/badge.svg)](https://github.com/mrhooray/crc-rs/actions/workflows/rust.yaml)
+Rust implementation of CRC.
+
+[![ci](https://github.com/mrhooray/crc-rs/actions/workflows/ci.yaml/badge.svg)](https://github.com/mrhooray/crc-rs/actions/workflows/ci.yaml)
 [![Crate](https://img.shields.io/crates/v/crc.svg)](https://crates.io/crates/crc)
 [![Docs](https://docs.rs/crc/badge.svg)](https://docs.rs/crc)
 [![License](https://img.shields.io/crates/l/crc.svg?maxAge=2592000)](https://github.com/mrhooray/crc-rs#license)
 
-Rust implementation of CRC. MSRV is 1.46.
+### Usage
 
-## Usage
 Add `crc` to `Cargo.toml`
 ```toml
 [dependencies]
-crc = "3.0"
+crc = "3.4.0"
 ```
 
-### Compute CRC
+### Examples
 
+Using a well-known algorithm:
 ```rust
-use crc::{Crc, Algorithm, CRC_16_IBM_SDLC, CRC_32_ISCSI};
-
-pub const X25: Crc<u16> = Crc::<u16>::new(&CRC_16_IBM_SDLC);
-pub const CASTAGNOLI: Crc<u32> = Crc::<u32>::new(&CRC_32_ISCSI);
-
+const X25: crc::Crc<u16> = crc::Crc::<u16>::new(&crc::CRC_16_IBM_SDLC);
 assert_eq!(X25.checksum(b"123456789"), 0x906e);
-assert_eq!(CASTAGNOLI.checksum(b"123456789"), 0xe3069283);
+```
 
-// use custom algorithm
-const CUSTOM_ALG: Algorithm<u16> = Algorithm {
+Using a custom algorithm:
+```rust
+const CUSTOM_ALG: crc::Algorithm<u16> = crc::Algorithm {
     width: 16,
     poly: 0x8005,
     init: 0xffff,
@@ -36,27 +35,45 @@ const CUSTOM_ALG: Algorithm<u16> = Algorithm {
     check: 0xaee7,
     residue: 0x0000
 };
-let crc = Crc::<u16>::new(&CUSTOM_ALG);
+let crc = crc::Crc::<u16>::new(&CUSTOM_ALG);
 let mut digest = crc.digest();
 digest.update(b"123456789");
 assert_eq!(digest.finalize(), 0xaee7);
 ```
 
-## Benchmark
+### Minimum supported Rust version (MSRV)
 
-`cargo bench` with 2.6 GHz Intel Core i7. [Comparison](http://create.stephan-brumme.com/crc32/)
-```
-crc16          time:   [2.0082 ms 2.0206 ms 2.0367 ms]
-               thrpt:  [468.25 MiB/s 471.96 MiB/s 474.89 MiB/s]
+This crate's MSRV is 1.83.
 
-crc32          time:   [1.7659 ms 1.7793 ms 1.7952 ms]
-               thrpt:  [531.25 MiB/s 535.98 MiB/s 540.05 MiB/s]
+At a minimum, the MSRV will be <= the oldest stable release in the last 12 months. MSRV may be bumped in minor version releases.
 
-crc64          time:   [2.0655 ms 2.0803 ms 2.0973 ms]
-               thrpt:  [454.71 MiB/s 458.43 MiB/s 461.72 MiB/s]
-```
+### Implementations
 
-## License
+This crate has several pluggable implementations:
+
+1. `NoTable` doesn't use a lookup table, and thus minimizes binary size and memory usage.
+2. `Table<1>` uses a lookup table with 256 entries (e.g. for u32 thats 256 * 4 bytes).
+3. `Table<16>` uses a lookup table with 16 * 256 entries (e.g. for u32 thats 16 * 256 * 4 bytes).
+
+`Table<1>` is the default implementation, but this can be overridden by specifying `I` in `Crc<W, I>`. E.g.: `Crc<u32, NoTable>`, `Crc<u64, Table<16>>`, ...
+
+NOTE: Lookup tables will increase binary size if they're generated at compile-time. Wrapping `Crc` initialization in a `std::cell::OnceCell` may be preferable if binary size is a concern.
+
+### Benchmark
+
+`cargo bench` with AMD Ryzen 7 3800X ([comparison](http://create.stephan-brumme.com/crc32/)).
+
+#### Throughput (GiB/s)
+
+| Width | NoTable | Bytewise | Slice16 |
+|-------|---------|----------|---------|
+| 8     | 0.113   | 0.585    | 3.11    |
+| 16    | 0.105   | 0.483    | 3.23    |
+| 32    | 0.111   | 0.516    | 3.30    |
+| 64    | 0.139   | 0.517    | 2.92    |
+| 82    | 0.091   | 0.438    | 0.623   |
+
+### License
 
 Licensed under either of
 

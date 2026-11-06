@@ -4,9 +4,9 @@ use crate::message::DataRow;
 use crate::statement::PgStatementMetadata;
 use crate::value::PgValueFormat;
 use crate::{PgColumn, PgValueRef, Postgres};
-use std::sync::Arc;
-
+use sqlx_core::row::debug_row;
 pub(crate) use sqlx_core::row::Row;
+use std::sync::Arc;
 
 /// Implementation of [`Row`] for PostgreSQL.
 pub struct PgRow {
@@ -45,6 +45,12 @@ impl ColumnIndex<PgRow> for &'_ str {
             .column_names
             .get(*self)
             .ok_or_else(|| Error::ColumnNotFound((*self).into()))
-            .map(|v| *v)
+            .copied()
+    }
+}
+
+impl std::fmt::Debug for PgRow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        debug_row(self, f)
     }
 }

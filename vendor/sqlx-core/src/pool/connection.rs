@@ -1,4 +1,5 @@
 use std::fmt::{self, Debug, Formatter};
+use std::future::{self, Future};
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -9,15 +10,17 @@ use crate::connection::Connection;
 use crate::database::Database;
 use crate::error::Error;
 
-use super::inner::{DecrementSizeGuard, PoolInner};
+use super::inner::{is_beyond_max_lifetime, DecrementSizeGuard, PoolInner};
 use crate::pool::options::PoolConnectionMetadata;
-use std::future::Future;
+
+const CLOSE_ON_DROP_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// A connection managed by a [`Pool`][crate::pool::Pool].
 ///
 /// Will be returned to the pool on-drop.
 pub struct PoolConnection<DB: Database> {
     live: Option<Live<DB>>,
+    close_on_drop: bool,
     pub(crate) pool: Arc<PoolInner<DB>>,
 }
 
@@ -85,6 +88,16 @@ impl<DB: Database> PoolConnection<DB> {
         floating.inner.raw.close().await
     }
 
+    /// Close this connection on-drop, instead of returning it to the pool.
+    ///
+    /// May be used in cases where waiting for the [`.close()`][Self::close] call
+    /// to complete is unacceptable, but you still want the connection to be closed gracefully
+    /// so that the server can clean up resources.
+    #[inline(always)]
+    pub fn close_on_drop(&mut self) {
+        self.close_on_drop = true;
+    }
+
     /// Detach this connection from the pool, allowing it to open a replacement.
     ///
     /// Note that if your application uses a single shared pool, this
@@ -140,6 +153,27 @@ impl<DB: Database> PoolConnection<DB> {
             }
         }
     }
+
+    fn take_and_close(&mut self) -> impl Future<Output = ()> + Send + 'static {
+        // float the connection in the pool before we move into the task
+        // in case the returned `Future` isn't executed, like if it's spawned into a dying runtime
+        // https://github.com/launchbadge/sqlx/issues/1396
+        // Type hints seem to be broken by `Option` combinators in IntelliJ Rust right now (6/22).
+        let floating = self.live.take().map(|live| live.float(self.pool.clone()));
+
+        let pool = self.pool.clone();
+
+        async move {
+            if let Some(floating) = floating {
+                // Don't hold the connection forever if it hangs while trying to close
+                crate::rt::timeout(CLOSE_ON_DROP_TIMEOUT, floating.close())
+                    .await
+                    .ok();
+            }
+
+            pool.min_connections_maintenance(None).await;
+        }
+    }
 }
 
 impl<'c, DB: Database> crate::acquire::Acquire<'c> for &'c mut PoolConnection<DB> {
@@ -149,7 +183,7 @@ impl<'c, DB: Database> crate::acquire::Acquire<'c> for &'c mut PoolConnection<DB
 
     #[inline]
     fn acquire(self) -> futures_core::future::BoxFuture<'c, Result<Self::Connection, Error>> {
-        Box::pin(futures_util::future::ok(&mut **self))
+        Box::pin(future::ready(Ok(&mut **self)))
     }
 
     #[inline]
@@ -157,13 +191,18 @@ impl<'c, DB: Database> crate::acquire::Acquire<'c> for &'c mut PoolConnection<DB
         self,
     ) -> futures_core::future::BoxFuture<'c, Result<crate::transaction::Transaction<'c, DB>, Error>>
     {
-        crate::transaction::Transaction::begin(&mut **self)
+        crate::transaction::Transaction::begin(&mut **self, None)
     }
 }
 
 /// Returns the connection to the [`Pool`][crate::pool::Pool] it was checked-out from.
 impl<DB: Database> Drop for PoolConnection<DB> {
     fn drop(&mut self) {
+        if self.close_on_drop {
+            crate::rt::spawn(self.take_and_close());
+            return;
+        }
+
         // We still need to spawn a task to maintain `min_connections`.
         if self.live.is_some() || self.pool.options.min_connections > 0 {
             crate::rt::spawn(self.return_to_pool());
@@ -221,6 +260,7 @@ impl<DB: Database> Floating<DB, Live<DB>> {
         guard.cancel();
         PoolConnection {
             live: Some(inner),
+            close_on_drop: false,
             pool,
         }
     }
@@ -235,6 +275,13 @@ impl<DB: Database> Floating<DB, Live<DB>> {
     async fn return_to_pool(mut self) -> bool {
         // Immediately close the connection.
         if self.guard.pool.is_closed() {
+            self.close().await;
+            return false;
+        }
+
+        // If the connection is beyond max lifetime, close the connection and
+        // immediately create a new connection
+        if is_beyond_max_lifetime(&self.inner, &self.guard.pool.options) {
             self.close().await;
             return false;
         }

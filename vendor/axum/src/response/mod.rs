@@ -1,20 +1,14 @@
 #![doc = include_str!("../docs/response.md")]
 
-use crate::body::{Bytes, Full};
-use http::{header, HeaderValue};
+use http::{header, HeaderValue, StatusCode};
 
 mod redirect;
 
-#[cfg(feature = "tokio")]
 pub mod sse;
 
 #[doc(no_inline)]
 #[cfg(feature = "json")]
 pub use crate::Json;
-
-#[doc(no_inline)]
-#[cfg(feature = "headers")]
-pub use crate::TypedHeader;
 
 #[cfg(feature = "form")]
 #[doc(no_inline)]
@@ -32,7 +26,6 @@ pub use axum_core::response::{
 pub use self::redirect::Redirect;
 
 #[doc(inline)]
-#[cfg(feature = "tokio")]
 pub use sse::Sse;
 
 /// An HTML response.
@@ -44,7 +37,7 @@ pub struct Html<T>(pub T);
 
 impl<T> IntoResponse for Html<T>
 where
-    T: Into<Full<Bytes>>,
+    T: IntoResponse,
 {
     fn into_response(self) -> Response {
         (
@@ -52,7 +45,7 @@ where
                 header::CONTENT_TYPE,
                 HeaderValue::from_static(mime::TEXT_HTML_UTF_8.as_ref()),
             )],
-            self.0.into(),
+            self.0,
         )
             .into_response()
     }
@@ -64,10 +57,35 @@ impl<T> From<T> for Html<T> {
     }
 }
 
+/// An empty response with 204 No Content status.
+///
+/// Due to historical and implementation reasons, the `IntoResponse` implementation of `()`
+/// (unit type) returns an empty response with 200 [`StatusCode::OK`] status.
+/// If you specifically want a 204 [`StatusCode::NO_CONTENT`] status, you can use either `StatusCode` type
+/// directly, or this shortcut struct for self-documentation.
+///
+/// ```
+/// use axum::{extract::Path, response::NoContent};
+///
+/// async fn delete_user(Path(user): Path<String>) -> Result<NoContent, String> {
+///     // ...access database...
+/// # drop(user);
+///     Ok(NoContent)
+/// }
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct NoContent;
+
+impl IntoResponse for NoContent {
+    fn into_response(self) -> Response {
+        StatusCode::NO_CONTENT.into_response()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::extract::Extension;
-    use crate::{body::Body, routing::get, Router};
+    use crate::{routing::get, Router};
     use axum_core::response::IntoResponse;
     use http::HeaderMap;
     use http::{StatusCode, Uri};
@@ -99,7 +117,7 @@ mod tests {
             }
         }
 
-        _ = Router::<(), Body>::new()
+        _ = Router::<()>::new()
             .route("/", get(impl_trait_ok))
             .route("/", get(impl_trait_err))
             .route("/", get(impl_trait_both))
@@ -209,7 +227,7 @@ mod tests {
             )
         }
 
-        _ = Router::<(), Body>::new()
+        _ = Router::<()>::new()
             .route("/", get(status))
             .route("/", get(status_headermap))
             .route("/", get(status_header_array))
@@ -227,5 +245,13 @@ mod tests {
             .route("/", get(header_array_impl_into_response))
             .route("/", get(header_array_extension_body))
             .route("/", get(header_array_extension_mixed_body));
+    }
+
+    #[test]
+    fn no_content() {
+        assert_eq!(
+            super::NoContent.into_response().status(),
+            StatusCode::NO_CONTENT,
+        )
     }
 }

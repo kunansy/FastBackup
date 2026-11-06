@@ -18,29 +18,80 @@ As a rule, however, we only officially support the range of versions for each da
 For each database and where applicable, we test against the latest and oldest versions that we intend to support. You can see the current versions being tested against by looking at our CI config: https://github.com/launchbadge/sqlx/blob/main/.github/workflows/sqlx.yml#L168
 
 -------------------------------------------------------------------
+<a name="MSRV"></a>
 ### What versions of Rust does SQLx support? What is SQLx's MSRV\*?
 
-Officially, we will only ever support the latest stable version of Rust. 
-It's just not something we consider to be worth keeping track of, given the current state of tooling.
+SQLx's MSRV is the second-to-latest stable release as of the beginning of the current release cycle (`0.x.0`).
+It will remain there until the next major release (`0.{x + 1}.0`).
 
-Cargo does support a [`rust-version`] field now in the package manifest, however that will only ensure
-that the user is using a `rustc` of that version or greater; it does not enforce that the crate's code is
-actually compatible with that version of Rust. That would need to be manually enforced and checked with CI,
-and we have enough CI passes already.
+For example, as of the `0.8.0` release of SQLx, the latest stable Rust version was `1.79.0`, so the MSRV for the
+`0.8.x` release cycle of SQLx is `1.78.0`.
 
-In practice, we tend not to reach for language or library features that are *too* new, either because
-we don't need them or we just worked around their absence. There are language features we're waiting to be
-stabilized that we want to use (Generic Associated Types and Async Traits, to name a couple) which we will
-be utilizing when they're available, but that will be a major refactor with breaking API changes 
-which will then coincide with a major release.
+This guarantees that SQLx will compile with a Rust version that is _at least_ six weeks old, which should be plenty
+of time for it to make it through any packaging system that is being actively kept up to date.
 
-Thus, it is likely that a given SQLx release _will_ work with older versions of Rust. However,
-we make no guarantees about which exact versions it will work with besides the latest stable version,
-and we don't factor MSRV bumps into our semantic versioning.
+We do _not_ recommend installing Rust through operating system packages, 
+as they can often be a whole year or more out-of-date.
 
 \*Minimum Supported Rust Version
 
 [`rust-version`]: https://doc.rust-lang.org/stable/cargo/reference/manifest.html#the-rust-version-field
+
+----------------------------------------------------------------
+
+### Can SQLx Add Support for New Databases?
+
+We are always open to discuss adding support for new databases, but as of writing, have no plans to in the short term.
+
+Implementing support for a new database in SQLx is a _huge_ lift. Expecting this work to be done for free is highly unrealistic.  
+In all likelihood, the implementation would need to be written from scratch.  
+Even if Rust bindings exist, they may not support `async`.  
+Even if they support `async`, they may only support either Tokio or `async-std`, and not both.  
+Even if they support Tokio and `async-std`, the API may not be flexible enough or provide sufficient information (e.g. for implementing the macros).
+
+If we have to write the implementation from scratch, is the protocol publicly documented, and stable?
+
+Even if everything is supported on the client side, how will we run tests against the database? Is it open-source, or proprietary? Will it require a paid license?
+
+For example, Oracle Database's protocol is proprietary and only supported through their own libraries, which do not support Rust, and only have blocking APIs (see: [Oracle Call Interface for C](https://docs.oracle.com/en/database/oracle/oracle-database/23/lnoci/index.html)).
+This makes it a poor candidate for an async-native crate like SQLx--though we support SQLite, which also only has a blocking API, that's the exception and not the rule. Wrapping blocking APIs is not very scalable.
+
+We still have plans to bring back the MSSQL driver, but this is not feasible as of writing with the current maintenance workload. Should this change, an announcement will be made on Github as well as our [Discord server](https://discord.gg/uuruzJ7).
+
+### What If I'm Willing to Contribute the Implementation?
+
+Being willing to contribute an implementation for a new database is one thing, but there's also the ongoing maintenance burden to consider.
+
+Are you willing to provide support long-term?  
+Will there be enough users that we can rely on outside contributions?  
+Or is support going to fall to the current maintainer(s)?
+
+This is the kind of thing that will need to be supported in SQLx _long_ after the initial implementation, or else later need to be removed.
+If you don't have plans for how to support a new driver long-term, then it doesn't belong as part of SQLx itself.
+
+However, drivers don't necessarily need to live _in_ SQLx anymore. Since 0.7.0, drivers don't need to be compiled-in to be functional.
+Support for third-party drivers in `sqlx-cli` and the `query!()` macros is pending, as well as documenting the process of writing a driver, but contributions are welcome in this regard.
+
+For example, see [sqlx-exasol](https://crates.io/crates/sqlx-exasol).
+
+----------------------------------------------------------------
+### Can SQLx Add Support for New Data-Type Crates (e.g. Jiff in addition to `chrono` and `time`)?
+
+This has a lot of the same considerations as adding support for new databases (see above), but with one big additional problem: Semantic Versioning.
+
+When we add trait implementations for types from an external crate, that crate then becomes part of our public API. We become beholden to its release cycle.
+
+If the crate's API is still evolving, meaning they are making breaking changes frequently, and thus releasing new major versions frequently, that then becomes a burden on us to upgrade and release a new major version as well so everyone _else_ can upgrade.
+
+We don't have the maintainer bandwidth to support multiple major versions simultaneously (we have no Long-Term Support policy), so this means that users who want to keep up-to-date are forced to make frequent manual upgrades as well.
+
+Thus, it is best that we stick to only supporting crates which have a stable API, and which are not making new major releases frequently.
+
+Conversely, adding support for SQLx _in_ these crates may not be desirable either, since SQLx is a large dependency and a higher-level crate. In this case, the SemVer problem gets pushed onto the other crate.
+
+There isn't a satisfying answer to this problem, but one option is to have an intermediate wrapper crate.
+For example, [`jiff-sqlx`](https://crates.io/crates/jiff-sqlx), which is maintained by the author of Jiff.
+API changes to SQLx are pending to make this pattern easier to use.
 
 ----------------------------------------------------------------
 ### I'm getting `HandshakeFailure` or `CorruptMessage` when trying to connect to a server over TLS using RusTLS. What gives?
@@ -68,6 +119,162 @@ The `CorruptMessage` error occurs in similar situations and many users have had 
 However, if you do encounter this error, please try to capture a Wireshark or `tcpdump` trace of the TLS handshake as the RusTLS folks are interested
 in covering cases that trigger this (as it might indicate a protocol handling bug or the server is doing something non-standard): 
 https://github.com/rustls/rustls/issues/893
+
+----------------------------------------------------------------
+### How does SQLx help prevent SQL Injection?
+### How do Query Parameters work?
+### Why does SQLx use Prepared Statements for most queries?
+### Can I Use Query Parameters to add conditional SQL to my query?
+### Why can't I use DDL (e.g. `CREATE TABLE`, `ALTER TABLE`, etc.) with the `sqlx::query*()` functions or `sqlx::query*!()` macros?
+
+These questions can all be answered by a thorough explanation of prepared statements. Feel free to skip the parts you already know.
+
+Back in the day, if a web application wanted to include user input in a SQL query,
+a search parameter for example, it had no choice but to simply format that data into the query.
+PHP applications used to be full of snippets like this:
+
+```php
+/* Imagine this is user input */
+$city = "Munich";
+
+/* $query = "SELECT country FROM city WHERE name='Munich'" */
+$query = sprintf("SELECT country FROM city WHERE name='%s'", $city);
+$result = $mysqli->query($query);
+```
+
+However, this leaves the application vulnerable to [SQL injection attacks](https://en.wikipedia.org/wiki/SQL_injection),
+because it's trivial to craft an input string that will terminate the existing query and begin a new one,
+and the database won't know the difference and will execute both. As illustrated in the famous XKCD #327:
+
+<a href="https://xkcd.com/327/"><img src="https://imgs.xkcd.com/comics/exploits_of_a_mom.png" title="Her daughter is named Help I'm trapped in a driver's license factory." alt="Exploits of a Mom" srcset="https:////imgs.xkcd.com/comics/exploits_of_a_mom_2x.png 2x" style="image-orientation:none">
+
+The fictional school's student database application might have contained a query that looked like this:
+```php
+$student_name = "Robert');DROP TABLE Students;--"
+
+$query = sprintf("INSERT INTO Students (name) VALUES ('%s')", $student_name);
+$result = $mysqli->query($query);
+```
+
+When formatted into the middle of this query, the maliciously crafted input string closes the quotes and finishes the statement (`Robert');`),
+then starts another one with the nefarious payload (`DROP TABLE Students;`), and causes the rest of the original query to be ignored by starting a SQL comment (`--`).
+Thus, the database server sees, and executes, three separate statements like so:
+
+```SQL
+INSERT INTO Students(firstname) VALUES ('Robert');
+DROP TABLE Students;
+--');
+```
+
+And thus the school has lost this year's student records (at least they had last years' backed up?).
+
+The original mitigation for this attack was to make sure that any untrustworthy user input was properly escaped (or "sanitized"),
+and many frameworks provided utility functions for this, such as PHP's [`mysqli::real_escape_string()`](https://www.php.net/manual/en/mysqli.real-escape-string.php) (not to be confused with the obsolete [`mysql_real_escape_string()`](https://www.php.net/manual/en/function.mysql-real-escape-string) or [`mysql_escape_string()`](https://www.php.net/manual/en/function.mysql-escape-string.php)).
+
+These would prefix any syntactically significant characters (in this case, quotation marks) with a backslash,
+so it's less likely to affect the database server's interpretation of the query:
+
+```php
+$student_name = $mysqli->real_escape_string("Robert');DROP TABLE Students;--");
+
+/*
+    Everything is okay now as the dastardly single-quote has been inactivated by the backslash:
+    "INSERT INTO Students (name) VALUES ('Robert\');DROP TABLE Students;--');"
+*/
+$query = sprintf("INSERT INTO Students (name) VALUES ('%s')", $student_name);
+```
+
+The database server sees the backslash and knows that the single-quote is part of the string content, not its terminating character.
+
+However, this was something that you still had to _remember_ to do, making it only half a solution. Additionally, properly escaping the string requires knowledge of the current character set of the connection which is why the `mysqli` object is a required parameter 
+(or the receiver in object-oriented style). And you could always just forget to wrap the string parameter in quotes (`'%s'`) in the first place, which these wouldn't help with.
+
+Even when everything is working correctly, formatting dynamic data into a query still requires the database server to 
+re-parse and generate a new query plan with every new variant--caching helps, but is not a silver bullet.
+
+#### Prepared Statements to the rescue!
+
+These solve both problems (injection and re-parsing) by **completely separating** the query from any dynamic input data.
+
+Instead of formatting data into the query, you use a (database-specific) token to signify a value that will be passed separately:
+
+```SQL
+-- MySQL
+INSERT INTO Students (name) VALUES(?);
+-- Postgres and SQLite
+INSERT INTO Students (name) VALUES($1);
+```
+
+The database will substitute a given value when _executing_ the query, long after it's finished parsing it. 
+The database will effectively treat the parameter as a variable.
+There is, by design, **no way** for a query parameter to modify the SQL of a query, 
+unless you're using some `exec()`-like SQL function that lets you execute a string as a query, 
+but then hopefully you know what you're doing.
+
+In fact, parsing and executing prepared statements are explicitly separate steps in pretty much every database's protocol,
+where the query string, without any values attached, is parsed first and given an identifier, then a separate execution step
+simply passes that identifier along with the values to substitute.
+
+The response from the initial parsing often contains useful metadata about the query, which SQLx's query macros use to great effect 
+(see "How do the query macros work under the hood?" below).
+
+Unfortunately, query parameters do not appear to be standardized, as every database has a different syntax.
+Look through the project for specific examples for your database, and consult your database manual about prepared statements
+for more information.
+
+The syntax SQLite supports is effectively a superset of many databases' syntaxes, including MySQL and Postgres.
+To simplify our examples, we use the same syntax for Postgres and SQLite; though SQLite's syntax technically allows
+alphanumeric identifiers, that's not currently exposed in SQLx, and it's expected to be a numeric 1-based index like Postgres.
+
+Some databases, like MySQL and PostgreSQL, may have special statements that let the user explicitly create and execute prepared statements (often `PREPARE` and `EXECUTE`, respectively),
+but most of the time an application, or library like SQLx, will interact with prepared statements using specialized messages in the database's client/server protocol.
+Prepared statements created through this protocol may or may not be accessible using explicit SQL statements, depending on the database flavor.
+
+Since the dynamic data is handled separately, an application only needs to prepare a statement once,
+and then it can execute it as many times as it wants with all kinds of different data (at least of the same type and number).
+Prepared statements are generally tracked per-connection, so an application may need to re-prepare a statement several times over its lifetime as it opens new connections. 
+If it uses a connection pool, ideally all connections will eventually have all statements already prepared (assuming a closed set of statements),
+so the overhead of parsing and generating a query plan is amortized.
+
+Query parameters are also usually transmitted in a compact binary format, which saves bandwidth over having to send them as human-readable strings.
+
+Because of the obvious security and performance benefits of prepared statements, the design of SQLx tries to make them as easy to use and transparent as possible.
+The `sqlx::query*()` family of functions, as well as the `sqlx::query*!()` macros, will always prefer prepared statements. This was an explicit goal from day one.
+
+SQLx will **never** substitute query parameters for values on the client-side, it will always let the database server handle that. We have concepts for making certain usage patterns easier, 
+like expanding a dynamic list of parameters (e.g. `?, ?, ?, ?, ...`) since MySQL and SQLite don't really support arrays, but will never simply format data into a query implicitly.
+
+Our pervasive use of prepared statements can cause some problems with third-party database implementations, e.g. projects like CockroachDB or PGBouncer that support the Postgres protocol but have their own semantics.
+In this case, you might try setting [`.persistent(false)`](https://docs.rs/sqlx/latest/sqlx/query/struct.Query.html#method.persistent) before executing a query, which will cause the connection not to retain
+the prepared statement after executing it.
+
+Not all SQL statements are allowed in prepared statements, either. 
+As a general rule, DML (Data Manipulation Language, i.e. `SELECT`, `INSERT`, `UPDATE`, `DELETE`) is allowed while DDL (Data Definition Language, e.g. `CREATE TABLE`, `ALTER TABLE`, etc.) is not.
+Consult your database manual for details.
+
+To execute DDL requires using a different API than `query*()` or `query*!()` in SQLx. 
+Ideally, we'd like to encourage you to use SQLx's built-in support for migrations (though that could be better documented, we'll get to it).
+However, in the event that isn't feasible, or you have different needs, you can execute pretty much any statement,
+including multiple statements separated by semicolons (`;`), by directly invoking methods of the [`Executor` trait](https://docs.rs/sqlx/latest/sqlx/trait.Executor.html#method.execute)
+on any type that implements it, and passing your query string, e.g.:
+
+```rust
+use sqlx::postgres::PgConnection;
+use sqlx::Executor;
+
+let mut conn: PgConnection = connect().await?;
+
+conn
+    .execute(
+        "CREATE TABLE IF NOT EXISTS StudentContactInfo (student_id INTEGER, person_name TEXT, relation TEXT, phone TEXT);\
+         INSERT INTO StudentContactInfo (student_id, person_name, relation, phone) \
+             SELECT student_id, guardian_name, guardian_relation, guardian_phone FROM Students;\
+         ALTER TABLE Students DROP guardian_name, guardian_relation, guardian_phone;"
+    )
+    .await?;
+```
+
+This is also pending a redesign to make it easier to discover and utilize.
 
 ----------------------------------------------------------------
 ### How can I do a `SELECT ... WHERE foo IN (...)` query?

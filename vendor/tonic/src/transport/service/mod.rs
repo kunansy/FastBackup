@@ -1,26 +1,29 @@
-mod add_origin;
-mod connection;
-mod connector;
-mod discover;
-pub(crate) mod executor;
+/*
+ *
+ * Copyright 2025 gRPC authors.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to
+ * deal in the Software without restriction, including without limitation the
+ * rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+ * sell copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+ * IN THE SOFTWARE.
+ *
+ */
+
 pub(crate) mod grpc_timeout;
-mod io;
-mod reconnect;
-mod router;
-#[cfg(feature = "tls")]
-mod tls;
-mod user_agent;
+#[cfg(feature = "_tls-any")]
+pub(crate) mod tls;
 
-pub(crate) use self::add_origin::AddOrigin;
-pub(crate) use self::connection::Connection;
-pub(crate) use self::connector::connector;
-pub(crate) use self::discover::DynamicServiceStream;
-pub(crate) use self::executor::SharedExec;
 pub(crate) use self::grpc_timeout::GrpcTimeout;
-pub(crate) use self::io::ServerIo;
-#[cfg(feature = "tls")]
-pub(crate) use self::tls::{TlsAcceptor, TlsConnector};
-pub(crate) use self::user_agent::UserAgent;
-
-pub use self::router::Routes;
-pub use self::router::RoutesBuilder;

@@ -1,11 +1,13 @@
+#![allow(missing_docs)]
+
 use axum::{
     extract::State,
     routing::{get, post},
-    Extension, Json, Router, Server,
+    Extension, Json, Router,
 };
-use hyper::server::conn::AddrIncoming;
 use serde::{Deserialize, Serialize};
 use std::{
+    future::IntoFuture,
     io::BufRead,
     process::{Command, Stdio},
 };
@@ -162,20 +164,15 @@ impl BenchmarkBuilder {
         let addr = listener.local_addr().unwrap();
 
         std::thread::spawn(move || {
-            rt.block_on(async move {
-                let incoming = AddrIncoming::from_listener(listener).unwrap();
-                Server::builder(incoming)
-                    .serve(app.into_make_service())
-                    .await
-                    .unwrap();
-            });
+            rt.block_on(axum::serve(listener, app).into_future())
+                .unwrap();
         });
 
         let mut cmd = Command::new("rewrk");
         cmd.stdout(Stdio::piped());
 
         cmd.arg("--host");
-        cmd.arg(format!("http://{}{}", addr, self.path.unwrap_or("")));
+        cmd.arg(format!("http://{addr}{}", self.path.unwrap_or("")));
 
         cmd.args(["--connections", "10"]);
         cmd.args(["--threads", "10"]);
@@ -203,7 +200,7 @@ impl BenchmarkBuilder {
 
         eprintln!("Running {:?} benchmark", self.name);
 
-        // indent output from `rewrk` so its easier to read when running multiple benchmarks
+        // indent output from `rewrk` so it's easier to read when running multiple benchmarks
         let mut child = cmd.spawn().unwrap();
         let stdout = child.stdout.take().unwrap();
         let stdout = std::io::BufReader::new(stdout);

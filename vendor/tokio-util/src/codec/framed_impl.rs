@@ -5,14 +5,12 @@ use futures_core::Stream;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use bytes::BytesMut;
-use futures_core::ready;
 use futures_sink::Sink;
 use pin_project_lite::pin_project;
 use std::borrow::{Borrow, BorrowMut};
 use std::io;
 use std::pin::Pin;
-use std::task::{Context, Poll};
-use tracing::trace;
+use std::task::{ready, Context, Poll};
 
 pin_project! {
     #[derive(Debug)]
@@ -67,6 +65,7 @@ impl Default for WriteFrame {
 
 impl From<BytesMut> for ReadFrame {
     fn from(mut buffer: BytesMut) -> Self {
+        let is_readable = !buffer.is_empty();
         let size = buffer.capacity();
         if size < INITIAL_CAPACITY {
             buffer.reserve(INITIAL_CAPACITY - size);
@@ -74,7 +73,7 @@ impl From<BytesMut> for ReadFrame {
 
         Self {
             buffer,
-            is_readable: size > 0,
+            is_readable,
             eof: false,
             has_errored: false,
         }
@@ -185,11 +184,13 @@ where
                 // pausing or framing
                 if state.eof {
                     // pausing
-                    let frame = pinned.codec.decode_eof(&mut state.buffer).map_err(|err| {
-                        trace!("Got an error, going to errored state");
-                        state.has_errored = true;
-                        err
-                    })?;
+                    let frame = pinned
+                        .codec
+                        .decode_eof(&mut state.buffer)
+                        .inspect_err(|_err| {
+                            trace!("Got an error, going to errored state");
+                            state.has_errored = true;
+                        })?;
                     if frame.is_none() {
                         state.is_readable = false; // prepare pausing -> paused
                     }
@@ -200,10 +201,9 @@ where
                 // framing
                 trace!("attempting to decode a frame");
 
-                if let Some(frame) = pinned.codec.decode(&mut state.buffer).map_err(|op| {
+                if let Some(frame) = pinned.codec.decode(&mut state.buffer).inspect_err(|_op| {
                     trace!("Got an error, going to errored state");
                     state.has_errored = true;
-                    op
                 })? {
                     trace!("frame decoded from buffer");
                     // implicit framing -> framing
@@ -218,6 +218,7 @@ where
             // Make sure we've got room for at least one byte to read to ensure
             // that we don't get a spurious 0 that looks like EOF.
             state.buffer.reserve(1);
+            #[allow(clippy::blocks_in_conditions)]
             let bytect = match poll_read_buf(pinned.inner.as_mut(), cx, &mut state.buffer).map_err(
                 |err| {
                     trace!("Got an error, going to errored state");

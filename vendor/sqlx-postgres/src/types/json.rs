@@ -54,14 +54,14 @@ impl PgHasArrayType for JsonRawValue {
     }
 }
 
-impl<'q, T> Encode<'q, Postgres> for Json<T>
+impl<T> Encode<'_, Postgres> for Json<T>
 where
     T: Serialize,
 {
-    fn encode_by_ref(&self, buf: &mut PgArgumentBuffer) -> IsNull {
+    fn encode_by_ref(&self, buf: &mut PgArgumentBuffer) -> Result<IsNull, BoxDynError> {
         // we have a tiny amount of dynamic behavior depending if we are resolved to be JSON
         // instead of JSONB
-        buf.patch(|buf, ty: &PgTypeInfo| {
+        buf.patch_with(|buf, ty: &PgTypeInfo| {
             if *ty == PgTypeInfo::JSON || *ty == PgTypeInfo::JSON_ARRAY {
                 buf[0] = b' ';
             }
@@ -71,10 +71,9 @@ where
         buf.push(1);
 
         // the JSON data written to the buffer is the same regardless of parameter type
-        serde_json::to_writer(&mut **buf, &self.0)
-            .expect("failed to serialize to JSON for encoding on transmission to the database");
+        serde_json::to_writer(&mut **buf, &self.0)?;
 
-        IsNull::No
+        Ok(IsNull::No)
     }
 }
 
@@ -86,11 +85,12 @@ where
         let mut buf = value.as_bytes()?;
 
         if value.format() == PgValueFormat::Binary && value.type_info == PgTypeInfo::JSONB {
-            assert_eq!(
-                buf[0], 1,
-                "unsupported JSONB format version {}; please open an issue",
-                buf[0]
-            );
+            // Check JSONB version byte - PostgreSQL currently only supports version 1
+            if buf[0] != 1 {
+                return Err(
+                    format!("unsupported JSONB format version {} (expected 1)", buf[0]).into(),
+                );
+            }
 
             buf = &buf[1..];
         }

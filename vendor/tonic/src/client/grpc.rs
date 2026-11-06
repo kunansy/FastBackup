@@ -1,17 +1,43 @@
-use crate::codec::compression::{CompressionEncoding, EnabledCompressionEncodings};
+/*
+ *
+ * Copyright 2025 gRPC authors.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to
+ * deal in the Software without restriction, including without limitation the
+ * rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+ * sell copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+ * IN THE SOFTWARE.
+ *
+ */
+
+use crate::codec::EncodeBody;
+use crate::codec::{CompressionEncoding, EnabledCompressionEncodings};
+use crate::metadata::GRPC_CONTENT_TYPE;
 use crate::{
-    body::BoxBody,
-    client::GrpcService,
-    codec::{encode_client, Codec, Decoder, Streaming},
-    request::SanitizeHeaders,
     Code, Request, Response, Status,
+    body::Body,
+    client::GrpcService,
+    codec::{Codec, Decoder, Streaming},
+    request::SanitizeHeaders,
 };
 use http::{
-    header::{HeaderValue, CONTENT_TYPE, TE},
-    uri::{Parts, PathAndQuery, Uri},
+    header::{CONTENT_TYPE, HeaderValue, TE},
+    uri::{PathAndQuery, Uri},
 };
-use http_body::Body;
-use std::{fmt, future};
+use http_body::Body as HttpBody;
+use std::{fmt, future, pin::pin};
 use tokio_stream::{Stream, StreamExt};
 
 /// A gRPC client dispatcher.
@@ -159,7 +185,7 @@ impl<T> Grpc<T> {
         self
     }
 
-    /// Limits the maximum size of an ecoded message.
+    /// Limits the maximum size of an encoded message.
     ///
     /// # Example
     ///
@@ -179,7 +205,7 @@ impl<T> Grpc<T> {
     ///     .await
     ///     .unwrap();
     ///
-    /// // Set the limit to 2MB, Defaults to 4MB.
+    /// // Set the limit to 2MB, Defaults to `usize::MAX`.
     /// let limit = 2 * 1024 * 1024;
     /// let client = TestClient::new(channel).max_encoding_message_size(limit);
     /// # };
@@ -196,7 +222,7 @@ impl<T> Grpc<T> {
     /// accept one more request.
     pub async fn ready(&mut self) -> Result<(), T::Error>
     where
-        T: GrpcService<BoxBody>,
+        T: GrpcService<Body>,
     {
         future::poll_fn(|cx| self.inner.poll_ready(cx)).await
     }
@@ -209,9 +235,9 @@ impl<T> Grpc<T> {
         codec: C,
     ) -> Result<Response<M2>, Status>
     where
-        T: GrpcService<BoxBody>,
-        T::ResponseBody: Body + Send + 'static,
-        <T::ResponseBody as Body>::Error: Into<crate::Error>,
+        T: GrpcService<Body>,
+        T::ResponseBody: HttpBody + Send + 'static,
+        <T::ResponseBody as HttpBody>::Error: Into<crate::BoxError>,
         C: Codec<Encode = M1, Decode = M2>,
         M1: Send + Sync + 'static,
         M2: Send + Sync + 'static,
@@ -228,9 +254,9 @@ impl<T> Grpc<T> {
         codec: C,
     ) -> Result<Response<M2>, Status>
     where
-        T: GrpcService<BoxBody>,
-        T::ResponseBody: Body + Send + 'static,
-        <T::ResponseBody as Body>::Error: Into<crate::Error>,
+        T: GrpcService<Body>,
+        T::ResponseBody: HttpBody + Send + 'static,
+        <T::ResponseBody as HttpBody>::Error: Into<crate::BoxError>,
         S: Stream<Item = M1> + Send + 'static,
         C: Codec<Encode = M1, Decode = M2>,
         M1: Send + Sync + 'static,
@@ -239,7 +265,7 @@ impl<T> Grpc<T> {
         let (mut parts, body, extensions) =
             self.streaming(request, path, codec).await?.into_parts();
 
-        tokio::pin!(body);
+        let mut body = pin!(body);
 
         let message = body
             .try_next()
@@ -248,7 +274,7 @@ impl<T> Grpc<T> {
                 status.metadata_mut().merge(parts.clone());
                 status
             })?
-            .ok_or_else(|| Status::new(Code::Internal, "Missing response message."))?;
+            .ok_or_else(|| Status::internal("Missing response message."))?;
 
         if let Some(trailers) = body.trailers().await? {
             parts.merge(trailers);
@@ -265,9 +291,9 @@ impl<T> Grpc<T> {
         codec: C,
     ) -> Result<Response<Streaming<M2>>, Status>
     where
-        T: GrpcService<BoxBody>,
-        T::ResponseBody: Body + Send + 'static,
-        <T::ResponseBody as Body>::Error: Into<crate::Error>,
+        T: GrpcService<Body>,
+        T::ResponseBody: HttpBody + Send + 'static,
+        <T::ResponseBody as HttpBody>::Error: Into<crate::BoxError>,
         C: Codec<Encode = M1, Decode = M2>,
         M1: Send + Sync + 'static,
         M2: Send + Sync + 'static,
@@ -279,29 +305,32 @@ impl<T> Grpc<T> {
     /// Send a bi-directional streaming gRPC request.
     pub async fn streaming<S, M1, M2, C>(
         &mut self,
-        request: Request<S>,
+        mut request: Request<S>,
         path: PathAndQuery,
         mut codec: C,
     ) -> Result<Response<Streaming<M2>>, Status>
     where
-        T: GrpcService<BoxBody>,
-        T::ResponseBody: Body + Send + 'static,
-        <T::ResponseBody as Body>::Error: Into<crate::Error>,
+        T: GrpcService<Body>,
+        T::ResponseBody: HttpBody + Send + 'static,
+        <T::ResponseBody as HttpBody>::Error: Into<crate::BoxError>,
         S: Stream<Item = M1> + Send + 'static,
         C: Codec<Encode = M1, Decode = M2>,
         M1: Send + Sync + 'static,
         M2: Send + Sync + 'static,
     {
+        let cancellation_token = request.remove_cancellation_handle().map(|c| c.into_token());
+
         let request = request
             .map(|s| {
-                encode_client(
+                EncodeBody::new_client_with_cancellation(
                     codec.encoder(),
-                    s,
+                    s.map(Ok),
                     self.config.send_compression_encodings,
                     self.config.max_encoding_message_size,
+                    cancellation_token,
                 )
             })
-            .map(BoxBody::new);
+            .map(Body::new);
 
         let request = self.config.prepare_request(request, path);
 
@@ -324,9 +353,9 @@ impl<T> Grpc<T> {
         response: http::Response<T::ResponseBody>,
     ) -> Result<Response<Streaming<M2>>, Status>
     where
-        T: GrpcService<BoxBody>,
-        T::ResponseBody: Body + Send + 'static,
-        <T::ResponseBody as Body>::Error: Into<crate::Error>,
+        T: GrpcService<Body>,
+        T::ResponseBody: HttpBody + Send + 'static,
+        <T::ResponseBody as HttpBody>::Error: Into<crate::BoxError>,
     {
         let encoding = CompressionEncoding::from_encoding_header(
             response.headers(),
@@ -367,18 +396,21 @@ impl<T> Grpc<T> {
 }
 
 impl GrpcConfig {
-    fn prepare_request(
-        &self,
-        request: Request<BoxBody>,
-        path: PathAndQuery,
-    ) -> http::Request<BoxBody> {
-        let scheme = self.origin.scheme().cloned();
-        let authority = self.origin.authority().cloned();
+    fn prepare_request(&self, request: Request<Body>, path: PathAndQuery) -> http::Request<Body> {
+        let mut parts = self.origin.clone().into_parts();
 
-        let mut parts = Parts::default();
-        parts.path_and_query = Some(path);
-        parts.scheme = scheme;
-        parts.authority = authority;
+        match &parts.path_and_query {
+            Some(pnq) if pnq != "/" => {
+                parts.path_and_query = Some(
+                    format!("{}{}", pnq.path(), path)
+                        .parse()
+                        .expect("must form valid path_and_query"),
+                )
+            }
+            _ => {
+                parts.path_and_query = Some(path);
+            }
+        }
 
         let uri = Uri::from_parts(parts).expect("path_and_query only is valid Uri");
 
@@ -397,8 +429,9 @@ impl GrpcConfig {
         // Set the content type
         request
             .headers_mut()
-            .insert(CONTENT_TYPE, HeaderValue::from_static("application/grpc"));
+            .insert(CONTENT_TYPE, GRPC_CONTENT_TYPE);
 
+        #[cfg(any(feature = "gzip", feature = "deflate", feature = "zstd"))]
         if let Some(encoding) = self.send_compression_encodings {
             request.headers_mut().insert(
                 crate::codec::compression::ENCODING_HEADER,
@@ -437,32 +470,25 @@ impl<T: Clone> Clone for Grpc<T> {
 
 impl<T: fmt::Debug> fmt::Debug for Grpc<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut f = f.debug_struct("Grpc");
-
-        f.field("inner", &self.inner);
-
-        f.field("origin", &self.config.origin);
-
-        f.field(
-            "compression_encoding",
-            &self.config.send_compression_encodings,
-        );
-
-        f.field(
-            "accept_compression_encodings",
-            &self.config.accept_compression_encodings,
-        );
-
-        f.field(
-            "max_decoding_message_size",
-            &self.config.max_decoding_message_size,
-        );
-
-        f.field(
-            "max_encoding_message_size",
-            &self.config.max_encoding_message_size,
-        );
-
-        f.finish()
+        f.debug_struct("Grpc")
+            .field("inner", &self.inner)
+            .field("origin", &self.config.origin)
+            .field(
+                "compression_encoding",
+                &self.config.send_compression_encodings,
+            )
+            .field(
+                "accept_compression_encodings",
+                &self.config.accept_compression_encodings,
+            )
+            .field(
+                "max_decoding_message_size",
+                &self.config.max_decoding_message_size,
+            )
+            .field(
+                "max_encoding_message_size",
+                &self.config.max_encoding_message_size,
+            )
+            .finish()
     }
 }

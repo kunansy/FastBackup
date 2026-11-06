@@ -1,35 +1,59 @@
-use super::compression::{decompress, CompressionEncoding};
-use super::{DecodeBuf, Decoder, DEFAULT_MAX_RECV_MESSAGE_SIZE, HEADER_SIZE};
-use crate::{body::BoxBody, metadata::MetadataMap, Code, Status};
+/*
+ *
+ * Copyright 2025 gRPC authors.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to
+ * deal in the Software without restriction, including without limitation the
+ * rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+ * sell copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+ * IN THE SOFTWARE.
+ *
+ */
+
+use super::compression::{CompressionEncoding, CompressionSettings, decompress};
+use super::{BufferSettings, DEFAULT_MAX_RECV_MESSAGE_SIZE, DecodeBuf, Decoder, HEADER_SIZE};
+use crate::{Code, Status, body::Body, metadata::MetadataMap};
 use bytes::{Buf, BufMut, BytesMut};
-use http::StatusCode;
-use http_body::Body;
+use http::{HeaderMap, StatusCode};
+use http_body::Body as HttpBody;
+use http_body_util::BodyExt;
 use std::{
     fmt, future,
     pin::Pin,
     task::ready,
     task::{Context, Poll},
 };
+use sync_wrapper::SyncWrapper;
 use tokio_stream::Stream;
 use tracing::{debug, trace};
-
-const BUFFER_SIZE: usize = 8 * 1024;
 
 /// Streaming requests and responses.
 ///
 /// This will wrap some inner [`Body`] and [`Decoder`] and provide an interface
 /// to fetch the message stream and trailing metadata
 pub struct Streaming<T> {
-    decoder: Box<dyn Decoder<Item = T, Error = Status> + Send + 'static>,
+    decoder: SyncWrapper<Box<dyn Decoder<Item = T, Error = Status> + Send + 'static>>,
     inner: StreamingInner,
 }
 
 struct StreamingInner {
-    body: BoxBody,
+    body: SyncWrapper<Body>,
     state: State,
     direction: Direction,
     buf: BytesMut,
-    trailers: Option<MetadataMap>,
+    trailers: Option<HeaderMap>,
     decompress_buf: BytesMut,
     encoding: Option<CompressionEncoding>,
     max_message_size: Option<usize>,
@@ -37,14 +61,14 @@ struct StreamingInner {
 
 impl<T> Unpin for Streaming<T> {}
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum State {
     ReadHeader,
     ReadBody {
         compression: Option<CompressionEncoding>,
         len: usize,
     },
-    Error,
+    Error(Option<Status>),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -55,7 +79,9 @@ enum Direction {
 }
 
 impl<T> Streaming<T> {
-    pub(crate) fn new_response<B, D>(
+    /// Create a new streaming response in the grpc response format for decoding a response [Body]
+    /// into message of type T
+    pub fn new_response<B, D>(
         decoder: D,
         body: B,
         status_code: StatusCode,
@@ -63,8 +89,8 @@ impl<T> Streaming<T> {
         max_message_size: Option<usize>,
     ) -> Self
     where
-        B: Body + Send + 'static,
-        B::Error: Into<crate::Error>,
+        B: HttpBody + Send + 'static,
+        B::Error: Into<crate::BoxError>,
         D: Decoder<Item = T, Error = Status> + Send + 'static,
     {
         Self::new(
@@ -76,16 +102,18 @@ impl<T> Streaming<T> {
         )
     }
 
-    pub(crate) fn new_empty<B, D>(decoder: D, body: B) -> Self
+    /// Create empty response. For creating responses that have no content (headers + trailers only)
+    pub fn new_empty<B, D>(decoder: D, body: B) -> Self
     where
-        B: Body + Send + 'static,
-        B::Error: Into<crate::Error>,
+        B: HttpBody + Send + 'static,
+        B::Error: Into<crate::BoxError>,
         D: Decoder<Item = T, Error = Status> + Send + 'static,
     {
         Self::new(decoder, body, Direction::EmptyResponse, None, None)
     }
 
-    #[doc(hidden)]
+    /// Create a new streaming request in the grpc response format for decoding a request [Body]
+    /// into message of type T
     pub fn new_request<B, D>(
         decoder: D,
         body: B,
@@ -93,8 +121,8 @@ impl<T> Streaming<T> {
         max_message_size: Option<usize>,
     ) -> Self
     where
-        B: Body + Send + 'static,
-        B::Error: Into<crate::Error>,
+        B: HttpBody + Send + 'static,
+        B::Error: Into<crate::BoxError>,
         D: Decoder<Item = T, Error = Status> + Send + 'static,
     {
         Self::new(
@@ -114,20 +142,23 @@ impl<T> Streaming<T> {
         max_message_size: Option<usize>,
     ) -> Self
     where
-        B: Body + Send + 'static,
-        B::Error: Into<crate::Error>,
+        B: HttpBody + Send + 'static,
+        B::Error: Into<crate::BoxError>,
         D: Decoder<Item = T, Error = Status> + Send + 'static,
     {
+        let buffer_size = decoder.buffer_settings().buffer_size;
         Self {
-            decoder: Box::new(decoder),
+            decoder: SyncWrapper::new(Box::new(decoder)),
             inner: StreamingInner {
-                body: body
-                    .map_data(|mut buf| buf.copy_to_bytes(buf.remaining()))
-                    .map_err(|err| Status::map_error(err.into()))
-                    .boxed_unsync(),
+                body: SyncWrapper::new(Body::new(
+                    body.map_frame(|frame| {
+                        frame.map_data(|mut buf| buf.copy_to_bytes(buf.remaining()))
+                    })
+                    .map_err(|err| Status::map_error(err.into())),
+                )),
                 state: State::ReadHeader,
                 direction,
-                buf: BytesMut::with_capacity(BUFFER_SIZE),
+                buf: BytesMut::with_capacity(buffer_size),
                 trailers: None,
                 decompress_buf: BytesMut::new(),
                 encoding,
@@ -138,7 +169,10 @@ impl<T> Streaming<T> {
 }
 
 impl StreamingInner {
-    fn decode_chunk(&mut self) -> Result<Option<DecodeBuf<'_>>, Status> {
+    fn decode_chunk(
+        &mut self,
+        buffer_settings: BufferSettings,
+    ) -> Result<Option<DecodeBuf<'_>>, Status> {
         if let State::ReadHeader = self.state {
             if self.buf.remaining() < HEADER_SIZE {
                 return Ok(None);
@@ -155,7 +189,9 @@ impl StreamingInner {
                             // An ill-constructed message with its Compressed-Flag bit set but lacking a grpc-encoding
                             // entry different from identity in its metadata MUST fail with INTERNAL status,
                             // its associated description indicating the invalid Compressed-Flag condition.
-                            return Err(Status::new(Code::Internal, "protocol error: received message with compressed-flag but no grpc-encoding was specified"));
+                            return Err(Status::internal(
+                                "protocol error: received message with compressed-flag but no grpc-encoding was specified",
+                            ));
                         }
                     }
                 }
@@ -163,13 +199,14 @@ impl StreamingInner {
                     trace!("unexpected compression flag");
                     let message = if let Direction::Response(status) = self.direction {
                         format!(
-                            "protocol error: received message with invalid compression flag: {} (valid flags are 0 and 1) while receiving response with status: {}",
-                            f, status
+                            "protocol error: received message with invalid compression flag: {f} (valid flags are 0 and 1) while receiving response with status: {status}"
                         )
                     } else {
-                        format!("protocol error: received message with invalid compression flag: {} (valid flags are 0 and 1), while sending request", f)
+                        format!(
+                            "protocol error: received message with invalid compression flag: {f} (valid flags are 0 and 1), while sending request"
+                        )
                     };
-                    return Err(Status::new(Code::Internal, message));
+                    return Err(Status::internal(message));
                 }
             };
 
@@ -178,13 +215,9 @@ impl StreamingInner {
                 .max_message_size
                 .unwrap_or(DEFAULT_MAX_RECV_MESSAGE_SIZE);
             if len > limit {
-                return Err(Status::new(
-                    Code::OutOfRange,
-                    format!(
-                        "Error, message length too large: found {} bytes, the limit is: {} bytes",
-                        len, limit
-                    ),
-                ));
+                return Err(Status::out_of_range(format!(
+                    "Error, decoded message length too large: found {len} bytes, the limit is: {limit} bytes"
+                )));
             }
 
             self.buf.reserve(len);
@@ -204,18 +237,33 @@ impl StreamingInner {
 
             let decode_buf = if let Some(encoding) = compression {
                 self.decompress_buf.clear();
+                let limit = self
+                    .max_message_size
+                    .unwrap_or(DEFAULT_MAX_RECV_MESSAGE_SIZE);
+                let limited_out_buf = (&mut self.decompress_buf).limit(limit);
 
-                if let Err(err) = decompress(encoding, &mut self.buf, &mut self.decompress_buf, len)
-                {
+                if let Err(err) = decompress(
+                    CompressionSettings {
+                        encoding,
+                        buffer_growth_interval: buffer_settings.buffer_size,
+                    },
+                    &mut self.buf,
+                    limited_out_buf,
+                    len,
+                ) {
+                    if matches!(err.kind(), std::io::ErrorKind::WriteZero) {
+                        return Err(Status::resource_exhausted(format!(
+                            "Error decompressing: size limit, of {limit} bytes, exceeded while decompressing message"
+                        )));
+                    }
                     let message = if let Direction::Response(status) = self.direction {
                         format!(
-                            "Error decompressing: {}, while receiving response with status: {}",
-                            err, status
+                            "Error decompressing: {err}, while receiving response with status: {status}"
                         )
                     } else {
-                        format!("Error decompressing: {}, while sending request", err)
+                        format!("Error decompressing: {err}, while sending request")
                     };
-                    return Err(Status::new(Code::Internal, message));
+                    return Err(Status::internal(message));
                 }
                 let decompressed_len = self.decompress_buf.len();
                 DecodeBuf::new(&mut self.decompress_buf, decompressed_len)
@@ -230,63 +278,55 @@ impl StreamingInner {
     }
 
     // Returns Some(()) if data was found or None if the loop in `poll_next` should break
-    fn poll_data(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<()>, Status>> {
-        let chunk = match ready!(Pin::new(&mut self.body).poll_data(cx)) {
-            Some(Ok(d)) => Some(d),
-            Some(Err(e)) => {
-                if self.direction == Direction::Request && e.code() == Code::Cancelled {
+    fn poll_frame(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<()>, Status>> {
+        let frame = match ready!(Pin::new(self.body.get_mut()).poll_frame(cx)) {
+            Some(Ok(frame)) => frame,
+            Some(Err(status)) => {
+                if self.direction == Direction::Request && status.code() == Code::Cancelled {
                     return Poll::Ready(Ok(None));
                 }
 
-                let _ = std::mem::replace(&mut self.state, State::Error);
-                let err: crate::Error = e.into();
-                debug!("decoder inner stream error: {:?}", err);
-                let status = Status::from_error(err);
+                let _ = std::mem::replace(&mut self.state, State::Error(Some(status.clone())));
+                debug!("decoder inner stream error: {:?}", status);
                 return Poll::Ready(Err(status));
             }
-            None => None,
+            None => {
+                // FIXME: improve buf usage.
+                return Poll::Ready(if self.buf.has_remaining() {
+                    trace!("unexpected EOF decoding stream, state: {:?}", self.state);
+                    Err(Status::internal("Unexpected EOF decoding stream."))
+                } else {
+                    Ok(None)
+                });
+            }
         };
 
-        Poll::Ready(if let Some(data) = chunk {
-            self.buf.put(data);
+        Poll::Ready(if frame.is_data() {
+            self.buf.put(frame.into_data().unwrap());
             Ok(Some(()))
-        } else {
-            // FIXME: improve buf usage.
-            if self.buf.has_remaining() {
-                trace!("unexpected EOF decoding stream, state: {:?}", self.state);
-                Err(Status::new(
-                    Code::Internal,
-                    "Unexpected EOF decoding stream.".to_string(),
-                ))
+        } else if frame.is_trailers() {
+            if let Some(trailers) = &mut self.trailers {
+                trailers.extend(frame.into_trailers().unwrap());
             } else {
-                Ok(None)
+                self.trailers = Some(frame.into_trailers().unwrap());
             }
+
+            Ok(None)
+        } else {
+            panic!("unexpected frame: {frame:?}");
         })
     }
 
-    fn poll_response(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Status>> {
-        if let Direction::Response(status) = self.direction {
-            match ready!(Pin::new(&mut self.body).poll_trailers(cx)) {
-                Ok(trailer) => {
-                    if let Err(e) = crate::status::infer_grpc_status(trailer.as_ref(), status) {
-                        if let Some(e) = e {
-                            return Poll::Ready(Err(e));
-                        } else {
-                            return Poll::Ready(Ok(()));
-                        }
-                    } else {
-                        self.trailers = trailer.map(MetadataMap::from_headers);
-                    }
-                }
-                Err(e) => {
-                    let err: crate::Error = e.into();
-                    debug!("decoder inner trailers error: {:?}", err);
-                    let status = Status::from_error(err);
-                    return Poll::Ready(Err(status));
-                }
-            }
+    fn response(&mut self) -> Result<(), Status> {
+        if let Direction::Response(status) = self.direction
+            && let Err(Some(e)) = crate::status::infer_grpc_status(self.trailers.as_ref(), status)
+        {
+            // If the trailers contain a grpc-status, then we should return that as the error
+            // and otherwise stop the stream (by taking the error state)
+            self.trailers.take();
+            return Err(e);
         }
-        Poll::Ready(Ok(()))
+        Ok(())
     }
 }
 
@@ -296,15 +336,15 @@ impl<T> Streaming<T> {
     /// # Return value
     ///
     /// - `Result::Err(val)` means a gRPC error was sent by the sender instead
-    /// of a valid response message. Refer to [`Status::code`] and
-    /// [`Status::message`] to examine possible error causes.
+    ///   of a valid response message. Refer to [`Status::code`] and
+    ///   [`Status::message`] to examine possible error causes.
     ///
     /// - `Result::Ok(None)` means the stream was closed by the sender and no
-    /// more messages will be delivered. Further attempts to call
-    /// [`Streaming::message`] will result in the same return value.
+    ///   more messages will be delivered. Further attempts to call
+    ///   [`Streaming::message`] will result in the same return value.
     ///
     /// - `Result::Ok(Some(val))` means the sender streamed a valid response
-    /// message `val`.
+    ///   message `val`.
     ///
     /// ```rust
     /// # use tonic::{Streaming, Status, codec::Decoder};
@@ -346,7 +386,7 @@ impl<T> Streaming<T> {
         // Shortcut to see if we already pulled the trailers in the stream step
         // we need to do that so that the stream can error on trailing grpc-status
         if let Some(trailers) = self.inner.trailers.take() {
-            return Ok(Some(trailers));
+            return Ok(Some(MetadataMap::from_headers(trailers)));
         }
 
         // To fetch the trailers we must clear the body and drop it.
@@ -355,21 +395,19 @@ impl<T> Streaming<T> {
         // Since we call poll_trailers internally on poll_next we need to
         // check if it got cached again.
         if let Some(trailers) = self.inner.trailers.take() {
-            return Ok(Some(trailers));
+            return Ok(Some(MetadataMap::from_headers(trailers)));
         }
 
-        // Trailers were not caught during poll_next and thus lets poll for
-        // them manually.
-        let map = future::poll_fn(|cx| Pin::new(&mut self.inner.body).poll_trailers(cx))
-            .await
-            .map_err(|e| Status::from_error(Box::new(e)));
-
-        map.map(|x| x.map(MetadataMap::from_headers))
+        // We've polled through all the frames, and still no trailers, return None
+        Ok(None)
     }
 
     fn decode_chunk(&mut self) -> Result<Option<T>, Status> {
-        match self.inner.decode_chunk()? {
-            Some(mut decode_buf) => match self.decoder.decode(&mut decode_buf)? {
+        match self
+            .inner
+            .decode_chunk(self.decoder.get_mut().buffer_settings())?
+        {
+            Some(mut decode_buf) => match self.decoder.get_mut().decode(&mut decode_buf)? {
                 Some(msg) => {
                     self.inner.state = State::ReadHeader;
                     Ok(Some(msg))
@@ -386,27 +424,24 @@ impl<T> Stream for Streaming<T> {
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         loop {
-            if let State::Error = &self.inner.state {
-                return Poll::Ready(None);
+            // When the stream encounters an error yield that error once and then on subsequent
+            // calls to poll_next return Poll::Ready(None) indicating that the stream has been
+            // fully exhausted.
+            if let State::Error(status) = &mut self.inner.state {
+                return Poll::Ready(status.take().map(Err));
             }
 
-            // FIXME: implement the ability to poll trailers when we _know_ that
-            // the consumer of this stream will only poll for the first message.
-            // This means we skip the poll_trailers step.
             if let Some(item) = self.decode_chunk()? {
                 return Poll::Ready(Some(Ok(item)));
             }
 
-            match ready!(self.inner.poll_data(cx))? {
-                Some(()) => (),
-                None => break,
+            if ready!(self.inner.poll_frame(cx))?.is_none() {
+                match self.inner.response() {
+                    Ok(()) => return Poll::Ready(None),
+                    Err(err) => self.inner.state = State::Error(Some(err)),
+                }
             }
         }
-
-        Poll::Ready(match ready!(self.inner.poll_response(cx)) {
-            Ok(()) => None,
-            Err(err) => Some(Err(err)),
-        })
     }
 }
 
@@ -417,4 +452,4 @@ impl<T> fmt::Debug for Streaming<T> {
 }
 
 #[cfg(test)]
-static_assertions::assert_impl_all!(Streaming<()>: Send);
+static_assertions::assert_impl_all!(Streaming<()>: Send, Sync);

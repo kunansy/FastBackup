@@ -1,5 +1,6 @@
 use proc_macro2::TokenStream;
 use quote::quote;
+use syn::parse::Parser;
 
 #[cfg(feature = "migrate")]
 struct Args {
@@ -23,10 +24,15 @@ enum MigrationsOpt {
     Disabled,
 }
 
-pub fn expand(args: syn::AttributeArgs, input: syn::ItemFn) -> crate::Result<TokenStream> {
+type AttributeArgs = syn::punctuated::Punctuated<syn::Meta, syn::Token![,]>;
+
+pub fn expand(args: TokenStream, input: syn::ItemFn) -> crate::Result<TokenStream> {
+    let parser = AttributeArgs::parse_terminated;
+    let args = parser.parse2(args)?;
+
     if input.sig.inputs.is_empty() {
         if !args.is_empty() {
-            if cfg!(feature = "migrate") {
+            if cfg!(not(feature = "migrate")) {
                 return Err(syn::Error::new_spanned(
                     args.first().unwrap(),
                     "control attributes are not allowed unless \
@@ -70,7 +76,9 @@ fn expand_simple(input: syn::ItemFn) -> TokenStream {
 }
 
 #[cfg(feature = "migrate")]
-fn expand_advanced(args: syn::AttributeArgs, input: syn::ItemFn) -> crate::Result<TokenStream> {
+fn expand_advanced(args: AttributeArgs, input: syn::ItemFn) -> crate::Result<TokenStream> {
+    let config = sqlx_core::config::Config::try_from_crate_or_default()?;
+
     let ret = &input.sig.output;
     let name = &input.sig.ident;
     let inputs = &input.sig.inputs;
@@ -137,15 +145,16 @@ fn expand_advanced(args: syn::AttributeArgs, input: syn::ItemFn) -> crate::Resul
 
     let migrations = match args.migrations {
         MigrationsOpt::ExplicitPath(path) => {
-            let migrator = crate::migrate::expand_migrator_from_lit_dir(path)?;
+            let migrator = crate::migrate::expand(Some(path))?;
             quote! { args.migrator(&#migrator); }
         }
         MigrationsOpt::InferredPath if !inputs.is_empty() => {
-            let migrations_path =
-                crate::common::resolve_path("./migrations", proc_macro2::Span::call_site())?;
+            let path = crate::migrate::default_path(&config);
 
-            if migrations_path.is_dir() {
-                let migrator = crate::migrate::expand_migrator(&migrations_path)?;
+            let resolved_path = crate::common::resolve_path(path, proc_macro2::Span::call_site())?;
+
+            if resolved_path.is_dir() {
+                let migrator = crate::migrate::expand_with_path(&config, &resolved_path)?;
                 quote! { args.migrator(&#migrator); }
             } else {
                 quote! {}
@@ -158,10 +167,10 @@ fn expand_advanced(args: syn::AttributeArgs, input: syn::ItemFn) -> crate::Resul
     };
 
     Ok(quote! {
-        #[::core::prelude::v1::test]
         #(#attrs)*
+        #[::core::prelude::v1::test]
         fn #name() #ret {
-            async fn inner(#inputs) #ret {
+            async fn #name(#inputs) #ret {
                 #body
             }
 
@@ -172,7 +181,7 @@ fn expand_advanced(args: syn::AttributeArgs, input: syn::ItemFn) -> crate::Resul
             args.fixtures(&[#(#fixtures),*]);
 
             // We need to give a coercion site or else we get "unimplemented trait" errors.
-            let f: fn(#(#fn_arg_types),*) -> _ = inner;
+            let f: fn(#(#fn_arg_types),*) -> _ = #name;
 
             ::sqlx::testing::TestFn::run_test(f, args)
         }
@@ -180,97 +189,113 @@ fn expand_advanced(args: syn::AttributeArgs, input: syn::ItemFn) -> crate::Resul
 }
 
 #[cfg(feature = "migrate")]
-fn parse_args(attr_args: syn::AttributeArgs) -> syn::Result<Args> {
+fn parse_args(attr_args: AttributeArgs) -> syn::Result<Args> {
+    use syn::{
+        parenthesized, parse::Parse, punctuated::Punctuated, token::Comma, Expr, Lit, LitStr, Meta,
+        MetaNameValue, Token,
+    };
+
     let mut fixtures = Vec::new();
     let mut migrations = MigrationsOpt::InferredPath;
 
     for arg in attr_args {
+        let path = arg.path().clone();
+
         match arg {
-            syn::NestedMeta::Meta(syn::Meta::List(list)) if list.path.is_ident("fixtures") => {
+            syn::Meta::List(list) if list.path.is_ident("fixtures") => {
                 let mut fixtures_local = vec![];
                 let mut fixtures_type = FixturesType::None;
 
-                for nested in list.nested {
-                    match nested {
-                        syn::NestedMeta::Lit(syn::Lit::Str(litstr)) => {
-                            //  fixtures("<file_1>","<file_2>") or fixtures("<path/file_1.sql>","<path/file_2.sql>")
-                            parse_fixtures_args(&mut fixtures_type, litstr, &mut fixtures_local)?;
-                        },
-                        syn::NestedMeta::Meta(syn::Meta::NameValue(namevalue))
-                            if namevalue.path.is_ident("path") =>
-                        {
-                            //  fixtures(path = "<path>", scripts("<file_1>","<file_2>")) checking `path` argument
-                            parse_fixtures_path_args(&mut fixtures_type, namevalue)?;
-                        },
-                        syn::NestedMeta::Meta(syn::Meta::List(list)) if list.path.is_ident("scripts") => {
-                            //  fixtures(path = "<path>", scripts("<file_1>","<file_2>")) checking `scripts` argument
-                            parse_fixtures_scripts_args(&mut fixtures_type, list, &mut fixtures_local)?;
-                        }
-                        other => {
-                            return Err(syn::Error::new_spanned(other, "expected string literal"))
-                        }
-                    };
+                let parse_nested = list.parse_nested_meta(|meta| {
+                    if meta.path.is_ident("path") {
+                        //  fixtures(path = "<path>", scripts("<file_1>","<file_2>")) checking `path` argument
+                        meta.input.parse::<Token![=]>()?;
+                        let val: LitStr = meta.input.parse()?;
+                        parse_fixtures_path_args(&mut fixtures_type, val)?;
+                    } else if meta.path.is_ident("scripts") {
+                        //  fixtures(path = "<path>", scripts("<file_1>","<file_2>")) checking `scripts` argument
+                        let content;
+                        parenthesized!(content in meta.input);
+                        let list = content.parse_terminated(<LitStr as Parse>::parse, Comma)?;
+                        parse_fixtures_scripts_args(&mut fixtures_type, list, &mut fixtures_local)?;
+                    } else {
+                        return Err(syn::Error::new_spanned(
+                            meta.path,
+                            "unexpected fixture meta",
+                        ));
+                    }
+
+                    Ok(())
+                });
+
+                if parse_nested.is_err() {
+                    // fixtures("<file_1>","<file_2>") or fixtures("<path/file_1.sql>","<path/file_2.sql>")
+                    let args =
+                        list.parse_args_with(<Punctuated<LitStr, Token![,]>>::parse_terminated)?;
+                    for arg in args {
+                        parse_fixtures_args(&mut fixtures_type, arg, &mut fixtures_local)?;
+                    }
                 }
+
                 fixtures.push((fixtures_type, fixtures_local));
             }
-            syn::NestedMeta::Meta(syn::Meta::NameValue(namevalue))
-                if namevalue.path.is_ident("migrations") =>
-            {
+            syn::Meta::NameValue(value) if value.path.is_ident("migrations") => {
                 if !matches!(migrations, MigrationsOpt::InferredPath) {
                     return Err(syn::Error::new_spanned(
-                        namevalue,
+                        value,
                         "cannot have more than one `migrations` or `migrator` arg",
                     ));
                 }
 
-                migrations = match namevalue.lit {
-                    syn::Lit::Bool(litbool) => {
-                        if !litbool.value {
-                            // migrations = false
-                            MigrationsOpt::Disabled
-                        } else {
-                            // migrations = true
-                            return Err(syn::Error::new_spanned(
-                                litbool,
-                                "`migrations = true` is redundant",
-                            ));
-                        }
+                fn recurse_lit_lookup(expr: Expr) -> Option<Lit> {
+                    match expr {
+                        Expr::Lit(syn::ExprLit { lit, .. }) => Some(lit),
+                        Expr::Group(syn::ExprGroup { expr, .. }) => recurse_lit_lookup(*expr),
+                        _ => None,
                     }
-                    // migrations = "<path>"
-                    syn::Lit::Str(litstr) => MigrationsOpt::ExplicitPath(litstr),
-                    _ => {
-                        return Err(syn::Error::new_spanned(
-                            namevalue,
-                            "expected string or `false`",
-                        ))
-                    }
+                }
+
+                let Some(lit) = recurse_lit_lookup(value.value) else {
+                    return Err(syn::Error::new_spanned(path, "expected string or `false`"));
                 };
-            }
-            syn::NestedMeta::Meta(syn::Meta::NameValue(namevalue))
-                if namevalue.path.is_ident("migrator") =>
-                {
-                    if !matches!(migrations, MigrationsOpt::InferredPath) {
+
+                migrations = match lit {
+                    // migrations = false
+                    Lit::Bool(b) if !b.value => MigrationsOpt::Disabled,
+                    // migrations = true
+                    Lit::Bool(b) => {
                         return Err(syn::Error::new_spanned(
-                            namevalue,
-                            "cannot have more than one `migrations` or `migrator` arg",
+                            b,
+                            "`migrations = true` is redundant",
                         ));
                     }
-
-                    migrations = match namevalue.lit {
-                        // migrator = "<path>"
-                        syn::Lit::Str(litstr) => MigrationsOpt::ExplicitMigrator(litstr.parse()?),
-                        _ => {
-                            return Err(syn::Error::new_spanned(
-                                namevalue,
-                                "expected string",
-                            ))
-                        }
-                    };
+                    // migrations = "path"
+                    Lit::Str(s) => MigrationsOpt::ExplicitPath(s),
+                    lit => return Err(syn::Error::new_spanned(lit, "expected string or `false`")),
+                };
+            }
+            // migrator = "<path>"
+            Meta::NameValue(MetaNameValue { value, .. }) if path.is_ident("migrator") => {
+                if !matches!(migrations, MigrationsOpt::InferredPath) {
+                    return Err(syn::Error::new_spanned(
+                        path,
+                        "cannot have more than one `migrations` or `migrator` arg",
+                    ));
                 }
-            other => {
+
+                let Expr::Lit(syn::ExprLit {
+                    lit: Lit::Str(lit), ..
+                }) = value
+                else {
+                    return Err(syn::Error::new_spanned(path, "expected string"));
+                };
+
+                migrations = MigrationsOpt::ExplicitMigrator(lit.parse()?);
+            }
+            arg => {
                 return Err(syn::Error::new_spanned(
-                    other,
-                    "expected `fixtures(\"<filename>\", ...)` or `migrations = \"<path>\" | false` or `migrator = \"<rust path>\"`",
+                    arg,
+                    r#"expected `fixtures("<filename>", ...)` or `migrations = "<path>" | false` or `migrator = "<rust path>"`"#,
                 ))
             }
         }
@@ -338,43 +363,34 @@ fn parse_fixtures_args(
 #[cfg(feature = "migrate")]
 fn parse_fixtures_path_args(
     fixtures_type: &mut FixturesType,
-    namevalue: syn::MetaNameValue,
+    namevalue: syn::LitStr,
 ) -> syn::Result<()> {
-    //  fixtures(path = "<path>", scripts("<file_1>","<file_2>")) checking `path` argument
     if !matches!(fixtures_type, FixturesType::None) {
         return Err(syn::Error::new_spanned(
             namevalue,
             "`path` must be the first argument of `fixtures`",
         ));
     }
-    *fixtures_type = match namevalue.lit {
-        // path = "<path>"
-        syn::Lit::Str(litstr) => FixturesType::CustomRelativePath(litstr),
-        _ => return Err(syn::Error::new_spanned(namevalue, "expected string")),
-    };
+    *fixtures_type = FixturesType::CustomRelativePath(namevalue);
     Ok(())
 }
 
 #[cfg(feature = "migrate")]
 fn parse_fixtures_scripts_args(
     fixtures_type: &mut FixturesType,
-    list: syn::MetaList,
+    list: syn::punctuated::Punctuated<syn::LitStr, syn::Token![,]>,
     fixtures_local: &mut Vec<syn::LitStr>,
 ) -> syn::Result<()> {
     //  fixtures(path = "<path>", scripts("<file_1>","<file_2>")) checking `scripts` argument
+
     if !matches!(fixtures_type, FixturesType::CustomRelativePath(_)) {
         return Err(syn::Error::new_spanned(
             list,
             "`scripts` must be the second argument of `fixtures` and used together with `path`",
         ));
     }
-    for nested in list.nested {
-        let litstr = match nested {
-            syn::NestedMeta::Lit(syn::Lit::Str(litstr)) => litstr,
-            other => return Err(syn::Error::new_spanned(other, "expected string literal")),
-        };
-        fixtures_local.push(litstr);
-    }
+
+    fixtures_local.extend(list);
     Ok(())
 }
 

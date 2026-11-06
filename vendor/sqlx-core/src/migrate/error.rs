@@ -6,6 +6,9 @@ pub enum MigrateError {
     #[error("while executing migrations: {0}")]
     Execute(#[from] Error),
 
+    #[error("while executing migration {1}: {0}")]
+    ExecuteMigration(#[source] Error, i64),
+
     #[error("while resolving migrations: {0}")]
     Source(#[source] BoxDynError),
 
@@ -36,4 +39,10 @@ pub enum MigrateError {
         "migration {0} is partially applied; fix and remove row from `_sqlx_migrations` table"
     )]
     Dirty(i64),
+
+    #[error("database driver does not support creation of schemas at migrate time: {0}")]
+    CreateSchemasNotSupported(String),
+
+    #[error("database driver does not support skipping migrations")]
+    SkipNotSupported(),
 }

@@ -17,7 +17,10 @@ mod tests;
 
 pub mod raw;
 
-pub use self::functions::{copy_decode, copy_encode, decode_all, encode_all};
+pub use self::functions::{
+    compress_file, compress_file_into, compress_sized, compress_sized_into,
+    copy_decode, copy_encode, decode_all, decompressed_size, encode_all,
+};
 pub use self::read::Decoder;
 pub use self::write::{AutoFinishEncoder, Encoder};
 
@@ -143,6 +146,22 @@ macro_rules! encoder_parameters {
                     long_distance_matching,
                 ),
             )
+        }
+
+        /// Sets the target size for compressed blocks.
+        ///
+        /// A lower block size may result in slightly lower speed (~2%) and compression ratio
+        /// (~0.1%), but may decrease end-to-end latency in low-bandwidth environments (time to
+        /// first decompressed byte).
+        ///
+        /// No value, or a value of zero, results in no constraint for the block sizes.
+        pub fn set_target_cblock_size(
+            &mut self,
+            target_size: Option<u32>,
+        ) -> io::Result<()> {
+            self.set_parameter(zstd_safe::CParameter::TargetCBlockSize(
+                target_size.unwrap_or(0),
+            ))
         }
 
         /// Sets the maximum back-reference distance.

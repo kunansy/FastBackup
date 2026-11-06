@@ -18,7 +18,7 @@ use crate::prelude::*;
 /// This cannot work, since there is no way to tell the `Vec` to skip the inner `DoubleOption` if it is `None`.
 ///
 /// ```rust
-/// # #[cfg(FALSE)] {
+/// # #[cfg(false)] {
 /// # struct Foobar {
 /// #[serde_as(as = "Vec<DoubleOption<_>>")]
 /// data: Vec<Option<Option<i32>>>,
@@ -115,8 +115,7 @@ pub mod double_option {
 /// }
 ///
 /// // Transparently add/remove Some() wrapper
-/// # let pretty_config = ron::ser::PrettyConfig::new()
-/// #     .new_line("\n".into());
+/// # let pretty_config = ron::ser::PrettyConfig::new().new_line("\n");
 /// let s = r#"(
 ///     mandatory: 1,
 ///     optional: 2,
@@ -130,8 +129,7 @@ pub mod double_option {
 ///
 /// // Missing values are deserialized as `None`
 /// // while `None` values are skipped during serialization.
-/// # let pretty_config = ron::ser::PrettyConfig::new()
-/// #     .new_line("\n".into());
+/// # let pretty_config = ron::ser::PrettyConfig::new().new_line("\n");
 /// let s = r#"(
 ///     mandatory: 1,
 /// )"#;
@@ -149,7 +147,7 @@ pub mod unwrap_or_skip {
     pub fn deserialize<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
     where
         D: Deserializer<'de>,
-        T: DeserializeOwned,
+        T: Deserialize<'de>,
     {
         T::deserialize(deserializer).map(Some)
     }
@@ -178,13 +176,13 @@ pub mod unwrap_or_skip {
 ///
 /// The implementation supports both the [`HashSet`] and the [`BTreeSet`] from the standard library.
 ///
-/// # Converting to serde_as
+/// # Converting to `serde_as`
 ///
 /// The same functionality can be more clearly expressed using the `serde_as` macro and [`SetPreventDuplicates`].
 /// The `_` is a placeholder which works for any type which implements [`Serialize`]/[`Deserialize`].
 ///
 /// ```rust
-/// # #[cfg(FALSE)] {
+/// # #[cfg(false)] {
 /// #[serde_as]
 /// #[derive(Deserialize, Serialize)]
 /// struct A {
@@ -195,25 +193,26 @@ pub mod unwrap_or_skip {
 /// ```
 ///
 /// [`HashSet`]: std::collections::HashSet
-/// [`BTreeSet`]: std::collections::HashSet
+/// [`BTreeSet`]: std::collections::BTreeSet
 ///
 /// # Example
 ///
 /// ```rust
-/// # use std::collections::HashSet;
+/// # extern crate alloc;
+/// # use alloc::collections::BTreeSet;
 /// # use serde::Deserialize;
 /// #
 /// # #[derive(Debug, Eq, PartialEq)]
 /// #[derive(Deserialize)]
 /// struct Doc {
 ///     #[serde(with = "::serde_with::rust::sets_duplicate_value_is_error")]
-///     set: HashSet<usize>,
+///     set: BTreeSet<usize>,
 /// }
 ///
 /// // Sets are serialized normally,
 /// let s = r#"{"set": [1, 2, 3, 4]}"#;
 /// let v = Doc {
-///     set: HashSet::from_iter(vec![1, 2, 3, 4]),
+///     set: BTreeSet::from_iter(vec![1, 2, 3, 4]),
 /// };
 /// assert_eq!(v, serde_json::from_str(s).unwrap());
 ///
@@ -294,13 +293,13 @@ pub mod sets_duplicate_value_is_error {
 ///
 /// The implementation supports both the [`HashMap`] and the [`BTreeMap`] from the standard library.
 ///
-/// # Converting to serde_as
+/// # Converting to `serde_as`
 ///
 /// The same functionality can be more clearly expressed using the `serde_as` macro and [`MapPreventDuplicates`].
 /// The `_` is a placeholder which works for any type which implements [`Serialize`]/[`Deserialize`].
 ///
 /// ```rust
-/// # #[cfg(FALSE)] {
+/// # #[cfg(false)] {
 /// #[serde_as]
 /// #[derive(Deserialize, Serialize)]
 /// struct A {
@@ -311,25 +310,26 @@ pub mod sets_duplicate_value_is_error {
 /// ```
 ///
 /// [`HashMap`]: std::collections::HashMap
-/// [`BTreeMap`]: std::collections::HashMap
+/// [`BTreeMap`]: std::collections::BTreeMap
 ///
 /// # Example
 ///
 /// ```rust
+/// # extern crate alloc;
 /// # use serde::Deserialize;
-/// # use std::collections::HashMap;
+/// # use alloc::collections::BTreeMap;
 /// #
 /// # #[derive(Debug, Eq, PartialEq)]
 /// #[derive(Deserialize)]
 /// struct Doc {
 ///     #[serde(with = "::serde_with::rust::maps_duplicate_key_is_error")]
-///     map: HashMap<usize, usize>,
+///     map: BTreeMap<usize, usize>,
 /// }
 ///
 /// // Maps are serialized normally,
 /// let s = r#"{"map": {"1": 1, "2": 2, "3": 3}}"#;
 /// let mut v = Doc {
-///     map: HashMap::new(),
+///     map: BTreeMap::new(),
 /// };
 /// v.map.insert(1, 1);
 /// v.map.insert(2, 2);
@@ -414,13 +414,13 @@ pub mod maps_duplicate_key_is_error {
 ///
 /// The implementation supports both the [`HashSet`] and the [`BTreeSet`] from the standard library.
 ///
-/// # Converting to serde_as
+/// # Converting to `serde_as`
 ///
 /// The same functionality can be more clearly expressed using the `serde_as` macro and [`SetLastValueWins`].
 /// The `_` is a placeholder which works for any type which implements [`Serialize`]/[`Deserialize`].
 ///
 /// ```rust
-/// # #[cfg(FALSE)] {
+/// # #[cfg(false)] {
 /// #[serde_as]
 /// #[derive(Deserialize, Serialize)]
 /// struct A {
@@ -431,7 +431,7 @@ pub mod maps_duplicate_key_is_error {
 /// ```
 ///
 /// [`HashSet`]: std::collections::HashSet
-/// [`BTreeSet`]: std::collections::HashSet
+/// [`BTreeSet`]: std::collections::BTreeSet
 #[cfg(feature = "alloc")]
 pub mod sets_last_value_wins {
     use super::*;
@@ -500,15 +500,15 @@ pub mod sets_last_value_wins {
 /// The implementation supports both the [`HashMap`] and the [`BTreeMap`] from the standard library.
 ///
 /// [`HashMap`]: std::collections::HashMap
-/// [`BTreeMap`]: std::collections::HashMap
+/// [`BTreeMap`]: std::collections::BTreeMap
 ///
-/// # Converting to serde_as
+/// # Converting to `serde_as`
 ///
 /// The same functionality can be more clearly expressed using the `serde_as` macro and [`MapFirstKeyWins`].
 /// The `_` is a placeholder which works for any type which implements [`Serialize`]/[`Deserialize`].
 ///
 /// ```rust
-/// # #[cfg(FALSE)] {
+/// # #[cfg(false)] {
 /// #[serde_as]
 /// #[derive(Deserialize, Serialize)]
 /// struct A {
@@ -521,20 +521,21 @@ pub mod sets_last_value_wins {
 /// # Example
 ///
 /// ```rust
+/// # extern crate alloc;
 /// # use serde::Deserialize;
-/// # use std::collections::HashMap;
+/// # use alloc::collections::BTreeMap;
 /// #
 /// # #[derive(Debug, Eq, PartialEq)]
 /// #[derive(Deserialize)]
 /// struct Doc {
 ///     #[serde(with = "::serde_with::rust::maps_first_key_wins")]
-///     map: HashMap<usize, usize>,
+///     map: BTreeMap<usize, usize>,
 /// }
 ///
 /// // Maps are serialized normally,
 /// let s = r#"{"map": {"1": 1, "2": 2, "3": 3}}"#;
 /// let mut v = Doc {
-///     map: HashMap::new(),
+///     map: BTreeMap::new(),
 /// };
 /// v.map.insert(1, 1);
 /// v.map.insert(2, 2);
@@ -544,7 +545,7 @@ pub mod sets_last_value_wins {
 /// // but create an error if duplicate keys, like the `1`, exist.
 /// let s = r#"{"map": {"1": 1, "2": 2, "1": 3}}"#;
 /// let mut v = Doc {
-///     map: HashMap::new(),
+///     map: BTreeMap::new(),
 /// };
 /// v.map.insert(1, 1);
 /// v.map.insert(2, 2);
@@ -620,7 +621,7 @@ pub mod maps_first_key_wins {
 ///
 /// 1. It is useful for instance to create an enum with a catch-all variant that will accept any incoming data.
 /// 2. [`untagged`] enum representations do not allow the `other` annotation as the fallback enum variant.
-///     With this function you can emulate an `other` variant, which can deserialize any data carrying enum.
+///    With this function you can emulate an `other` variant, which can deserialize any data carrying enum.
 ///
 /// **Note:** Using this function will prevent deserializing data-less enum variants.
 /// If this is a problem depends on the data format.
@@ -642,6 +643,12 @@ pub mod maps_first_key_wins {
 ///
 /// # #[derive(Debug, PartialEq)]
 /// #[derive(Deserialize)]
+/// struct Root {
+///     values: Vec<Item>,
+/// }
+///
+/// # #[derive(Debug, PartialEq)]
+/// #[derive(Deserialize)]
 /// #[serde(rename_all = "lowercase")]
 /// enum Item {
 ///     Foo(String),
@@ -651,23 +658,34 @@ pub mod maps_first_key_wins {
 /// }
 ///
 /// // Deserialize this XML
-/// # let items: Vec<Item> = serde_xml_rs::from_str(
-/// r"
-/// <foo>a</foo>
-/// <bar>b</bar>
-/// <foo>c</foo>
-/// <unknown>d</unknown>
-/// "
+/// # let items: Root = serde_xml_rs::from_str(
+/// r#"<?xml version="1.0" encoding="UTF-8"?>
+/// <Root>
+///     <values>
+///         <foo>a</foo>
+///     </values>
+///     <values>
+///         <bar>b</bar>
+///     </values>
+///     <values>
+///         <foo>c</foo>
+///     </values>
+///     <values>
+///         <unknown>d</unknown>
+///     </values>
+/// </Root>"#
 /// # ).unwrap();
 ///
 /// // into these Items
 /// # let expected =
-/// vec![
-///     Item::Foo(String::from("a")),
-///     Item::Bar(String::from("b")),
-///     Item::Foo(String::from("c")),
-///     Item::Other,
-/// ]
+/// Root {
+///     values: vec![
+///         Item::Foo(String::from("a")),
+///         Item::Bar(String::from("b")),
+///         Item::Foo(String::from("c")),
+///         Item::Other,
+///     ]
+/// }
 /// # ;
 /// # assert_eq!(expected, items);
 /// ```
@@ -708,5 +726,5 @@ pub mod maps_first_key_wins {
 pub fn deserialize_ignore_any<'de, D: Deserializer<'de>, T: Default>(
     deserializer: D,
 ) -> Result<T, D::Error> {
-    serde::de::IgnoredAny::deserialize(deserializer).map(|_| T::default())
+    IgnoredAny::deserialize(deserializer).map(|_| T::default())
 }

@@ -1,30 +1,31 @@
-use std::borrow::Cow;
-
 use crate::any::{Any, AnyTypeInfo, AnyTypeInfoKind};
-use crate::database::{Database, HasValueRef};
+use crate::database::Database;
 use crate::error::BoxDynError;
 use crate::types::Type;
 use crate::value::{Value, ValueRef};
+use std::borrow::Cow;
+use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 #[non_exhaustive]
-pub enum AnyValueKind<'a> {
-    Null,
+pub enum AnyValueKind {
+    Null(AnyTypeInfoKind),
     Bool(bool),
     SmallInt(i16),
     Integer(i32),
     BigInt(i64),
     Real(f32),
     Double(f64),
-    Text(Cow<'a, str>),
-    Blob(Cow<'a, [u8]>),
+    Text(Arc<String>),
+    TextSlice(Arc<str>),
+    Blob(Arc<Vec<u8>>),
 }
 
-impl AnyValueKind<'_> {
+impl AnyValueKind {
     fn type_info(&self) -> AnyTypeInfo {
         AnyTypeInfo {
             kind: match self {
-                AnyValueKind::Null => AnyTypeInfoKind::Null,
+                AnyValueKind::Null(_) => AnyTypeInfoKind::Null,
                 AnyValueKind::Bool(_) => AnyTypeInfoKind::Bool,
                 AnyValueKind::SmallInt(_) => AnyTypeInfoKind::SmallInt,
                 AnyValueKind::Integer(_) => AnyTypeInfoKind::Integer,
@@ -32,6 +33,7 @@ impl AnyValueKind<'_> {
                 AnyValueKind::Real(_) => AnyTypeInfoKind::Real,
                 AnyValueKind::Double(_) => AnyTypeInfoKind::Double,
                 AnyValueKind::Text(_) => AnyTypeInfoKind::Text,
+                AnyValueKind::TextSlice(_) => AnyTypeInfoKind::Text,
                 AnyValueKind::Blob(_) => AnyTypeInfoKind::Blob,
             },
         }
@@ -60,31 +62,19 @@ impl AnyValueKind<'_> {
 #[derive(Clone, Debug)]
 pub struct AnyValue {
     #[doc(hidden)]
-    pub kind: AnyValueKind<'static>,
+    pub kind: AnyValueKind,
 }
 
 #[derive(Clone, Debug)]
 pub struct AnyValueRef<'a> {
-    pub(crate) kind: AnyValueKind<'a>,
+    pub(crate) kind: &'a AnyValueKind,
 }
 
 impl Value for AnyValue {
     type Database = Any;
 
-    fn as_ref(&self) -> <Self::Database as HasValueRef<'_>>::ValueRef {
-        AnyValueRef {
-            kind: match &self.kind {
-                AnyValueKind::Null => AnyValueKind::Null,
-                AnyValueKind::Bool(b) => AnyValueKind::Bool(*b),
-                AnyValueKind::SmallInt(i) => AnyValueKind::SmallInt(*i),
-                AnyValueKind::Integer(i) => AnyValueKind::Integer(*i),
-                AnyValueKind::BigInt(i) => AnyValueKind::BigInt(*i),
-                AnyValueKind::Real(r) => AnyValueKind::Real(*r),
-                AnyValueKind::Double(d) => AnyValueKind::Double(*d),
-                AnyValueKind::Text(t) => AnyValueKind::Text(Cow::Borrowed(t)),
-                AnyValueKind::Blob(b) => AnyValueKind::Blob(Cow::Borrowed(b)),
-            },
-        }
+    fn as_ref(&self) -> <Self::Database as Database>::ValueRef<'_> {
+        AnyValueRef { kind: &self.kind }
     }
 
     fn type_info(&self) -> Cow<'_, <Self::Database as Database>::TypeInfo> {
@@ -92,7 +82,7 @@ impl Value for AnyValue {
     }
 
     fn is_null(&self) -> bool {
-        false
+        matches!(self.kind, AnyValueKind::Null(_))
     }
 }
 
@@ -101,17 +91,7 @@ impl<'a> ValueRef<'a> for AnyValueRef<'a> {
 
     fn to_owned(&self) -> <Self::Database as Database>::Value {
         AnyValue {
-            kind: match &self.kind {
-                AnyValueKind::Null => AnyValueKind::Null,
-                AnyValueKind::Bool(b) => AnyValueKind::Bool(*b),
-                AnyValueKind::SmallInt(i) => AnyValueKind::SmallInt(*i),
-                AnyValueKind::Integer(i) => AnyValueKind::Integer(*i),
-                AnyValueKind::BigInt(i) => AnyValueKind::BigInt(*i),
-                AnyValueKind::Real(r) => AnyValueKind::Real(*r),
-                AnyValueKind::Double(d) => AnyValueKind::Double(*d),
-                AnyValueKind::Text(t) => AnyValueKind::Text(Cow::Owned(t.to_string())),
-                AnyValueKind::Blob(b) => AnyValueKind::Blob(Cow::Owned(b.to_vec())),
-            },
+            kind: self.kind.clone(),
         }
     }
 
@@ -120,6 +100,6 @@ impl<'a> ValueRef<'a> for AnyValueRef<'a> {
     }
 
     fn is_null(&self) -> bool {
-        false
+        matches!(self.kind, AnyValueKind::Null(_))
     }
 }

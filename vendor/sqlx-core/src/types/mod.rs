@@ -16,9 +16,13 @@
 //!
 //! To represent nullable SQL types, `Option<T>` is supported where `T` implements `Type`.
 //! An `Option<T>` represents a potentially `NULL` value from SQL.
-//!
+
+use std::{borrow::Cow, rc::Rc, sync::Arc};
 
 use crate::database::Database;
+use crate::type_info::TypeInfo;
+
+mod non_zero;
 
 #[cfg(feature = "bstr")]
 #[cfg_attr(docsrs, doc(cfg(feature = "bstr")))]
@@ -60,11 +64,17 @@ pub mod time {
 #[cfg_attr(docsrs, doc(cfg(feature = "bigdecimal")))]
 #[doc(no_inline)]
 pub use bigdecimal::BigDecimal;
-
 #[cfg(feature = "rust_decimal")]
 #[cfg_attr(docsrs, doc(cfg(feature = "rust_decimal")))]
 #[doc(no_inline)]
 pub use rust_decimal::Decimal;
+
+#[cfg(feature = "ipnet")]
+#[cfg_attr(docsrs, doc(cfg(feature = "ipnet")))]
+pub mod ipnet {
+    #[doc(no_inline)]
+    pub use ipnet::{IpNet, Ipv4Net, Ipv6Net};
+}
 
 #[cfg(feature = "ipnetwork")]
 #[cfg_attr(docsrs, doc(cfg(feature = "ipnetwork")))]
@@ -82,15 +92,20 @@ pub mod mac_address {
 
 #[cfg(feature = "json")]
 pub use json::{Json, JsonRawValue, JsonValue};
-
 pub use text::Text;
+
+#[cfg(feature = "bstr")]
+pub use bstr::{BStr, BString};
 
 /// Indicates that a SQL type is supported for a database.
 ///
 /// ## Compile-time verification
 ///
-/// With compile-time verification, the use of type overrides is currently required to make
-/// use of any user-defined types.
+/// Type definitions are *not* verified against the database at compile-time.
+/// The [`query!()`](macro.query.html) macros have no implicit knowledge of user-defined types.
+///
+/// When using custom types in query parameters or output columns with `query!()`,
+/// the use of [type overrides](macro.query.html#type-overrides-bind-parameters-postgres-only) is required.
 ///
 /// ```rust,ignore
 /// struct MyUser { id: UserId, name: String }
@@ -193,7 +208,6 @@ pub use text::Text;
 ///     price: f64
 /// }
 /// ```
-///
 pub trait Type<DB: Database> {
     /// Returns the canonical SQL type for this Rust type.
     ///
@@ -211,8 +225,10 @@ pub trait Type<DB: Database> {
     ///
     /// When binding arguments with `query!` or `query_as!`, this method is consulted to determine
     /// if the Rust type is acceptable.
+    ///
+    /// Defaults to checking [`TypeInfo::type_compatible()`].
     fn compatible(ty: &DB::TypeInfo) -> bool {
-        *ty == Self::type_info()
+        Self::type_info().type_compatible(ty)
     }
 }
 
@@ -229,6 +245,41 @@ impl<T: ?Sized + Type<DB>, DB: Database> Type<DB> for &'_ T {
 
 // for optionals, the underlying SQL type is identical
 impl<T: Type<DB>, DB: Database> Type<DB> for Option<T> {
+    fn type_info() -> DB::TypeInfo {
+        <T as Type<DB>>::type_info()
+    }
+
+    fn compatible(ty: &DB::TypeInfo) -> bool {
+        ty.is_null() || <T as Type<DB>>::compatible(ty)
+    }
+}
+
+macro_rules! impl_type_for_smartpointer {
+    ($smart_pointer:ty) => {
+        impl<T, DB: Database> Type<DB> for $smart_pointer
+        where
+            T: Type<DB> + ?Sized,
+        {
+            fn type_info() -> DB::TypeInfo {
+                <T as Type<DB>>::type_info()
+            }
+
+            fn compatible(ty: &DB::TypeInfo) -> bool {
+                <T as Type<DB>>::compatible(ty)
+            }
+        }
+    };
+}
+
+impl_type_for_smartpointer!(Arc<T>);
+impl_type_for_smartpointer!(Box<T>);
+impl_type_for_smartpointer!(Rc<T>);
+
+impl<T, DB: Database> Type<DB> for Cow<'_, T>
+where
+    // `ToOwned` is required here to satisfy `Cow`
+    T: Type<DB> + ToOwned + ?Sized,
+{
     fn type_info() -> DB::TypeInfo {
         <T as Type<DB>>::type_info()
     }

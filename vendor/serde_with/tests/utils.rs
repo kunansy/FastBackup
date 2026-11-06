@@ -1,4 +1,4 @@
-#![allow(dead_code)]
+#![allow(dead_code, missing_docs)]
 
 use core::fmt::Debug;
 use expect_test::Expect;
@@ -75,5 +75,5 @@ where
         &serde_json::from_str::<T>(deserialize_from)
             .unwrap_err()
             .to_string(),
-    )
+    );
 }

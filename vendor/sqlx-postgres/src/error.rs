@@ -3,10 +3,10 @@ use std::fmt::{self, Debug, Display, Formatter};
 
 use atoi::atoi;
 use smallvec::alloc::borrow::Cow;
-
+use sqlx_core::bytes::Bytes;
 pub(crate) use sqlx_core::error::*;
 
-use crate::message::{Notice, PgSeverity};
+use crate::message::{BackendMessage, BackendMessageFormat, Notice, PgSeverity};
 
 /// An error returned from the PostgreSQL database.
 pub struct PgDatabaseError(pub(crate) Notice);
@@ -156,7 +156,11 @@ impl Debug for PgDatabaseError {
 
 impl Display for PgDatabaseError {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.write_str(self.message())
+        f.write_str(self.message())?;
+        if let Some(line) = self.line() {
+            write!(f, " at line {line}")?;
+        }
+        Ok(())
     }
 }
 
@@ -214,8 +218,19 @@ impl DatabaseError for PgDatabaseError {
             error_codes::FOREIGN_KEY_VIOLATION => ErrorKind::ForeignKeyViolation,
             error_codes::NOT_NULL_VIOLATION => ErrorKind::NotNullViolation,
             error_codes::CHECK_VIOLATION => ErrorKind::CheckViolation,
+            error_codes::EXCLUSION_VIOLATION => ErrorKind::ExclusionViolation,
             _ => ErrorKind::Other,
         }
+    }
+}
+
+// ErrorResponse is the same structure as NoticeResponse but a different format code.
+impl BackendMessage for PgDatabaseError {
+    const FORMAT: BackendMessageFormat = BackendMessageFormat::ErrorResponse;
+
+    #[inline(always)]
+    fn decode_body(buf: Bytes) -> std::result::Result<Self, Error> {
+        Ok(Self(Notice::decode_body(buf)?))
     }
 }
 
@@ -229,4 +244,6 @@ pub(crate) mod error_codes {
     pub const NOT_NULL_VIOLATION: &str = "23502";
     /// Caused when a check constraint is violated.
     pub const CHECK_VIOLATION: &str = "23514";
+    /// Caused when a exclude constraint is violated.
+    pub const EXCLUSION_VIOLATION: &str = "23P01";
 }

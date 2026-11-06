@@ -1,13 +1,19 @@
-#[cfg(feature = "async")]
+#[cfg(all(feature = "async", not(target_os = "unknown")))]
 use {
-    flume::*,
-    futures::{stream::FuturesUnordered, StreamExt, TryFutureExt, Future},
-    futures::task::{Context, Waker, Poll},
     async_std::prelude::FutureExt,
-    std::{time::Duration, sync::{atomic::{AtomicUsize, Ordering}, Arc}},
+    flume::*,
+    futures::task::{Context, Poll, Waker},
+    futures::{stream::FuturesUnordered, Future, StreamExt, TryFutureExt},
+    std::{
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        },
+        time::Duration,
+    },
 };
 
-#[cfg(feature = "async")]
+#[cfg(all(feature = "async", not(target_os = "unknown")))]
 #[test]
 fn r#async_recv() {
     let (tx, rx) = unbounded();
@@ -24,7 +30,7 @@ fn r#async_recv() {
     t.join().unwrap();
 }
 
-#[cfg(feature = "async")]
+#[cfg(all(feature = "async", not(target_os = "unknown")))]
 #[test]
 fn r#async_send() {
     let (tx, rx) = bounded(1);
@@ -41,7 +47,7 @@ fn r#async_send() {
     t.join().unwrap();
 }
 
-#[cfg(feature = "async")]
+#[cfg(all(feature = "async", not(target_os = "unknown")))]
 #[test]
 fn r#async_recv_disconnect() {
     let (tx, rx) = bounded::<i32>(0);
@@ -58,7 +64,7 @@ fn r#async_recv_disconnect() {
     t.join().unwrap();
 }
 
-#[cfg(feature = "async")]
+#[cfg(all(feature = "async", not(target_os = "unknown")))]
 #[test]
 fn r#async_send_disconnect() {
     let (tx, rx) = bounded(0);
@@ -75,7 +81,7 @@ fn r#async_send_disconnect() {
     t.join().unwrap();
 }
 
-#[cfg(feature = "async")]
+#[cfg(all(feature = "async", not(target_os = "unknown")))]
 #[test]
 fn r#async_recv_drop_recv() {
     let (tx, rx) = bounded::<i32>(10);
@@ -83,16 +89,14 @@ fn r#async_recv_drop_recv() {
     let recv_fut = rx.recv_async();
 
     async_std::task::block_on(async {
-        let res = async_std::future::timeout(std::time::Duration::from_millis(500), rx.recv_async()).await;
+        let res =
+            async_std::future::timeout(std::time::Duration::from_millis(500), rx.recv_async())
+                .await;
         assert!(res.is_err());
     });
 
     let rx2 = rx.clone();
-    let t = std::thread::spawn(move || {
-        async_std::task::block_on(async {
-            rx2.recv_async().await
-        })
-    });
+    let t = std::thread::spawn(move || async_std::task::block_on(async { rx2.recv_async().await }));
 
     std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -103,14 +107,12 @@ fn r#async_recv_drop_recv() {
     assert_eq!(t.join().unwrap(), Ok(42))
 }
 
-#[cfg(feature = "async")]
+#[cfg(all(feature = "async", not(target_os = "unknown")))]
 #[async_std::test]
 async fn r#async_send_1_million_no_drop_or_reorder() {
     #[derive(Debug)]
     enum Message {
-        Increment {
-            old: u64,
-        },
+        Increment { old: u64 },
         ReturnCount,
     }
 
@@ -137,7 +139,7 @@ async fn r#async_send_1_million_no_drop_or_reorder() {
     assert_eq!(count, 1_000_000)
 }
 
-#[cfg(feature = "async")]
+#[cfg(all(feature = "async", not(target_os = "unknown")))]
 #[async_std::test]
 async fn parallel_async_receivers() {
     let (tx, rx) = flume::unbounded();
@@ -151,7 +153,7 @@ async fn parallel_async_receivers() {
     async_std::task::spawn(
         send_fut
             .timeout(Duration::from_secs(5))
-            .map_err(|_| panic!("Send timed out!"))
+            .map_err(|_| panic!("Send timed out!")),
     );
 
     let mut futures_unordered = (0..250)
@@ -162,9 +164,7 @@ async fn parallel_async_receivers() {
         })
         .collect::<FuturesUnordered<_>>();
 
-    let recv_fut = async {
-        while futures_unordered.next().await.is_some() {}
-    };
+    let recv_fut = async { while futures_unordered.next().await.is_some() {} };
 
     recv_fut
         .timeout(Duration::from_secs(5))
@@ -175,7 +175,7 @@ async fn parallel_async_receivers() {
     println!("recv end");
 }
 
-#[cfg(feature = "async")]
+#[cfg(all(feature = "async", not(target_os = "unknown")))]
 #[test]
 fn change_waker() {
     let (tx, rx) = flume::bounded(1);
@@ -197,7 +197,7 @@ fn change_waker() {
             self.0.load(Ordering::SeqCst)
         }
 
-        fn ctx(&self) -> Context {
+        fn ctx(&self) -> Context<'_> {
             Context::from_waker(&self.1)
         }
     }
@@ -246,15 +246,15 @@ fn change_waker() {
     }
 }
 
-#[cfg(feature = "async")]
+#[cfg(all(feature = "async", not(target_os = "unknown")))]
 #[test]
 fn spsc_single_threaded_value_ordering() {
     async fn test() {
         let (tx, rx) = flume::bounded(4);
         tokio::select! {
-        _ = producer(tx) => {},
-        _ = consumer(rx) => {},
-    }
+            _ = producer(tx) => {},
+            _ = consumer(rx) => {},
+        }
     }
 
     async fn producer(tx: flume::Sender<usize>) {
@@ -271,6 +271,8 @@ fn spsc_single_threaded_value_ordering() {
         }
     }
 
-    let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
     rt.block_on(test());
 }

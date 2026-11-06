@@ -107,12 +107,10 @@ pub(crate) struct ScheduledIo {
     waiters: Mutex<Waiters>,
 }
 
-type WaitList = LinkedList<Waiter, <Waiter as linked_list::Link>::Target>;
-
 #[derive(Debug, Default)]
 struct Waiters {
     /// List of all current waiters.
-    list: WaitList,
+    list: LinkedList<Waiter>,
 
     /// Waker used for `AsyncRead`.
     reader: Option<Waker>,
@@ -133,7 +131,7 @@ struct Waiter {
 
     is_ready: bool,
 
-    /// Should never be `!Unpin`.
+    /// Should never be `Unpin`.
     _p: PhantomPinned,
 }
 
@@ -165,7 +163,7 @@ enum State {
 //
 // | shutdown | driver tick | readiness |
 // |----------+-------------+-----------|
-// |   1 bit  |  15 bits    +   16 bits |
+// |   1 bit  |   15 bits   |  16 bits  |
 
 const READINESS: bit::Pack = bit::Pack::least_significant(16);
 
@@ -186,9 +184,19 @@ impl Default for ScheduledIo {
 }
 
 impl ScheduledIo {
+    /// Marks the resource ready in the given directions without an event from
+    /// the driver. Readiness may have false positives; an operation that finds
+    /// the resource not ready clears it as usual. Leaves the tick alone and
+    /// does nothing after shutdown.
+    pub(super) fn assume_ready(&self, ready: Ready) {
+        let _ = self.readiness.fetch_update(AcqRel, Acquire, |curr| {
+            (SHUTDOWN.unpack(curr) == 0)
+                .then(|| READINESS.pack(READINESS.unpack(curr) | ready.as_usize(), curr))
+        });
+    }
+
     pub(crate) fn token(&self) -> mio::Token {
-        // use `expose_addr` when stable
-        mio::Token(self as *const _ as usize)
+        mio::Token(super::EXPOSE_IO.expose_provenance(self))
     }
 
     /// Invoked when the IO driver is shut down; forces this `ScheduledIo` into a
@@ -203,47 +211,31 @@ impl ScheduledIo {
     /// the current value, returning the previous readiness value.
     ///
     /// # Arguments
-    /// - `tick`: whether setting the tick or trying to clear readiness for a
-    ///    specific tick.
+    /// - `tick_op`: whether setting the tick or trying to clear readiness for a
+    ///   specific tick.
     /// - `f`: a closure returning a new readiness value given the previous
     ///   readiness.
-    pub(super) fn set_readiness(&self, tick: Tick, f: impl Fn(Ready) -> Ready) {
-        let mut current = self.readiness.load(Acquire);
+    pub(super) fn set_readiness(&self, tick_op: Tick, f: impl Fn(Ready) -> Ready) {
+        let _ = self.readiness.fetch_update(AcqRel, Acquire, |curr| {
+            // If the io driver is shut down, then you are only allowed to clear readiness.
+            debug_assert!(SHUTDOWN.unpack(curr) == 0 || matches!(tick_op, Tick::Clear(_)));
 
-        // If the io driver is shut down, then you are only allowed to clear readiness.
-        debug_assert!(SHUTDOWN.unpack(current) == 0 || matches!(tick, Tick::Clear(_)));
+            const MAX_TICK: usize = TICK.max_value() + 1;
+            let tick = TICK.unpack(curr);
 
-        loop {
-            // Mask out the tick bits so that the modifying function doesn't see
-            // them.
-            let current_readiness = Ready::from_usize(current);
-            let new = f(current_readiness);
-
-            let new_tick = match tick {
-                Tick::Set => {
-                    let current = TICK.unpack(current);
-                    current.wrapping_add(1) % (TICK.max_value() + 1)
-                }
-                Tick::Clear(t) => {
-                    if TICK.unpack(current) as u8 != t {
-                        // Trying to clear readiness with an old event!
-                        return;
-                    }
-
-                    t as usize
-                }
+            let new_tick = match tick_op {
+                // Trying to clear readiness with an old event!
+                Tick::Clear(t) if tick != usize::from(t) => return None,
+                Tick::Clear(t) => usize::from(t),
+                Tick::Set => tick.wrapping_add(1) % MAX_TICK,
             };
-            let next = TICK.pack(new_tick, new.as_usize());
-
-            match self
-                .readiness
-                .compare_exchange(current, next, AcqRel, Acquire)
-            {
-                Ok(_) => return,
-                // we lost the race, retry!
-                Err(actual) => current = actual,
-            }
-        }
+            let ready = Ready::from_usize(READINESS.unpack(curr));
+            // Keep the shutdown bit, so that a clear after shutdown (a
+            // `WouldBlock` observed once the driver is gone) does not turn the
+            // next wait into a wait for an event that will never come.
+            let next = TICK.pack(new_tick, f(ready).as_usize());
+            Some(SHUTDOWN.pack(SHUTDOWN.unpack(curr), next))
+        });
     }
 
     /// Notifies all pending waiters that have registered interest in `ready`.
@@ -312,7 +304,7 @@ impl ScheduledIo {
         let curr = self.readiness.load(Acquire);
 
         ReadyEvent {
-            tick: TICK.unpack(curr) as u8,
+            tick: TICK.unpack(curr) as u16,
             ready: interest.mask() & Ready::from_usize(READINESS.unpack(curr)),
             is_shutdown: SHUTDOWN.unpack(curr) != 0,
         }
@@ -336,22 +328,16 @@ impl ScheduledIo {
         if ready.is_empty() && !is_shutdown {
             // Update the task info
             let mut waiters = self.waiters.lock();
-            let slot = match direction {
+            let waker = match direction {
                 Direction::Read => &mut waiters.reader,
                 Direction::Write => &mut waiters.writer,
             };
 
             // Avoid cloning the waker if one is already stored that matches the
             // current task.
-            match slot {
-                Some(existing) => {
-                    if !existing.will_wake(cx.waker()) {
-                        *existing = cx.waker().clone();
-                    }
-                }
-                None => {
-                    *slot = Some(cx.waker().clone());
-                }
+            match waker {
+                Some(waker) => waker.clone_from(cx.waker()),
+                None => *waker = Some(cx.waker().clone()),
             }
 
             // Try again, in case the readiness was changed while we were
@@ -361,7 +347,7 @@ impl ScheduledIo {
             let is_shutdown = SHUTDOWN.unpack(curr) != 0;
             if is_shutdown {
                 Poll::Ready(ReadyEvent {
-                    tick: TICK.unpack(curr) as u8,
+                    tick: TICK.unpack(curr) as u16,
                     ready: direction.mask(),
                     is_shutdown,
                 })
@@ -369,14 +355,14 @@ impl ScheduledIo {
                 Poll::Pending
             } else {
                 Poll::Ready(ReadyEvent {
-                    tick: TICK.unpack(curr) as u8,
+                    tick: TICK.unpack(curr) as u16,
                     ready,
                     is_shutdown,
                 })
             }
         } else {
             Poll::Ready(ReadyEvent {
-                tick: TICK.unpack(curr) as u8,
+                tick: TICK.unpack(curr) as u16,
                 ready,
                 is_shutdown,
             })
@@ -444,7 +430,7 @@ unsafe impl linked_list::Link for Waiter {
     }
 
     unsafe fn pointers(target: NonNull<Waiter>) -> NonNull<linked_list::Pointers<Waiter>> {
-        Waiter::addr_of_pointers(target)
+        unsafe { Waiter::addr_of_pointers(target) }
     }
 }
 
@@ -456,9 +442,16 @@ impl Future for Readiness<'_> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         use std::sync::atomic::Ordering::SeqCst;
 
-        let (scheduled_io, state, waiter) = unsafe {
-            let me = self.get_unchecked_mut();
-            (&me.scheduled_io, &mut me.state, &me.waiter)
+        let (scheduled_io, state, waiter) = {
+            // Safety: `Self` is `!Unpin`
+            //
+            // While we could use `pin_project!` to remove
+            // this unsafe block, there are already unsafe blocks here,
+            // so it wouldn't significantly ease the mental burden
+            // and would actually complicate the code.
+            // That's why we didn't use it.
+            let me = unsafe { self.get_unchecked_mut() };
+            (me.scheduled_io, &mut me.state, &me.waiter)
         };
 
         loop {
@@ -466,16 +459,15 @@ impl Future for Readiness<'_> {
                 State::Init => {
                     // Optimistically check existing readiness
                     let curr = scheduled_io.readiness.load(SeqCst);
-                    let ready = Ready::from_usize(READINESS.unpack(curr));
                     let is_shutdown = SHUTDOWN.unpack(curr) != 0;
 
                     // Safety: `waiter.interest` never changes
                     let interest = unsafe { (*waiter.get()).interest };
-                    let ready = ready.intersection(interest);
+                    let ready = Ready::from_usize(READINESS.unpack(curr)).intersection(interest);
 
                     if !ready.is_empty() || is_shutdown {
                         // Currently ready!
-                        let tick = TICK.unpack(curr) as u8;
+                        let tick = TICK.unpack(curr) as u16;
                         *state = State::Done;
                         return Poll::Ready(ReadyEvent {
                             tick,
@@ -499,7 +491,7 @@ impl Future for Readiness<'_> {
 
                     if !ready.is_empty() || is_shutdown {
                         // Currently ready!
-                        let tick = TICK.unpack(curr) as u8;
+                        let tick = TICK.unpack(curr) as u16;
                         *state = State::Done;
                         return Poll::Ready(ReadyEvent {
                             tick,
@@ -510,10 +502,13 @@ impl Future for Readiness<'_> {
 
                     // Not ready even after locked, insert into list...
 
-                    // Safety: called while locked
-                    unsafe {
-                        (*waiter.get()).waker = Some(cx.waker().clone());
-                    }
+                    // Safety: Since the `waiter` is not in the intrusive list yet,
+                    // we have exclusive access to it. The Mutex ensures
+                    // that this modification is visible to other threads that
+                    // acquire the same Mutex.
+                    let waker = unsafe { &mut (*waiter.get()).waker };
+                    let old = waker.replace(cx.waker().clone());
+                    debug_assert!(old.is_none(), "waker should be None at the first poll");
 
                     // Insert the waiter into the linked list
                     //
@@ -531,7 +526,9 @@ impl Future for Readiness<'_> {
 
                     let waiters = scheduled_io.waiters.lock();
 
-                    // Safety: called while locked
+                    // Safety: With the lock held, we have exclusive access to
+                    // the waiter. In other words, `ScheduledIo::wake()`
+                    // cannot access the waiter concurrently.
                     let w = unsafe { &mut *waiter.get() };
 
                     if w.is_ready {
@@ -539,10 +536,7 @@ impl Future for Readiness<'_> {
                         *state = State::Done;
                     } else {
                         // Update the waker, if necessary.
-                        if !w.waker.as_ref().unwrap().will_wake(cx.waker()) {
-                            w.waker = Some(cx.waker().clone());
-                        }
-
+                        w.waker.as_mut().unwrap().clone_from(cx.waker());
                         return Poll::Pending;
                     }
 
@@ -554,21 +548,24 @@ impl Future for Readiness<'_> {
                     drop(waiters);
                 }
                 State::Done => {
-                    // Safety: State::Done means it is no longer shared
-                    let w = unsafe { &mut *waiter.get() };
-
                     let curr = scheduled_io.readiness.load(Acquire);
                     let is_shutdown = SHUTDOWN.unpack(curr) != 0;
 
                     // The returned tick might be newer than the event
                     // which notified our waker. This is ok because the future
                     // still didn't return `Poll::Ready`.
-                    let tick = TICK.unpack(curr) as u8;
+                    let tick = TICK.unpack(curr) as u16;
 
+                    // Safety: We don't need to acquire the lock here because
+                    //   1. `State::Done`` means `waiter` is no longer shared,
+                    //      this means no concurrent access to `waiter` can happen
+                    //      at this point.
+                    //   2. `waiter.interest` is never changed, this means
+                    //      no side effects need to be synchronized by the lock.
+                    let interest = unsafe { (*waiter.get()).interest };
                     // The readiness state could have been cleared in the meantime,
                     // but we allow the returned ready set to be empty.
-                    let curr_ready = Ready::from_usize(READINESS.unpack(curr));
-                    let ready = curr_ready.intersection(w.interest);
+                    let ready = Ready::from_usize(READINESS.unpack(curr)).intersection(interest);
 
                     return Poll::Ready(ReadyEvent {
                         tick,
@@ -596,3 +593,89 @@ impl Drop for Readiness<'_> {
 
 unsafe impl Send for Readiness<'_> {}
 unsafe impl Sync for Readiness<'_> {}
+
+#[cfg(all(test, not(loom)))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stale_event_does_not_clear_readiness_after_u8_wraparound() {
+        let io = ScheduledIo::default();
+        io.set_readiness(Tick::Set, |curr| curr | Ready::READABLE);
+        let event = io.ready_event(Interest::READABLE);
+
+        for _ in 0..=u8::MAX {
+            io.set_readiness(Tick::Set, |curr| curr | Ready::READABLE);
+        }
+
+        io.clear_readiness(event);
+
+        assert!(io.ready_event(Interest::READABLE).ready.is_readable());
+    }
+}
+
+#[cfg(all(test, loom))]
+mod loom_tests {
+    use super::*;
+    use loom::future::block_on;
+    use loom::sync::Arc;
+    use loom::thread;
+
+    #[test]
+    fn shutdown_wakes_readiness() {
+        loom::model(|| {
+            let io = Arc::new(ScheduledIo::default());
+            let shutdown_io = io.clone();
+            let shutdown = thread::spawn(move || shutdown_io.shutdown());
+
+            // Joining before polling would hide a lost wakeup during registration.
+            let event = block_on(io.readiness(Interest::READABLE));
+            assert!(event.is_shutdown);
+
+            shutdown.join().unwrap();
+        });
+    }
+
+    #[test]
+    fn shutdown_wakes_poll_readiness() {
+        for direction in [Direction::Read, Direction::Write] {
+            loom::model(move || {
+                let io = Arc::new(ScheduledIo::default());
+                let shutdown_io = io.clone();
+                let shutdown = thread::spawn(move || shutdown_io.shutdown());
+
+                let event = block_on(std::future::poll_fn(|cx| io.poll_readiness(cx, direction)));
+                assert!(event.is_shutdown);
+
+                shutdown.join().unwrap();
+            });
+        }
+    }
+
+    /// Tests that delivering an event via raw pointer correctly wakes a pending task waiting
+    /// on readiness via `poll_readiness`.
+    #[test]
+    fn event_delivery_wakes_waiter() {
+        loom::model(|| {
+            let io = Arc::new(ScheduledIo::default());
+            let token = io.token();
+
+            let waiter_io = io.clone();
+            let waiter = thread::spawn(move || {
+                let event = block_on(std::future::poll_fn(|cx| {
+                    waiter_io.poll_readiness(cx, Direction::Read)
+                }));
+                assert!(event.ready.is_readable());
+            });
+
+            // Driver delivers event and wakes the waiter.
+            //
+            // SAFETY: `io` remains alive for the duration of this model.
+            unsafe {
+                super::super::driver::dispatch_event(token, Ready::READABLE);
+            }
+
+            waiter.join().unwrap();
+        });
+    }
+}

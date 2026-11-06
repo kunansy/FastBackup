@@ -30,8 +30,7 @@
 //! practical purposes, it can be assumed that an unintentional collision would
 //! be extremely unlikely.
 //!
-//! UUIDs have a number of standardized encodings that are specified in [RFC4122](http://tools.ietf.org/html/rfc4122),
-//! with recent additions [in draft](https://datatracker.ietf.org/doc/html/draft-peabody-dispatch-new-uuid-format-04).
+//! UUIDs have a number of standardized encodings that are specified in [RFC 9562](https://www.ietf.org/rfc/rfc9562.html).
 //!
 //! # Getting started
 //!
@@ -39,11 +38,10 @@
 //!
 //! ```toml
 //! [dependencies.uuid]
-//! version = "1.7.0"
+//! version = "1.29.0"
+//! # Lets you generate random UUIDs
 //! features = [
-//!     "v4",                # Lets you generate random UUIDs
-//!     "fast-rng",          # Use a faster (but still sufficiently random) RNG
-//!     "macro-diagnostics", # Enable better diagnostics for compile-time UUIDs
+//!     "v4",
 //! ]
 //! ```
 //!
@@ -84,8 +82,6 @@
 //! * `v7` - Version 7 UUIDs using a Unix timestamp.
 //! * `v8` - Version 8 UUIDs using user-defined data.
 //!
-//! Versions that are in draft are also supported. See the _unstable features_ section for details.
-//!
 //! This library also includes a [`Builder`] type that can be used to help construct UUIDs of any
 //! version without any additional dependencies or features. It's a lower-level API than [`Uuid`]
 //! that can be used when you need control over implicit requirements on things like a source
@@ -103,16 +99,17 @@
 //!
 //! Other crate features can also be useful beyond the version support:
 //!
-//! * `macro-diagnostics` - enhances the diagnostics of `uuid!` macro.
 //! * `serde` - adds the ability to serialize and deserialize a UUID using
 //!   `serde`.
 //! * `borsh` - adds the ability to serialize and deserialize a UUID using
 //!   `borsh`.
 //! * `arbitrary` - adds an `Arbitrary` trait implementation to `Uuid` for
 //!   fuzzing.
-//! * `fast-rng` - uses a faster algorithm for generating random UUIDs.
+//! * `fast-rng` - uses a faster algorithm for generating random UUIDs when available.
 //!   This feature requires more dependencies to compile, but is just as suitable for
 //!   UUIDs as the default algorithm.
+//! * `rng-rand` - forces `rand` as the backend for randomness.
+//! * `rng-getrandom` - forces `getrandom` as the backend for randomness.
 //! * `bytemuck` - adds a `Pod` trait implementation to `Uuid` for byte manipulation
 //!
 //! # Unstable features
@@ -141,7 +138,7 @@
 //!
 //! ```toml
 //! [dependencies.uuid]
-//! version = "1.7.0"
+//! version = "1.29.0"
 //! features = [
 //!     "v4",
 //!     "v7",
@@ -156,7 +153,7 @@
 //!
 //! ```toml
 //! [dependencies.uuid]
-//! version = "1.7.0"
+//! version = "1.29.0"
 //! default-features = false
 //! ```
 //!
@@ -166,10 +163,12 @@
 //! * `serde`.
 //!
 //! If you need to use `v4` or `v7` in a no-std environment, you'll need to
-//! follow [`getrandom`'s docs] on configuring a source of randomness
-//! on currently unsupported targets. Alternatively, you can produce
-//! random bytes yourself and then pass them to [`Builder::from_random_bytes`]
+//! produce random bytes yourself and then pass them to [`Builder::from_random_bytes`]
 //! without enabling the `v4` or `v7` features.
+//!
+//! If you're using `getrandom`, you can specify the `rng-getrandom` or `rng-rand`
+//! features of `uuid` and configure `getrandom`'s provider per its docs. `uuid`
+//! may upgrade its version of `getrandom` in minor releases.
 //!
 //! # Examples
 //!
@@ -202,19 +201,18 @@
 //! # References
 //!
 //! * [Wikipedia: Universally Unique Identifier](http://en.wikipedia.org/wiki/Universally_unique_identifier)
-//! * [RFC4122: A Universally Unique Identifier (UUID) URN Namespace](http://tools.ietf.org/html/rfc4122)
-//! * [Draft RFC: New UUID Formats, Version 4](https://datatracker.ietf.org/doc/html/draft-peabody-dispatch-new-uuid-format-04)
+//! * [RFC 9562: Universally Unique IDentifiers (UUID)](https://www.ietf.org/rfc/rfc9562.html).
 //!
 //! [`wasm-bindgen`]: https://crates.io/crates/wasm-bindgen
-//! [`cargo-web`]: https://crates.io/crates/cargo-web
-//! [`getrandom`'s docs]: https://docs.rs/getrandom
 
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![no_std]
 #![deny(missing_debug_implementations, missing_docs)]
+#![allow(clippy::mixed_attributes_style)]
 #![doc(
     html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
     html_favicon_url = "https://www.rust-lang.org/favicon.ico",
-    html_root_url = "https://docs.rs/uuid/1.7.0"
+    html_root_url = "https://docs.rs/uuid/1.29.0"
 )]
 
 #[cfg(any(feature = "std", test))]
@@ -225,20 +223,29 @@ extern crate std;
 #[macro_use]
 extern crate core as std;
 
-#[cfg(all(uuid_unstable, feature = "zerocopy"))]
-use zerocopy::{AsBytes, FromBytes, Unaligned};
+#[macro_use]
+mod macros;
 
 mod builder;
 mod error;
+mod non_nil;
 mod parser;
 
 pub mod fmt;
 pub mod timestamp;
 
+use core::hash::{Hash, Hasher};
 pub use timestamp::{context::NoContext, ClockSequence, Timestamp};
 
 #[cfg(any(feature = "v1", feature = "v6"))]
+#[allow(deprecated)]
 pub use timestamp::context::Context;
+
+#[cfg(any(feature = "v1", feature = "v6"))]
+pub use timestamp::context::ContextV1;
+
+#[cfg(feature = "v7")]
+pub use timestamp::context::ContextV7;
 
 #[cfg(feature = "v1")]
 #[doc(hidden)]
@@ -267,21 +274,12 @@ mod sha1;
 
 mod external;
 
-#[macro_use]
-mod macros;
-
-#[doc(hidden)]
-#[cfg(feature = "macro-diagnostics")]
-pub extern crate uuid_macro_internal;
-
 #[doc(hidden)]
 pub mod __macro_support {
     pub use crate::std::result::Result::{Err, Ok};
 }
 
-use crate::std::convert;
-
-pub use crate::{builder::Builder, error::Error};
+pub use crate::{builder::Builder, error::Error, non_nil::NonNilUuid};
 
 /// A 128-bit (16 byte) buffer containing the UUID.
 ///
@@ -294,7 +292,7 @@ pub type Bytes = [u8; 16];
 ///
 /// # References
 ///
-/// * [Version in RFC4122](https://datatracker.ietf.org/doc/html/rfc4122#section-4.1.3)
+/// * [Version Field in RFC 9562](https://www.ietf.org/rfc/rfc9562.html#section-4.2)
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[non_exhaustive]
 #[repr(u8)]
@@ -318,25 +316,35 @@ pub enum Version {
     /// Version 8: Custom.
     Custom = 8,
     /// The "max" (all ones) UUID.
-    Max = 0xff,
+    Max = 0x0f,
 }
 
 /// The reserved variants of UUIDs.
 ///
+/// Unlike the version field, which is a strict set of values, the variant
+/// behaves more like a mask. Multiple bit patterns in a UUID's variant field may correspond
+/// to the same variant value.
+///
 /// # References
 ///
-/// * [Variant in RFC4122](http://tools.ietf.org/html/rfc4122#section-4.1.1)
+/// * [Variant Field in RFC 9562](https://www.ietf.org/rfc/rfc9562.html#section-4.1)
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[non_exhaustive]
 #[repr(u8)]
 pub enum Variant {
     /// Reserved by the NCS for backward compatibility.
+    ///
+    /// The Nil UUID will return this variant.
     NCS = 0u8,
-    /// As described in the RFC4122 Specification (default).
+    /// The variant specified in RFC9562.
+    ///
+    /// The majority of UUIDs use this variant.
     RFC4122,
     /// Reserved by Microsoft for backward compatibility.
     Microsoft,
     /// Reserved for future expansion.
+    ///
+    /// The Max UUID will return this variant.
     Future,
 }
 
@@ -434,19 +442,26 @@ pub enum Variant {
 /// # ABI
 ///
 /// The `Uuid` type is always guaranteed to be have the same ABI as [`Bytes`].
-#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[cfg_attr(
-    all(uuid_unstable, feature = "zerocopy"),
-    derive(AsBytes, FromBytes, Unaligned)
-)]
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[repr(transparent)]
+// NOTE: Also check `NonNilUuid` when ading new derives here
 #[cfg_attr(
     feature = "borsh",
     derive(borsh_derive::BorshDeserialize, borsh_derive::BorshSerialize)
 )]
-#[repr(transparent)]
 #[cfg_attr(
     feature = "bytemuck",
     derive(bytemuck::Zeroable, bytemuck::Pod, bytemuck::TransparentWrapper)
+)]
+#[cfg_attr(
+    all(uuid_unstable, feature = "zerocopy"),
+    derive(
+        zerocopy::IntoBytes,
+        zerocopy::FromBytes,
+        zerocopy::KnownLayout,
+        zerocopy::Immutable,
+        zerocopy::Unaligned
+    )
 )]
 pub struct Uuid(Bytes);
 
@@ -497,7 +512,7 @@ impl Uuid {
     ///
     /// # References
     ///
-    /// * [Variant in RFC4122](http://tools.ietf.org/html/rfc4122#section-4.1.1)
+    /// * [Variant Field in RFC 9562](https://www.ietf.org/rfc/rfc9562.html#section-4.1)
     pub const fn get_variant(&self) -> Variant {
         match self.as_bytes()[8] {
             x if x & 0x80 == 0x00 => Variant::NCS,
@@ -532,7 +547,7 @@ impl Uuid {
     ///
     /// # References
     ///
-    /// * [Version in RFC4122](https://datatracker.ietf.org/doc/html/rfc4122#section-4.1.3)
+    /// * [Version Field in RFC 9562](https://www.ietf.org/rfc/rfc9562.html#section-4.2)
     pub const fn get_version_num(&self) -> usize {
         (self.as_bytes()[6] >> 4) as usize
     }
@@ -562,7 +577,7 @@ impl Uuid {
     ///
     /// # References
     ///
-    /// * [Version in RFC4122](https://datatracker.ietf.org/doc/html/rfc4122#section-4.1.3)
+    /// * [Version Field in RFC 9562](https://www.ietf.org/rfc/rfc9562.html#section-4.2)
     pub const fn get_version(&self) -> Option<Version> {
         match self.get_version_num() {
             0 if self.is_nil() => Some(Version::Nil),
@@ -574,7 +589,7 @@ impl Uuid {
             6 => Some(Version::SortMac),
             7 => Some(Version::SortRand),
             8 => Some(Version::Custom),
-            0xf => Some(Version::Max),
+            0xf if self.is_max() => Some(Version::Max),
             _ => None,
         }
     }
@@ -634,7 +649,7 @@ impl Uuid {
 
         let d3 = (bytes[6] as u16) << 8 | (bytes[7] as u16);
 
-        let d4: &[u8; 8] = convert::TryInto::try_into(&bytes[8..16]).unwrap();
+        let d4: &[u8; 8] = bytes[8..16].try_into().unwrap();
         (d1, d2, d3, d4)
     }
 
@@ -675,7 +690,7 @@ impl Uuid {
 
         let d3 = (self.as_bytes()[6] as u16) | (self.as_bytes()[7] as u16) << 8;
 
-        let d4: &[u8; 8] = convert::TryInto::try_into(&self.as_bytes()[8..16]).unwrap();
+        let d4: &[u8; 8] = self.as_bytes()[8..16].try_into().unwrap();
         (d1, d2, d3, d4)
     }
 
@@ -807,9 +822,12 @@ impl Uuid {
 
     /// Returns the bytes of the UUID in little-endian order.
     ///
-    /// The bytes will be flipped to convert into little-endian order. This is
-    /// based on the endianness of the UUID, rather than the target environment
+    /// The bytes for each field will be flipped to convert into little-endian order.
+    /// This is based on the endianness of the UUID, rather than the target environment
     /// so bytes will be flipped on both big and little endian machines.
+    ///
+    /// Note that ordering is applied to each _field_, rather than to the bytes as a whole.
+    /// This ordering is compatible with Microsoft's mixed endian GUID format.
     ///
     /// # Examples
     ///
@@ -877,35 +895,25 @@ impl Uuid {
     }
 
     /// If the UUID is the correct version (v1, v6, or v7) this will return
-    /// the timestamp and counter portion parsed from a V1 UUID.
-    ///
-    /// Returns `None` if the supplied UUID is not V1.
-    ///
-    /// The V1 timestamp format defined in RFC4122 specifies a 60-bit
-    /// integer representing the number of 100-nanosecond intervals
-    /// since 00:00:00.00, 15 Oct 1582.
-    ///
-    /// [`Timestamp`] offers several options for converting the raw RFC4122
-    /// value into more commonly-used formats, such as a unix timestamp.
+    /// the timestamp in a version-agnostic [`Timestamp`]. For other versions
+    /// this will return `None`.
     ///
     /// # Roundtripping
     ///
     /// This method is unlikely to roundtrip a timestamp in a UUID due to the way
     /// UUIDs encode timestamps. The timestamp returned from this method will be truncated to
     /// 100ns precision for version 1 and 6 UUIDs, and to millisecond precision for version 7 UUIDs.
-    ///
-    /// [`Timestamp`]: v1/struct.Timestamp.html
     pub const fn get_timestamp(&self) -> Option<Timestamp> {
         match self.get_version() {
             Some(Version::Mac) => {
-                let (ticks, counter) = timestamp::decode_rfc4122_timestamp(self);
+                let (ticks, counter) = timestamp::decode_gregorian_timestamp(self);
 
-                Some(Timestamp::from_rfc4122(ticks, counter))
+                Some(Timestamp::from_gregorian_time(ticks, counter))
             }
             Some(Version::SortMac) => {
-                let (ticks, counter) = timestamp::decode_sorted_rfc4122_timestamp(self);
+                let (ticks, counter) = timestamp::decode_sorted_gregorian_timestamp(self);
 
-                Some(Timestamp::from_rfc4122(ticks, counter))
+                Some(Timestamp::from_gregorian_time(ticks, counter))
             }
             Some(Version::SortRand) => {
                 let millis = timestamp::decode_unix_timestamp_millis(self);
@@ -913,15 +921,36 @@ impl Uuid {
                 let seconds = millis / 1000;
                 let nanos = ((millis % 1000) * 1_000_000) as u32;
 
-                Some(Timestamp {
-                    seconds,
-                    nanos,
-                    #[cfg(any(feature = "v1", feature = "v6"))]
-                    counter: 0,
-                })
+                Some(Timestamp::from_unix_time(seconds, nanos, 0, 0))
             }
             _ => None,
         }
+    }
+
+    /// If the UUID is the correct version (v1, or v6) this will return the
+    /// node value as a 6-byte array. For other versions this will return `None`.
+    pub const fn get_node_id(&self) -> Option<[u8; 6]> {
+        match self.get_version() {
+            Some(Version::Mac) | Some(Version::SortMac) => {
+                let mut node_id = [0; 6];
+
+                node_id[0] = self.0[10];
+                node_id[1] = self.0[11];
+                node_id[2] = self.0[12];
+                node_id[3] = self.0[13];
+                node_id[4] = self.0[14];
+                node_id[5] = self.0[15];
+
+                Some(node_id)
+            }
+            _ => None,
+        }
+    }
+}
+
+impl Hash for Uuid {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.write(&self.0);
     }
 }
 
@@ -929,6 +958,13 @@ impl Default for Uuid {
     #[inline]
     fn default() -> Self {
         Uuid::nil()
+    }
+}
+
+impl AsRef<Uuid> for Uuid {
+    #[inline]
+    fn as_ref(&self) -> &Uuid {
+        self
     }
 }
 
@@ -947,7 +983,7 @@ impl From<Uuid> for std::vec::Vec<u8> {
 }
 
 #[cfg(feature = "std")]
-impl std::convert::TryFrom<std::vec::Vec<u8>> for Uuid {
+impl TryFrom<std::vec::Vec<u8>> for Uuid {
     type Error = Error;
 
     fn try_from(value: std::vec::Vec<u8>) -> Result<Self, Self::Error> {
@@ -963,7 +999,7 @@ pub mod serde {
     //! to change the way a [`Uuid`](../struct.Uuid.html) is serialized
     //! and deserialized.
 
-    pub use crate::external::serde_support::compact;
+    pub use crate::external::serde_support::{braced, bytes, compact, hyphenated, simple, urn};
 }
 
 #[cfg(test)]
@@ -972,11 +1008,7 @@ mod tests {
 
     use crate::std::string::{String, ToString};
 
-    #[cfg(all(
-        target_arch = "wasm32",
-        target_vendor = "unknown",
-        target_os = "unknown"
-    ))]
+    #[cfg(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))]
     use wasm_bindgen_test::*;
 
     macro_rules! check {
@@ -985,53 +1017,115 @@ mod tests {
             write!($buf, $format, $target).unwrap();
             assert!($buf.len() == $len);
             assert!($buf.chars().all($cond), "{}", $buf);
+
+            assert_eq!(Uuid::parse_str(&$buf).unwrap(), $target);
         };
     }
 
-    pub const fn new() -> Uuid {
-        Uuid::from_bytes([
-            0xF9, 0x16, 0x8C, 0x5E, 0xCE, 0xB2, 0x4F, 0xAA, 0xB6, 0xBF, 0x32, 0x9B, 0xF3, 0x9F,
-            0xA1, 0xE4,
-        ])
+    pub fn some_uuid_nil() -> Uuid {
+        Uuid::parse_str("00000000-0000-0000-0000-000000000000").unwrap()
     }
 
-    pub const fn new2() -> Uuid {
-        Uuid::from_bytes([
-            0xF9, 0x16, 0x8C, 0x5E, 0xCE, 0xB2, 0x4F, 0xAB, 0xB6, 0xBF, 0x32, 0x9B, 0xF3, 0x9F,
-            0xA1, 0xE4,
-        ])
+    pub fn some_uuid_v1() -> Uuid {
+        Uuid::parse_str("20616934-4ba2-11e7-8000-010203040506").unwrap()
+    }
+
+    pub fn some_uuid_v3() -> Uuid {
+        Uuid::parse_str("bcee7a9c-52f1-30c6-a3cc-8c72ba634990").unwrap()
+    }
+
+    pub fn some_uuid_v4() -> Uuid {
+        Uuid::parse_str("67e55044-10b1-426f-9247-bb680e5fe0c8").unwrap()
+    }
+
+    pub fn some_uuid_v4_2() -> Uuid {
+        Uuid::parse_str("c0dd0820-b35a-4c56-bc7d-0f0b04241adb").unwrap()
+    }
+
+    pub fn some_uuid_v5() -> Uuid {
+        Uuid::parse_str("b11f79a5-1e6d-57ce-a4b5-ba8531ea03d0").unwrap()
+    }
+
+    pub fn some_uuid_v6() -> Uuid {
+        Uuid::parse_str("1e74ba22-0616-6934-8000-010203040506").unwrap()
+    }
+
+    pub fn some_uuid_v7() -> Uuid {
+        Uuid::parse_str("015c837b-9e84-7db5-b059-c75a84585688").unwrap()
+    }
+
+    pub fn some_uuid_v8() -> Uuid {
+        Uuid::parse_str("0f0e0d0c-0b0a-8908-8706-050403020100").unwrap()
+    }
+
+    pub fn some_uuid_max() -> Uuid {
+        Uuid::parse_str("ffffffff-ffff-ffff-ffff-ffffffffffff").unwrap()
+    }
+
+    pub fn some_uuid_iter() -> impl Iterator<Item = Uuid> {
+        [
+            some_uuid_nil(),
+            some_uuid_v1(),
+            some_uuid_v3(),
+            some_uuid_v4(),
+            some_uuid_v5(),
+            some_uuid_v6(),
+            some_uuid_v7(),
+            some_uuid_v8(),
+            some_uuid_max(),
+        ]
+        .into_iter()
+    }
+
+    pub fn some_uuid_v_iter() -> impl Iterator<Item = Uuid> {
+        [
+            some_uuid_v1(),
+            some_uuid_v3(),
+            some_uuid_v4(),
+            some_uuid_v5(),
+            some_uuid_v6(),
+            some_uuid_v7(),
+            some_uuid_v8(),
+        ]
+        .into_iter()
     }
 
     #[test]
     #[cfg_attr(
-        all(
-            target_arch = "wasm32",
-            target_vendor = "unknown",
-            target_os = "unknown"
-        ),
+        all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")),
         wasm_bindgen_test
     )]
-    fn test_uuid_compare() {
-        let uuid1 = new();
-        let uuid2 = new2();
+    #[cfg(feature = "std")]
+    fn test_compare() {
+        use std::{
+            cmp::Ordering,
+            hash::{BuildHasher, BuildHasherDefault, DefaultHasher},
+        };
 
-        assert_eq!(uuid1, uuid1);
-        assert_eq!(uuid2, uuid2);
+        let a = some_uuid_v4();
+        let b = some_uuid_v4_2();
 
-        assert_ne!(uuid1, uuid2);
-        assert_ne!(uuid2, uuid1);
+        let ah = BuildHasherDefault::<DefaultHasher>::default().hash_one(a);
+        let bh = BuildHasherDefault::<DefaultHasher>::default().hash_one(b);
+
+        assert_eq!(a, a);
+        assert_eq!(b, b);
+        assert_eq!(Ordering::Equal, a.cmp(&a));
+        assert_eq!(Ordering::Equal, b.cmp(&b));
+
+        assert_ne!(a, b);
+        assert_ne!(b, a);
+        assert_ne!(Ordering::Equal, b.cmp(&a));
+        assert_ne!(Ordering::Equal, a.cmp(&b));
+        assert_ne!(ah, bh);
     }
 
     #[test]
     #[cfg_attr(
-        all(
-            target_arch = "wasm32",
-            target_vendor = "unknown",
-            target_os = "unknown"
-        ),
+        all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")),
         wasm_bindgen_test
     )]
-    fn test_uuid_default() {
+    fn test_default() {
         let default_uuid = Uuid::default();
         let nil_uuid = Uuid::nil();
 
@@ -1040,128 +1134,146 @@ mod tests {
 
     #[test]
     #[cfg_attr(
-        all(
-            target_arch = "wasm32",
-            target_vendor = "unknown",
-            target_os = "unknown"
-        ),
+        all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")),
         wasm_bindgen_test
     )]
-    fn test_uuid_display() {
+    fn test_display() {
         use crate::std::fmt::Write;
 
-        let uuid = new();
-        let s = uuid.to_string();
-        let mut buffer = String::new();
+        for uuid in some_uuid_iter() {
+            let s = uuid.to_string();
+            let mut buffer = String::new();
 
-        assert_eq!(s, uuid.hyphenated().to_string());
+            assert_eq!(s, uuid.hyphenated().to_string());
 
-        check!(buffer, "{}", uuid, 36, |c| c.is_lowercase()
-            || c.is_digit(10)
-            || c == '-');
+            check!(buffer, "{}", some_uuid_v4(), 36, |c| c.is_lowercase()
+                || c.is_ascii_digit()
+                || c == '-');
+        }
     }
 
     #[test]
     #[cfg_attr(
-        all(
-            target_arch = "wasm32",
-            target_vendor = "unknown",
-            target_os = "unknown"
-        ),
+        all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")),
         wasm_bindgen_test
     )]
-    fn test_uuid_lowerhex() {
-        use crate::std::fmt::Write;
+    fn test_to_simple_string() {
+        for uuid in some_uuid_iter() {
+            let s = uuid.simple().to_string();
 
-        let mut buffer = String::new();
-        let uuid = new();
+            assert_eq!(s.len(), 32);
+            assert!(s.chars().all(|c| c.is_ascii_hexdigit()));
 
-        check!(buffer, "{:x}", uuid, 36, |c| c.is_lowercase()
-            || c.is_digit(10)
-            || c == '-');
+            assert_eq!(Uuid::parse_str(&s).unwrap(), uuid);
+        }
     }
 
-    // noinspection RsAssertEqual
     #[test]
     #[cfg_attr(
-        all(
-            target_arch = "wasm32",
-            target_vendor = "unknown",
-            target_os = "unknown"
-        ),
+        all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")),
         wasm_bindgen_test
     )]
-    fn test_uuid_operator_eq() {
-        let uuid1 = new();
-        let uuid1_dup = uuid1.clone();
-        let uuid2 = new2();
+    fn test_hyphenated_string() {
+        for uuid in some_uuid_iter() {
+            let s = uuid.hyphenated().to_string();
 
-        assert!(uuid1 == uuid1);
-        assert!(uuid1 == uuid1_dup);
-        assert!(uuid1_dup == uuid1);
+            assert_eq!(36, s.len());
+            assert!(s.chars().all(|c| c.is_ascii_hexdigit() || c == '-'));
 
-        assert!(uuid1 != uuid2);
-        assert!(uuid2 != uuid1);
-        assert!(uuid1_dup != uuid2);
-        assert!(uuid2 != uuid1_dup);
+            assert_eq!(Uuid::parse_str(&s).unwrap(), uuid);
+        }
     }
 
     #[test]
     #[cfg_attr(
-        all(
-            target_arch = "wasm32",
-            target_vendor = "unknown",
-            target_os = "unknown"
-        ),
+        all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")),
         wasm_bindgen_test
     )]
-    fn test_uuid_to_string() {
-        use crate::std::fmt::Write;
+    fn test_upper_lower_hex() {
+        use std::fmt::Write;
 
-        let uuid = new();
-        let s = uuid.to_string();
-        let mut buffer = String::new();
+        let mut buf = String::new();
 
-        assert_eq!(s.len(), 36);
+        macro_rules! check {
+            ($buf:ident, $format:expr, $target:expr, $len:expr, $cond:expr) => {
+                $buf.clear();
+                write!($buf, $format, $target).unwrap();
+                assert_eq!($len, buf.len());
+                assert!($buf.chars().all($cond), "{}", $buf);
+            };
+        }
 
-        check!(buffer, "{}", s, 36, |c| c.is_lowercase()
-            || c.is_digit(10)
-            || c == '-');
+        for uuid in some_uuid_iter() {
+            check!(buf, "{:x}", uuid, 36, |c| c.is_lowercase()
+                || c.is_ascii_digit()
+                || c == '-');
+            check!(buf, "{:X}", uuid, 36, |c| c.is_uppercase()
+                || c.is_ascii_digit()
+                || c == '-');
+            check!(buf, "{:#x}", uuid, 36, |c| c.is_lowercase()
+                || c.is_ascii_digit()
+                || c == '-');
+            check!(buf, "{:#X}", uuid, 36, |c| c.is_uppercase()
+                || c.is_ascii_digit()
+                || c == '-');
+
+            check!(buf, "{:X}", uuid.hyphenated(), 36, |c| c.is_uppercase()
+                || c.is_ascii_digit()
+                || c == '-');
+            check!(buf, "{:X}", uuid.simple(), 32, |c| c.is_uppercase()
+                || c.is_ascii_digit());
+            check!(buf, "{:#X}", uuid.hyphenated(), 36, |c| c.is_uppercase()
+                || c.is_ascii_digit()
+                || c == '-');
+            check!(buf, "{:#X}", uuid.simple(), 32, |c| c.is_uppercase()
+                || c.is_ascii_digit());
+
+            check!(buf, "{:x}", uuid.hyphenated(), 36, |c| c.is_lowercase()
+                || c.is_ascii_digit()
+                || c == '-');
+            check!(buf, "{:x}", uuid.simple(), 32, |c| c.is_lowercase()
+                || c.is_ascii_digit());
+            check!(buf, "{:#x}", uuid.hyphenated(), 36, |c| c.is_lowercase()
+                || c.is_ascii_digit()
+                || c == '-');
+            check!(buf, "{:#x}", uuid.simple(), 32, |c| c.is_lowercase()
+                || c.is_ascii_digit());
+        }
     }
 
     #[test]
     #[cfg_attr(
-        all(
-            target_arch = "wasm32",
-            target_vendor = "unknown",
-            target_os = "unknown"
-        ),
+        all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")),
         wasm_bindgen_test
     )]
-    fn test_non_conforming() {
-        let from_bytes =
-            Uuid::from_bytes([4, 54, 67, 12, 43, 2, 2, 76, 32, 50, 87, 5, 1, 33, 43, 87]);
+    fn test_to_urn_string() {
+        for uuid in some_uuid_iter() {
+            let ss = uuid.urn().to_string();
+            let s = &ss[9..];
 
-        assert_eq!(from_bytes.get_version(), None);
+            assert!(ss.starts_with("urn:uuid:"));
+            assert_eq!(s.len(), 36);
+            assert!(s.chars().all(|c| c.is_ascii_hexdigit() || c == '-'));
+
+            assert_eq!(Uuid::parse_str(&ss).unwrap(), uuid);
+        }
     }
 
     #[test]
     #[cfg_attr(
-        all(
-            target_arch = "wasm32",
-            target_vendor = "unknown",
-            target_os = "unknown"
-        ),
+        all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")),
         wasm_bindgen_test
     )]
     fn test_nil() {
         let nil = Uuid::nil();
-        let not_nil = new();
+        let not_nil = some_uuid_v4();
 
         assert!(nil.is_nil());
         assert!(!not_nil.is_nil());
 
         assert_eq!(nil.get_version(), Some(Version::Nil));
+        assert_eq!(nil.get_variant(), Variant::NCS);
+
         assert_eq!(not_nil.get_version(), Some(Version::Random));
 
         assert_eq!(
@@ -1174,21 +1286,19 @@ mod tests {
 
     #[test]
     #[cfg_attr(
-        all(
-            target_arch = "wasm32",
-            target_vendor = "unknown",
-            target_os = "unknown"
-        ),
+        all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")),
         wasm_bindgen_test
     )]
     fn test_max() {
         let max = Uuid::max();
-        let not_max = new();
+        let not_max = some_uuid_v4();
 
         assert!(max.is_max());
         assert!(!not_max.is_max());
 
         assert_eq!(max.get_version(), Some(Version::Max));
+        assert_eq!(max.get_variant(), Variant::Future);
+
         assert_eq!(not_max.get_version(), Some(Version::Random));
 
         assert_eq!(
@@ -1201,11 +1311,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(
-        all(
-            target_arch = "wasm32",
-            target_vendor = "unknown",
-            target_os = "unknown"
-        ),
+        all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")),
         wasm_bindgen_test
     )]
     fn test_predefined_namespaces() {
@@ -1227,209 +1333,125 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "v3")]
     #[test]
     #[cfg_attr(
-        all(
-            target_arch = "wasm32",
-            target_vendor = "unknown",
-            target_os = "unknown"
-        ),
+        all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")),
         wasm_bindgen_test
     )]
-    fn test_get_version_v3() {
-        let uuid = Uuid::new_v3(&Uuid::NAMESPACE_DNS, "rust-lang.org".as_bytes());
+    fn test_get_timestamp_unsupported_version() {
+        for uuid in [
+            some_uuid_nil(),
+            some_uuid_v3(),
+            some_uuid_v4(),
+            some_uuid_v5(),
+            some_uuid_v8(),
+            some_uuid_max(),
+        ] {
+            assert_ne!(Version::Mac, uuid.get_version().unwrap());
+            assert_ne!(Version::SortMac, uuid.get_version().unwrap());
+            assert_ne!(Version::SortRand, uuid.get_version().unwrap());
 
-        assert_eq!(uuid.get_version().unwrap(), Version::Md5);
-        assert_eq!(uuid.get_version_num(), 3);
+            assert!(uuid.get_timestamp().is_none());
+        }
     }
 
     #[test]
     #[cfg_attr(
-        all(
-            target_arch = "wasm32",
-            target_vendor = "unknown",
-            target_os = "unknown"
-        ),
+        all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")),
+        wasm_bindgen_test
+    )]
+    fn test_get_node_id_unsupported_version() {
+        for uuid in [
+            some_uuid_nil(),
+            some_uuid_v4(),
+            some_uuid_v7(),
+            some_uuid_v8(),
+            some_uuid_max(),
+        ] {
+            assert_ne!(Version::Mac, uuid.get_version().unwrap());
+            assert_ne!(Version::SortMac, uuid.get_version().unwrap());
+
+            assert!(uuid.get_node_id().is_none());
+        }
+    }
+
+    #[test]
+    #[cfg_attr(
+        all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")),
+        wasm_bindgen_test
+    )]
+    fn test_get_version() {
+        fn assert_version(uuid: Uuid, expected: Version) {
+            assert_eq!(
+                uuid.get_version().unwrap(),
+                expected,
+                "{uuid} version doesn't match {expected:?}"
+            );
+            assert_eq!(
+                uuid.get_version_num(),
+                expected as usize,
+                "{uuid} version doesn't match {}",
+                expected as usize
+            );
+        }
+
+        assert_version(some_uuid_nil(), Version::Nil);
+        assert_version(some_uuid_v1(), Version::Mac);
+        assert_version(some_uuid_v3(), Version::Md5);
+        assert_version(some_uuid_v4(), Version::Random);
+        assert_version(some_uuid_v5(), Version::Sha1);
+        assert_version(some_uuid_v6(), Version::SortMac);
+        assert_version(some_uuid_v7(), Version::SortRand);
+        assert_version(some_uuid_v8(), Version::Custom);
+        assert_version(some_uuid_max(), Version::Max);
+    }
+
+    #[test]
+    #[cfg_attr(
+        all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")),
+        wasm_bindgen_test
+    )]
+    fn test_get_version_non_conforming() {
+        for case in [
+            Uuid::from_bytes([4, 54, 67, 12, 43, 2, 2, 76, 32, 50, 87, 5, 1, 33, 43, 87]),
+            Uuid::parse_str("00000000-0000-0000-0000-00000000000f").unwrap(),
+            Uuid::parse_str("ffffffff-ffff-ffff-ffff-fffffffffff0").unwrap(),
+        ] {
+            assert_eq!(case.get_version(), None);
+        }
+    }
+
+    #[test]
+    #[cfg_attr(
+        all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")),
         wasm_bindgen_test
     )]
     fn test_get_variant() {
-        let uuid1 = new();
-        let uuid2 = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
-        let uuid3 = Uuid::parse_str("67e55044-10b1-426f-9247-bb680e5fe0c8").unwrap();
-        let uuid4 = Uuid::parse_str("936DA01F9ABD4d9dC0C702AF85C822A8").unwrap();
-        let uuid5 = Uuid::parse_str("F9168C5E-CEB2-4faa-D6BF-329BF39FA1E4").unwrap();
-        let uuid6 = Uuid::parse_str("f81d4fae-7dec-11d0-7765-00a0c91e6bf6").unwrap();
-
-        assert_eq!(uuid1.get_variant(), Variant::RFC4122);
-        assert_eq!(uuid2.get_variant(), Variant::RFC4122);
-        assert_eq!(uuid3.get_variant(), Variant::RFC4122);
-        assert_eq!(uuid4.get_variant(), Variant::Microsoft);
-        assert_eq!(uuid5.get_variant(), Variant::Microsoft);
-        assert_eq!(uuid6.get_variant(), Variant::NCS);
-    }
-
-    #[test]
-    #[cfg_attr(
-        all(
-            target_arch = "wasm32",
-            target_vendor = "unknown",
-            target_os = "unknown"
-        ),
-        wasm_bindgen_test
-    )]
-    fn test_to_simple_string() {
-        let uuid1 = new();
-        let s = uuid1.simple().to_string();
-
-        assert_eq!(s.len(), 32);
-        assert!(s.chars().all(|c| c.is_digit(16)));
-    }
-
-    #[test]
-    #[cfg_attr(
-        all(
-            target_arch = "wasm32",
-            target_vendor = "unknown",
-            target_os = "unknown"
-        ),
-        wasm_bindgen_test
-    )]
-    fn test_hyphenated_string() {
-        let uuid1 = new();
-        let s = uuid1.hyphenated().to_string();
-
-        assert_eq!(36, s.len());
-        assert!(s.chars().all(|c| c.is_digit(16) || c == '-'));
-    }
-
-    #[test]
-    #[cfg_attr(
-        all(
-            target_arch = "wasm32",
-            target_vendor = "unknown",
-            target_os = "unknown"
-        ),
-        wasm_bindgen_test
-    )]
-    fn test_upper_lower_hex() {
-        use std::fmt::Write;
-
-        let mut buf = String::new();
-        let u = new();
-
-        macro_rules! check {
-            ($buf:ident, $format:expr, $target:expr, $len:expr, $cond:expr) => {
-                $buf.clear();
-                write!($buf, $format, $target).unwrap();
-                assert_eq!($len, buf.len());
-                assert!($buf.chars().all($cond), "{}", $buf);
-            };
+        fn assert_variant(uuid: Uuid, expected: Variant) {
+            assert_eq!(uuid.get_variant(), expected);
         }
 
-        check!(buf, "{:x}", u, 36, |c| c.is_lowercase()
-            || c.is_digit(10)
-            || c == '-');
-        check!(buf, "{:X}", u, 36, |c| c.is_uppercase()
-            || c.is_digit(10)
-            || c == '-');
-        check!(buf, "{:#x}", u, 36, |c| c.is_lowercase()
-            || c.is_digit(10)
-            || c == '-');
-        check!(buf, "{:#X}", u, 36, |c| c.is_uppercase()
-            || c.is_digit(10)
-            || c == '-');
+        for uuid in some_uuid_v_iter() {
+            assert_variant(uuid, Variant::RFC4122);
+        }
 
-        check!(buf, "{:X}", u.hyphenated(), 36, |c| c.is_uppercase()
-            || c.is_digit(10)
-            || c == '-');
-        check!(buf, "{:X}", u.simple(), 32, |c| c.is_uppercase()
-            || c.is_digit(10));
-        check!(buf, "{:#X}", u.hyphenated(), 36, |c| c.is_uppercase()
-            || c.is_digit(10)
-            || c == '-');
-        check!(buf, "{:#X}", u.simple(), 32, |c| c.is_uppercase()
-            || c.is_digit(10));
-
-        check!(buf, "{:x}", u.hyphenated(), 36, |c| c.is_lowercase()
-            || c.is_digit(10)
-            || c == '-');
-        check!(buf, "{:x}", u.simple(), 32, |c| c.is_lowercase()
-            || c.is_digit(10));
-        check!(buf, "{:#x}", u.hyphenated(), 36, |c| c.is_lowercase()
-            || c.is_digit(10)
-            || c == '-');
-        check!(buf, "{:#x}", u.simple(), 32, |c| c.is_lowercase()
-            || c.is_digit(10));
+        assert_variant(
+            Uuid::parse_str("936DA01F9ABD4d9dC0C702AF85C822A8").unwrap(),
+            Variant::Microsoft,
+        );
+        assert_variant(
+            Uuid::parse_str("F9168C5E-CEB2-4faa-D6BF-329BF39FA1E4").unwrap(),
+            Variant::Microsoft,
+        );
+        assert_variant(
+            Uuid::parse_str("f81d4fae-7dec-11d0-7765-00a0c91e6bf6").unwrap(),
+            Variant::NCS,
+        );
     }
 
     #[test]
     #[cfg_attr(
-        all(
-            target_arch = "wasm32",
-            target_vendor = "unknown",
-            target_os = "unknown"
-        ),
-        wasm_bindgen_test
-    )]
-    fn test_to_urn_string() {
-        let uuid1 = new();
-        let ss = uuid1.urn().to_string();
-        let s = &ss[9..];
-
-        assert!(ss.starts_with("urn:uuid:"));
-        assert_eq!(s.len(), 36);
-        assert!(s.chars().all(|c| c.is_digit(16) || c == '-'));
-    }
-
-    #[test]
-    #[cfg_attr(
-        all(
-            target_arch = "wasm32",
-            target_vendor = "unknown",
-            target_os = "unknown"
-        ),
-        wasm_bindgen_test
-    )]
-    fn test_to_simple_string_matching() {
-        let uuid1 = new();
-
-        let hs = uuid1.hyphenated().to_string();
-        let ss = uuid1.simple().to_string();
-
-        let hsn = hs.chars().filter(|&c| c != '-').collect::<String>();
-
-        assert_eq!(hsn, ss);
-    }
-
-    #[test]
-    #[cfg_attr(
-        all(
-            target_arch = "wasm32",
-            target_vendor = "unknown",
-            target_os = "unknown"
-        ),
-        wasm_bindgen_test
-    )]
-    fn test_string_roundtrip() {
-        let uuid = new();
-
-        let hs = uuid.hyphenated().to_string();
-        let uuid_hs = Uuid::parse_str(&hs).unwrap();
-        assert_eq!(uuid_hs, uuid);
-
-        let ss = uuid.to_string();
-        let uuid_ss = Uuid::parse_str(&ss).unwrap();
-        assert_eq!(uuid_ss, uuid);
-    }
-
-    #[test]
-    #[cfg_attr(
-        all(
-            target_arch = "wasm32",
-            target_vendor = "unknown",
-            target_os = "unknown"
-        ),
+        all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")),
         wasm_bindgen_test
     )]
     fn test_from_fields() {
@@ -1447,11 +1469,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(
-        all(
-            target_arch = "wasm32",
-            target_vendor = "unknown",
-            target_os = "unknown"
-        ),
+        all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")),
         wasm_bindgen_test
     )]
     fn test_from_fields_le() {
@@ -1469,31 +1487,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(
-        all(
-            target_arch = "wasm32",
-            target_vendor = "unknown",
-            target_os = "unknown"
-        ),
-        wasm_bindgen_test
-    )]
-    fn test_as_fields() {
-        let u = new();
-        let (d1, d2, d3, d4) = u.as_fields();
-
-        assert_ne!(d1, 0);
-        assert_ne!(d2, 0);
-        assert_ne!(d3, 0);
-        assert_eq!(d4.len(), 8);
-        assert!(!d4.iter().all(|&b| b == 0));
-    }
-
-    #[test]
-    #[cfg_attr(
-        all(
-            target_arch = "wasm32",
-            target_vendor = "unknown",
-            target_os = "unknown"
-        ),
+        all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")),
         wasm_bindgen_test
     )]
     fn test_fields_roundtrip() {
@@ -1513,11 +1507,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(
-        all(
-            target_arch = "wasm32",
-            target_vendor = "unknown",
-            target_os = "unknown"
-        ),
+        all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")),
         wasm_bindgen_test
     )]
     fn test_fields_le_roundtrip() {
@@ -1537,11 +1527,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(
-        all(
-            target_arch = "wasm32",
-            target_vendor = "unknown",
-            target_os = "unknown"
-        ),
+        all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")),
         wasm_bindgen_test
     )]
     fn test_fields_le_are_actually_le() {
@@ -1561,69 +1547,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(
-        all(
-            target_arch = "wasm32",
-            target_vendor = "unknown",
-            target_os = "unknown"
-        ),
-        wasm_bindgen_test
-    )]
-    fn test_from_u128() {
-        let v_in: u128 = 0xa1a2a3a4b1b2c1c2d1d2d3d4d5d6d7d8;
-
-        let u = Uuid::from_u128(v_in);
-
-        let expected = "a1a2a3a4b1b2c1c2d1d2d3d4d5d6d7d8";
-        let result = u.simple().to_string();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    #[cfg_attr(
-        all(
-            target_arch = "wasm32",
-            target_vendor = "unknown",
-            target_os = "unknown"
-        ),
-        wasm_bindgen_test
-    )]
-    fn test_from_u128_le() {
-        let v_in: u128 = 0xd8d7d6d5d4d3d2d1c2c1b2b1a4a3a2a1;
-
-        let u = Uuid::from_u128_le(v_in);
-
-        let expected = "a1a2a3a4b1b2c1c2d1d2d3d4d5d6d7d8";
-        let result = u.simple().to_string();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    #[cfg_attr(
-        all(
-            target_arch = "wasm32",
-            target_vendor = "unknown",
-            target_os = "unknown"
-        ),
-        wasm_bindgen_test
-    )]
-    fn test_from_u64_pair() {
-        let high_in: u64 = 0xa1a2a3a4b1b2c1c2;
-        let low_in: u64 = 0xd1d2d3d4d5d6d7d8;
-
-        let u = Uuid::from_u64_pair(high_in, low_in);
-
-        let expected = "a1a2a3a4b1b2c1c2d1d2d3d4d5d6d7d8";
-        let result = u.simple().to_string();
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    #[cfg_attr(
-        all(
-            target_arch = "wasm32",
-            target_vendor = "unknown",
-            target_os = "unknown"
-        ),
+        all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")),
         wasm_bindgen_test
     )]
     fn test_u128_roundtrip() {
@@ -1637,11 +1561,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(
-        all(
-            target_arch = "wasm32",
-            target_vendor = "unknown",
-            target_os = "unknown"
-        ),
+        all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")),
         wasm_bindgen_test
     )]
     fn test_u128_le_roundtrip() {
@@ -1655,11 +1575,21 @@ mod tests {
 
     #[test]
     #[cfg_attr(
-        all(
-            target_arch = "wasm32",
-            target_vendor = "unknown",
-            target_os = "unknown"
-        ),
+        all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")),
+        wasm_bindgen_test
+    )]
+    fn test_u128_le_is_actually_le() {
+        let v_in: u128 = 0xa1a2a3a4b1b2c1c2d1d2d3d4d5d6d7d8;
+
+        let u = Uuid::from_u128(v_in);
+        let v_out = u.to_u128_le();
+
+        assert_eq!(v_in, v_out.swap_bytes());
+    }
+
+    #[test]
+    #[cfg_attr(
+        all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")),
         wasm_bindgen_test
     )]
     fn test_u64_pair_roundtrip() {
@@ -1675,29 +1605,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(
-        all(
-            target_arch = "wasm32",
-            target_vendor = "unknown",
-            target_os = "unknown"
-        ),
-        wasm_bindgen_test
-    )]
-    fn test_u128_le_is_actually_le() {
-        let v_in: u128 = 0xa1a2a3a4b1b2c1c2d1d2d3d4d5d6d7d8;
-
-        let u = Uuid::from_u128(v_in);
-        let v_out = u.to_u128_le();
-
-        assert_eq!(v_in, v_out.swap_bytes());
-    }
-
-    #[test]
-    #[cfg_attr(
-        all(
-            target_arch = "wasm32",
-            target_vendor = "unknown",
-            target_os = "unknown"
-        ),
+        all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")),
         wasm_bindgen_test
     )]
     fn test_from_slice() {
@@ -1714,11 +1622,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(
-        all(
-            target_arch = "wasm32",
-            target_vendor = "unknown",
-            target_os = "unknown"
-        ),
+        all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")),
         wasm_bindgen_test
     )]
     fn test_from_bytes() {
@@ -1735,56 +1639,44 @@ mod tests {
 
     #[test]
     #[cfg_attr(
-        all(
-            target_arch = "wasm32",
-            target_vendor = "unknown",
-            target_os = "unknown"
-        ),
+        all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")),
         wasm_bindgen_test
     )]
     fn test_as_bytes() {
-        let u = new();
-        let ub = u.as_bytes();
-        let ur = u.as_ref();
+        for uuid in some_uuid_v_iter() {
+            let ub = uuid.as_bytes();
+            let ur: &[u8] = uuid.as_ref();
 
-        assert_eq!(ub.len(), 16);
-        assert_eq!(ur.len(), 16);
-        assert!(!ub.iter().all(|&b| b == 0));
-        assert!(!ur.iter().all(|&b| b == 0));
+            assert_eq!(ub.len(), 16);
+            assert_eq!(ur.len(), 16);
+            assert!(!ub.iter().all(|&b| b == 0));
+            assert!(!ur.iter().all(|&b| b == 0));
+        }
     }
 
     #[test]
     #[cfg(feature = "std")]
     #[cfg_attr(
-        all(
-            target_arch = "wasm32",
-            target_vendor = "unknown",
-            target_os = "unknown"
-        ),
+        all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")),
         wasm_bindgen_test
     )]
     fn test_convert_vec() {
-        use crate::std::{convert::TryInto, vec::Vec};
+        for uuid in some_uuid_iter() {
+            let ub: &[u8] = uuid.as_ref();
 
-        let u = new();
-        let ub = u.as_ref();
+            let v: std::vec::Vec<u8> = uuid.into();
 
-        let v: Vec<u8> = u.into();
+            assert_eq!(&v, ub);
 
-        assert_eq!(&v, ub);
+            let uv: Uuid = v.try_into().unwrap();
 
-        let uv: Uuid = v.try_into().unwrap();
-
-        assert_eq!(uv, u);
+            assert_eq!(uv, uuid);
+        }
     }
 
     #[test]
     #[cfg_attr(
-        all(
-            target_arch = "wasm32",
-            target_vendor = "unknown",
-            target_os = "unknown"
-        ),
+        all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")),
         wasm_bindgen_test
     )]
     fn test_bytes_roundtrip() {
@@ -1802,11 +1694,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(
-        all(
-            target_arch = "wasm32",
-            target_vendor = "unknown",
-            target_os = "unknown"
-        ),
+        all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")),
         wasm_bindgen_test
     )]
     fn test_bytes_le_roundtrip() {
@@ -1822,24 +1710,5 @@ mod tests {
         let u2 = Uuid::from_bytes_le(b_le);
 
         assert_eq!(u1, u2);
-    }
-
-    #[test]
-    #[cfg_attr(
-        all(
-            target_arch = "wasm32",
-            target_vendor = "unknown",
-            target_os = "unknown"
-        ),
-        wasm_bindgen_test
-    )]
-    fn test_iterbytes_impl_for_uuid() {
-        let mut set = std::collections::HashSet::new();
-        let id1 = new();
-        let id2 = new2();
-        set.insert(id1.clone());
-
-        assert!(set.contains(&id1));
-        assert!(!set.contains(&id2));
     }
 }

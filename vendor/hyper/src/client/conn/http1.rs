@@ -1,21 +1,20 @@
-//! HTTP/1 client connections
+//! HTTP/1 client connections.
 
 use std::error::Error as StdError;
 use std::fmt;
 use std::future::Future;
-use std::marker::Unpin;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+use crate::rt::{Read, Write};
 use bytes::Bytes;
+use futures_core::ready;
 use http::{Request, Response};
 use httparse::ParserConfig;
-use tokio::io::{AsyncRead, AsyncWrite};
 
-use super::super::dispatch;
-use crate::body::{Body as IncomingBody, HttpBody as Body};
+use super::super::dispatch::{self, TrySendError};
+use crate::body::{Body, Incoming as IncomingBody};
 use crate::proto;
-use crate::upgrade::Upgraded;
 
 type Dispatcher<T, B> =
     proto::dispatch::Dispatcher<proto::dispatch::Client<B>, B, T, proto::h1::ClientTransaction>;
@@ -30,6 +29,7 @@ pub struct SendRequest<B> {
 /// This allows taking apart a `Connection` at a later time, in order to
 /// reclaim the IO object, and additional related pieces.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct Parts<T> {
     /// The original IO object used in the handshake.
     pub io: T,
@@ -42,25 +42,33 @@ pub struct Parts<T> {
     /// You will want to check for any existing bytes if you plan to continue
     /// communicating on the IO object.
     pub read_buf: Bytes,
-    _inner: (),
 }
 
 /// A future that processes all HTTP state for the IO object.
 ///
 /// In most cases, this should just be spawned into an executor, so that it
 /// can process incoming and outgoing messages, notice hangups, and the like.
+///
+/// Instances of this type are typically created via the [`handshake`] function.
+///
+/// # Drop behavior
+///
+/// Dropping the `Connection` will close the underlying IO resource.
+/// Any in-flight requests that have not received a response will be
+/// interrupted. If graceful shutdown is desired, poll the connection
+/// until it completes instead of dropping.
 #[must_use = "futures do nothing unless polled"]
 pub struct Connection<T, B>
 where
-    T: AsyncRead + AsyncWrite + Send + 'static,
+    T: Read + Write,
     B: Body + 'static,
 {
-    inner: Option<Dispatcher<T, B>>,
+    inner: Dispatcher<T, B>,
 }
 
 impl<T, B> Connection<T, B>
 where
-    T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+    T: Read + Write + Unpin,
     B: Body + 'static,
     B::Error: Into<Box<dyn StdError + Send + Sync>>,
 {
@@ -68,12 +76,8 @@ where
     ///
     /// Only works for HTTP/1 connections. HTTP/2 connections will panic.
     pub fn into_parts(self) -> Parts<T> {
-        let (io, read_buf, _) = self.inner.expect("already upgraded").into_inner();
-        Parts {
-            io,
-            read_buf,
-            _inner: (),
-        }
+        let (io, read_buf, _) = self.inner.into_inner();
+        Parts { io, read_buf }
     }
 
     /// Poll the connection for completion, but without calling `shutdown`
@@ -88,26 +92,38 @@ where
     /// and [`try_ready!`](https://docs.rs/futures/0.1.25/futures/macro.try_ready.html)
     /// to work with this function; or use the `without_shutdown` wrapper.
     pub fn poll_without_shutdown(&mut self, cx: &mut Context<'_>) -> Poll<crate::Result<()>> {
-        self.inner
-            .as_mut()
-            .expect("algready upgraded")
-            .poll_without_shutdown(cx)
+        self.inner.poll_without_shutdown(cx)
     }
 
     /// Prevent shutdown of the underlying IO object at the end of service the request,
     /// instead run `into_parts`. This is a convenience wrapper over `poll_without_shutdown`.
-    pub fn without_shutdown(self) -> impl Future<Output = crate::Result<Parts<T>>> {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the connection encounters an error while being polled to completion.
+    #[allow(clippy::missing_panics_doc)]
+    pub async fn without_shutdown(self) -> crate::Result<Parts<T>> {
         let mut conn = Some(self);
-        futures_util::future::poll_fn(move |cx| -> Poll<crate::Result<Parts<T>>> {
-            ready!(conn.as_mut().unwrap().poll_without_shutdown(cx))?;
-            Poll::Ready(Ok(conn.take().unwrap().into_parts()))
+        crate::common::future::poll_fn(move |cx| -> Poll<crate::Result<Parts<T>>> {
+            ready!(conn
+                .as_mut()
+                .expect("client connection polled after completion")
+                .poll_without_shutdown(cx))?;
+            Poll::Ready(Ok(conn
+                .take()
+                .expect("client connection missing before completion")
+                .into_parts()))
         })
+        .await
     }
 }
 
 /// A builder to configure an HTTP connection.
 ///
 /// After setting options, the builder is used to create a handshake future.
+///
+/// **Note**: The default values of options are *not considered stable*. They
+/// are subject to change at any time.
 #[derive(Clone, Debug)]
 pub struct Builder {
     h09_responses: bool,
@@ -115,6 +131,8 @@ pub struct Builder {
     h1_writev: Option<bool>,
     h1_title_case_headers: bool,
     h1_preserve_header_case: bool,
+    h1_max_headers: Option<usize>,
+    h1_max_header_size: Option<usize>,
     #[cfg(feature = "ffi")]
     h1_preserve_header_order: bool,
     h1_read_buf_exact_size: Option<usize>,
@@ -125,9 +143,13 @@ pub struct Builder {
 ///
 /// This is a shortcut for `Builder::new().handshake(io)`.
 /// See [`client::conn`](crate::client::conn) for more.
+///
+/// # Errors
+///
+/// Returns an error if the HTTP/1 connection handshake fails.
 pub async fn handshake<T, B>(io: T) -> crate::Result<(SendRequest<B>, Connection<T, B>)>
 where
-    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    T: Read + Write + Unpin,
     B: Body + 'static,
     B::Data: Send,
     B::Error: Into<Box<dyn StdError + Send + Sync>>,
@@ -145,31 +167,30 @@ impl<B> SendRequest<B> {
         self.dispatch.poll_ready(cx)
     }
 
-    /// Waits until the dispatcher is ready
+    /// Waits until the dispatcher is ready.
+    ///
+    /// # Errors
     ///
     /// If the associated connection is closed, this returns an Error.
     pub async fn ready(&mut self) -> crate::Result<()> {
-        futures_util::future::poll_fn(|cx| self.poll_ready(cx)).await
+        crate::common::future::poll_fn(|cx| self.poll_ready(cx)).await
     }
 
-    /*
-    pub(super) async fn when_ready(self) -> crate::Result<Self> {
-        let mut me = Some(self);
-        future::poll_fn(move |cx| {
-            ready!(me.as_mut().unwrap().poll_ready(cx))?;
-            Poll::Ready(Ok(me.take().unwrap()))
-        })
-        .await
-    }
-
-    pub(super) fn is_ready(&self) -> bool {
+    /// Checks if the connection is currently ready to send a request.
+    ///
+    /// # Note
+    ///
+    /// This is mostly a hint. Due to inherent latency of networks, it is
+    /// possible that even after checking this is ready, sending a request
+    /// may still fail because the connection was closed in the meantime.
+    pub fn is_ready(&self) -> bool {
         self.dispatch.is_ready()
     }
 
-    pub(super) fn is_closed(&self) -> bool {
+    /// Checks if the connection side has been closed.
+    pub fn is_closed(&self) -> bool {
         self.dispatch.is_closed()
     }
-    */
 }
 
 impl<B> SendRequest<B>
@@ -180,18 +201,32 @@ where
     ///
     /// Returns a future that if successful, yields the `Response`.
     ///
-    /// # Note
+    /// `req` must have a `Host` header.
     ///
-    /// There are some key differences in what automatic things the `Client`
-    /// does for you that will not be done here:
+    /// # Uri
     ///
-    /// - `Client` requires absolute-form `Uri`s, since the scheme and
-    ///   authority are needed to connect. They aren't required here.
-    /// - Since the `Client` requires absolute-form `Uri`s, it can add
-    ///   the `Host` header based on it. You must add a `Host` header yourself
-    ///   before calling this method.
-    /// - Since absolute-form `Uri`s are not required, if received, they will
-    ///   be serialized as-is.
+    /// The `Uri` of the request is serialized as-is.
+    ///
+    /// - Usually you want origin-form (`/path?query`).
+    /// - For sending to an HTTP proxy, you want to send in absolute-form
+    ///   (`https://hyper.rs/guides`).
+    ///
+    /// This is however not enforced or validated and it is up to the user
+    /// of this method to ensure the `Uri` is correct for their intended purpose.
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping the returned future is the supported way to cancel an
+    /// in-flight HTTP/1 request. Because HTTP/1 has no in-protocol way to
+    /// abort a single request without affecting the shared connection,
+    /// hyper closes the underlying connection when a request future is
+    /// dropped before completion. Any subsequent calls on the same
+    /// [`SendRequest`] will return a `canceled` error.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the connection is not ready or if an error occurs while
+    /// processing the request.
     pub fn send_request(
         &mut self,
         req: Request<B>,
@@ -204,44 +239,49 @@ where
                     Ok(Ok(resp)) => Ok(resp),
                     Ok(Err(err)) => Err(err),
                     // this is definite bug if it happens, but it shouldn't happen!
-                    Err(_canceled) => panic!("dispatch dropped without returning error"),
+                    Err(_canceled) => unreachable!("dispatch dropped without returning error"),
                 },
                 Err(_req) => {
-                    tracing::debug!("connection was not ready");
-
+                    debug!("connection was not ready");
                     Err(crate::Error::new_canceled().with("connection was not ready"))
                 }
             }
         }
     }
 
-    /*
-    pub(super) fn send_request_retryable(
+    /// Sends a `Request` on the associated connection.
+    ///
+    /// Returns a future that if successful, yields the `Response`.
+    ///
+    /// # Errors
+    ///
+    /// If there was an error before trying to serialize the request to the
+    /// connection, the message will be returned as part of this error.
+    #[allow(clippy::result_large_err)]
+    pub fn try_send_request(
         &mut self,
         req: Request<B>,
-    ) -> impl Future<Output = Result<Response<Body>, (crate::Error, Option<Request<B>>)>> + Unpin
-    where
-        B: Send,
-    {
-        match self.dispatch.try_send(req) {
-            Ok(rx) => {
-                Either::Left(rx.then(move |res| {
-                    match res {
-                        Ok(Ok(res)) => future::ok(res),
-                        Ok(Err(err)) => future::err(err),
-                        // this is definite bug if it happens, but it shouldn't happen!
-                        Err(_) => panic!("dispatch dropped without returning error"),
-                    }
-                }))
-            }
-            Err(req) => {
-                tracing::debug!("connection was not ready");
-                let err = crate::Error::new_canceled().with("connection was not ready");
-                Either::Right(future::err((err, Some(req))))
+    ) -> impl Future<Output = Result<Response<IncomingBody>, TrySendError<Request<B>>>> {
+        let sent = self.dispatch.try_send(req);
+        async move {
+            match sent {
+                Ok(rx) => match rx.await {
+                    Ok(Ok(res)) => Ok(res),
+                    Ok(Err(err)) => Err(err),
+                    // this is definite bug if it happens, but it shouldn't happen!
+                    Err(_) => unreachable!("dispatch dropped without returning error"),
+                },
+                Err(req) => {
+                    debug!("connection was not ready");
+                    let error = crate::Error::new_canceled().with("connection was not ready");
+                    Err(TrySendError {
+                        error,
+                        message: Some(req),
+                    })
+                }
             }
         }
     }
-    */
 }
 
 impl<B> fmt::Debug for SendRequest<B> {
@@ -252,9 +292,23 @@ impl<B> fmt::Debug for SendRequest<B> {
 
 // ===== impl Connection
 
+impl<T, B> Connection<T, B>
+where
+    T: Read + Write + Unpin + Send,
+    B: Body + 'static,
+    B::Error: Into<Box<dyn StdError + Send + Sync>>,
+{
+    /// Enable this connection to support higher-level HTTP upgrades.
+    ///
+    /// See [the `upgrade` module](crate::upgrade) for more.
+    pub fn with_upgrades(self) -> upgrades::UpgradeableConnection<T, B> {
+        upgrades::UpgradeableConnection { inner: Some(self) }
+    }
+}
+
 impl<T, B> fmt::Debug for Connection<T, B>
 where
-    T: AsyncRead + AsyncWrite + fmt::Debug + Send + 'static,
+    T: Read + Write + fmt::Debug,
     B: Body + 'static,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -264,27 +318,24 @@ where
 
 impl<T, B> Future for Connection<T, B>
 where
-    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-    B: Body + Send + 'static,
+    T: Read + Write + Unpin,
+    B: Body + 'static,
     B::Data: Send,
     B::Error: Into<Box<dyn StdError + Send + Sync>>,
 {
     type Output = crate::Result<()>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match ready!(Pin::new(self.inner.as_mut().unwrap()).poll(cx))? {
+        match ready!(Pin::new(&mut self.inner).poll(cx))? {
             proto::Dispatched::Shutdown => Poll::Ready(Ok(())),
-            proto::Dispatched::Upgrade(pending) => match self.inner.take() {
-                Some(h1) => {
-                    let (io, buf, _) = h1.into_inner();
-                    pending.fulfill(Upgraded::new(io, buf));
-                    Poll::Ready(Ok(()))
-                }
-                _ => {
-                    drop(pending);
-                    unreachable!("Upgraded twice");
-                }
-            },
+            proto::Dispatched::Upgrade(pending) => {
+                // With no `Send` bound on `I`, we can't try to do
+                // upgrades here. In case a user was trying to use
+                // `upgrade` with this API, send a special
+                // error letting them know about that.
+                pending.manual();
+                Poll::Ready(Ok(()))
+            }
         }
     }
 }
@@ -299,9 +350,11 @@ impl Builder {
             h09_responses: false,
             h1_writev: None,
             h1_read_buf_exact_size: None,
-            h1_parser_config: Default::default(),
+            h1_parser_config: ParserConfig::default(),
             h1_title_case_headers: false,
             h1_preserve_header_case: false,
+            h1_max_headers: None,
+            h1_max_header_size: None,
             #[cfg(feature = "ffi")]
             h1_preserve_header_order: false,
             h1_max_buf_size: None,
@@ -329,8 +382,6 @@ impl Builder {
     /// > whitespace between a header field-name and colon with a response code
     /// > of 400 (Bad Request). A proxy MUST remove any such whitespace from a
     /// > response message before forwarding the message downstream.
-    ///
-    /// Note that this setting does not affect HTTP/2.
     ///
     /// Default is false.
     ///
@@ -381,7 +432,7 @@ impl Builder {
 
     /// Set whether HTTP/1 connections will silently ignored malformed header lines.
     ///
-    /// If this is enabled and and a header line does not start with a valid header
+    /// If this is enabled and a header line does not start with a valid header
     /// name, or does not include a colon at all, the line will be silently ignored
     /// and no error will be reported.
     ///
@@ -399,11 +450,11 @@ impl Builder {
     /// but may also improve performance when an IO transport doesn't
     /// support vectored writes well, such as most TLS implementations.
     ///
-    /// Setting this to true will force hyper to use queued strategy
-    /// which may eliminate unnecessary cloning on some TLS backends
+    /// Setting this to true will force hyper to use queued strategy,
+    /// which may eliminate unnecessary cloning on some TLS backends.
     ///
     /// Default is `auto`. In this mode hyper will try to guess which
-    /// mode to use
+    /// mode to use.
     pub fn writev(&mut self, enabled: bool) -> &mut Builder {
         self.h1_writev = Some(enabled);
         self
@@ -431,6 +482,39 @@ impl Builder {
     /// Default is false.
     pub fn preserve_header_case(&mut self, enabled: bool) -> &mut Builder {
         self.h1_preserve_header_case = enabled;
+        self
+    }
+
+    /// Set the maximum number of headers.
+    ///
+    /// When a response is received, the parser will reserve a buffer to store headers for optimal
+    /// performance.
+    ///
+    /// If client receives more headers than the buffer size, the error "message header too large"
+    /// is returned.
+    ///
+    /// Note that headers is allocated on the stack by default, which has higher performance. After
+    /// setting this value, headers will be allocated in heap memory, that is, heap memory
+    /// allocation will occur for each response, and there will be a performance drop of about 5%.
+    ///
+    /// Default is 100.
+    pub fn max_headers(&mut self, val: usize) -> &mut Self {
+        self.h1_max_headers = Some(val);
+        self
+    }
+
+    /// Set the maximum size of response headers (including the status line) in bytes.
+    ///
+    /// If the server sends headers exceeding this limit, the error "message head is too large"
+    /// is returned.
+    ///
+    /// If not configured, then the [`max_buf_size`](Builder::max_buf_size) will naturally be reached and applied.
+    ///
+    /// This value is also used as the maximum size limit for chunked trailers.
+    ///
+    /// Default is `None`.
+    pub fn max_header_size(&mut self, val: usize) -> &mut Self {
+        self.h1_max_header_size = Some(val);
         self
     }
 
@@ -483,12 +567,16 @@ impl Builder {
     ///
     /// Note, if [`Connection`] is not `await`-ed, [`SendRequest`] will
     /// do nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the HTTP/1connection handshake fails.
     pub fn handshake<T, B>(
         &self,
         io: T,
     ) -> impl Future<Output = crate::Result<(SendRequest<B>, Connection<T, B>)>>
     where
-        T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        T: Read + Write + Unpin,
         B: Body + 'static,
         B::Data: Send,
         B::Error: Into<Box<dyn StdError + Send + Sync>>,
@@ -496,7 +584,7 @@ impl Builder {
         let opts = self.clone();
 
         async move {
-            tracing::trace!("client handshake HTTP/1");
+            trace!("client handshake HTTP/1");
 
             let (tx, rx) = dispatch::channel();
             let mut conn = proto::Conn::new(io);
@@ -513,6 +601,12 @@ impl Builder {
             }
             if opts.h1_preserve_header_case {
                 conn.set_preserve_header_case();
+            }
+            if let Some(max_headers) = opts.h1_max_headers {
+                conn.set_http1_max_headers(max_headers);
+            }
+            if let Some(max_header_size) = opts.h1_max_header_size {
+                conn.set_http1_max_header_size(max_header_size);
             }
             #[cfg(feature = "ffi")]
             if opts.h1_preserve_header_order {
@@ -532,10 +626,62 @@ impl Builder {
             let cd = proto::h1::dispatch::Client::new(rx);
             let proto = proto::h1::Dispatcher::new(cd, conn);
 
-            Ok((
-                SendRequest { dispatch: tx },
-                Connection { inner: Some(proto) },
-            ))
+            Ok((SendRequest { dispatch: tx }, Connection { inner: proto }))
+        }
+    }
+}
+
+mod upgrades {
+    use super::{Connection, Context, Future, Parts, Pin, Poll, Read, StdError, Write};
+    use crate::body::Body;
+    use crate::proto::Dispatched;
+    use crate::upgrade::Upgraded;
+    use futures_core::ready;
+    // A future binding a connection with a Service with Upgrade support.
+    //
+    // This type is unnameable outside the crate.
+    #[must_use = "futures do nothing unless polled"]
+    #[allow(missing_debug_implementations)]
+    pub struct UpgradeableConnection<T, B>
+    where
+        T: Read + Write + Unpin + Send + 'static,
+        B: Body + 'static,
+        B::Error: Into<Box<dyn StdError + Send + Sync>>,
+    {
+        pub(super) inner: Option<Connection<T, B>>,
+    }
+
+    impl<I, B> Future for UpgradeableConnection<I, B>
+    where
+        I: Read + Write + Unpin + Send + 'static,
+        B: Body + 'static,
+        B::Data: Send,
+        B::Error: Into<Box<dyn StdError + Send + Sync>>,
+    {
+        type Output = crate::Result<()>;
+
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            match ready!(Pin::new(
+                &mut self
+                    .inner
+                    .as_mut()
+                    .expect("upgradeable client connection polled after upgrade")
+                    .inner,
+            )
+            .poll(cx))
+            {
+                Ok(Dispatched::Shutdown) => Poll::Ready(Ok(())),
+                Ok(Dispatched::Upgrade(pending)) => {
+                    let Parts { io, read_buf } = self
+                        .inner
+                        .take()
+                        .expect("upgradeable client connection missing after upgrade")
+                        .into_parts();
+                    pending.fulfill(Upgraded::new(io, read_buf));
+                    Poll::Ready(Ok(()))
+                }
+                Err(e) => Poll::Ready(Err(e)),
+            }
         }
     }
 }

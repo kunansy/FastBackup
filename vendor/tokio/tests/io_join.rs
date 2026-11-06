@@ -1,5 +1,13 @@
 #![warn(rust_2018_idioms)]
-#![cfg(feature = "full")]
+#![cfg(any(
+    feature = "full",
+    all(
+        target_os = "emscripten",
+        feature = "rt",
+        feature = "macros",
+        feature = "io-util"
+    )
+))]
 
 use tokio::io::{join, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, Join, ReadBuf};
 
@@ -15,7 +23,7 @@ impl AsyncRead for R {
         _cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        buf.put_slice(&[b'z']);
+        buf.put_slice(b"z");
         Poll::Ready(Ok(()))
     }
 }
@@ -68,12 +76,10 @@ fn method_delegation() {
         assert_eq!(1, rw.read(&mut buf).await.unwrap());
         assert_eq!(b'z', buf[0]);
 
-        assert_eq!(1, rw.write(&[b'x']).await.unwrap());
+        assert_eq!(1, rw.write(b"x").await.unwrap());
         assert_eq!(
             2,
-            rw.write_vectored(&[io::IoSlice::new(&[b'x'])])
-                .await
-                .unwrap()
+            rw.write_vectored(&[io::IoSlice::new(b"x")]).await.unwrap()
         );
         assert!(rw.is_write_vectored());
 

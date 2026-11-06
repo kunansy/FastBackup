@@ -1,11 +1,11 @@
 use crate::any::types::str;
 use crate::any::{Any, AnyTypeInfo, AnyTypeInfoKind, AnyValueKind};
-use crate::database::{HasArguments, HasValueRef};
+use crate::database::Database;
 use crate::decode::Decode;
 use crate::encode::{Encode, IsNull};
 use crate::error::BoxDynError;
 use crate::types::Type;
-use std::borrow::Cow;
+use std::sync::Arc;
 
 impl Type<Any> for str {
     fn type_info() -> AnyTypeInfo {
@@ -16,28 +16,26 @@ impl Type<Any> for str {
 }
 
 impl<'a> Encode<'a, Any> for &'a str {
-    fn encode(self, buf: &mut <Any as HasArguments<'a>>::ArgumentBuffer) -> IsNull
+    fn encode(self, buf: &mut <Any as Database>::ArgumentBuffer) -> Result<IsNull, BoxDynError>
     where
         Self: Sized,
     {
-        buf.0.push(AnyValueKind::Text(self.into()));
-        IsNull::No
+        buf.0.push(AnyValueKind::Text(Arc::new(self.into())));
+        Ok(IsNull::No)
     }
 
-    fn encode_by_ref(&self, buf: &mut <Any as HasArguments<'a>>::ArgumentBuffer) -> IsNull {
+    fn encode_by_ref(
+        &self,
+        buf: &mut <Any as Database>::ArgumentBuffer,
+    ) -> Result<IsNull, BoxDynError> {
         (*self).encode(buf)
     }
 }
 
 impl<'a> Decode<'a, Any> for &'a str {
-    fn decode(value: <Any as HasValueRef<'a>>::ValueRef) -> Result<Self, BoxDynError> {
+    fn decode(value: <Any as Database>::ValueRef<'a>) -> Result<Self, BoxDynError> {
         match value.kind {
-            AnyValueKind::Text(Cow::Borrowed(text)) => Ok(text),
-            // This shouldn't happen in practice, it means the user got an `AnyValueRef`
-            // constructed from an owned `String` which shouldn't be allowed by the API.
-            AnyValueKind::Text(Cow::Owned(_text)) => {
-                panic!("attempting to return a borrow that outlives its buffer")
-            }
+            AnyValueKind::Text(text) => Ok(text.as_str()),
             other => other.unexpected(),
         }
     }
@@ -49,17 +47,25 @@ impl Type<Any> for String {
     }
 }
 
-impl<'q> Encode<'q, Any> for String {
-    fn encode_by_ref(&self, buf: &mut <Any as HasArguments<'q>>::ArgumentBuffer) -> IsNull {
-        buf.0.push(AnyValueKind::Text(Cow::Owned(self.clone())));
-        IsNull::No
+impl Encode<'_, Any> for String {
+    fn encode(self, buf: &mut <Any as Database>::ArgumentBuffer) -> Result<IsNull, BoxDynError> {
+        buf.0.push(AnyValueKind::Text(Arc::new(self)));
+        Ok(IsNull::No)
+    }
+
+    fn encode_by_ref(
+        &self,
+        buf: &mut <Any as Database>::ArgumentBuffer,
+    ) -> Result<IsNull, BoxDynError> {
+        buf.0.push(AnyValueKind::Text(Arc::new(self.clone())));
+        Ok(IsNull::No)
     }
 }
 
 impl<'r> Decode<'r, Any> for String {
-    fn decode(value: <Any as HasValueRef<'r>>::ValueRef) -> Result<Self, BoxDynError> {
+    fn decode(value: <Any as Database>::ValueRef<'r>) -> Result<Self, BoxDynError> {
         match value.kind {
-            AnyValueKind::Text(text) => Ok(text.into_owned()),
+            AnyValueKind::Text(text) => Ok(text.to_string()),
             other => other.unexpected(),
         }
     }

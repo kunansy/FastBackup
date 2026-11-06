@@ -1,7 +1,11 @@
 extern crate time_ as time;
 
+use std::borrow::Cow;
 use std::net::SocketAddr;
 use std::ops::Bound;
+use std::rc::Rc;
+use std::str::FromStr;
+use std::sync::Arc;
 
 use sqlx::postgres::types::{Oid, PgCiText, PgInterval, PgMoney, PgRange};
 use sqlx::postgres::Postgres;
@@ -9,7 +13,6 @@ use sqlx_test::{new, test_decode_type, test_prepared_type, test_type};
 
 use sqlx_core::executor::Executor;
 use sqlx_core::types::Text;
-use std::str::FromStr;
 
 test_type!(null<Option<i16>>(Postgres,
     "NULL::int2" == None::<i16>
@@ -171,6 +174,38 @@ test_type!(uuid_vec<Vec<sqlx::types::Uuid>>(Postgres,
         ]
 ));
 
+#[cfg(feature = "ipnet")]
+test_type!(ipnet<sqlx::types::ipnet::IpNet>(Postgres,
+    "'127.0.0.1'::inet"
+        == "127.0.0.1/32"
+            .parse::<sqlx::types::ipnet::IpNet>()
+            .unwrap(),
+    "'8.8.8.8/24'::inet"
+        == "8.8.8.8/24"
+            .parse::<sqlx::types::ipnet::IpNet>()
+            .unwrap(),
+    "'10.1.1/24'::inet"
+        == "10.1.1.0/24"
+            .parse::<sqlx::types::ipnet::IpNet>()
+            .unwrap(),
+    "'::ffff:1.2.3.0'::inet"
+        == "::ffff:1.2.3.0/128"
+            .parse::<sqlx::types::ipnet::IpNet>()
+            .unwrap(),
+    "'2001:4f8:3:ba::/64'::inet"
+        == "2001:4f8:3:ba::/64"
+            .parse::<sqlx::types::ipnet::IpNet>()
+            .unwrap(),
+    "'192.168'::cidr"
+        == "192.168.0.0/24"
+            .parse::<sqlx::types::ipnet::IpNet>()
+            .unwrap(),
+    "'::ffff:1.2.3.0/120'::cidr"
+        == "::ffff:1.2.3.0/120"
+            .parse::<sqlx::types::ipnet::IpNet>()
+            .unwrap(),
+));
+
 #[cfg(feature = "ipnetwork")]
 test_type!(ipnetwork<sqlx::types::ipnetwork::IpNetwork>(Postgres,
     "'127.0.0.1'::inet"
@@ -232,6 +267,15 @@ test_type!(bitvec<sqlx::types::BitVec>(
     },
 ));
 
+#[cfg(feature = "ipnet")]
+test_type!(ipnet_vec<Vec<sqlx::types::ipnet::IpNet>>(Postgres,
+    "'{127.0.0.1,8.8.8.8/24}'::inet[]"
+        == vec![
+           "127.0.0.1/32".parse::<sqlx::types::ipnet::IpNet>().unwrap(),
+           "8.8.8.8/24".parse::<sqlx::types::ipnet::IpNet>().unwrap()
+        ]
+));
+
 #[cfg(feature = "ipnetwork")]
 test_type!(ipnetwork_vec<Vec<sqlx::types::ipnetwork::IpNetwork>>(Postgres,
     "'{127.0.0.1,8.8.8.8/24}'::inet[]"
@@ -260,51 +304,57 @@ mod chrono {
     type PgTimeTz = sqlx::postgres::types::PgTimeTz<NaiveTime, FixedOffset>;
 
     test_type!(chrono_date<NaiveDate>(Postgres,
-        "DATE '2001-01-05'" == NaiveDate::from_ymd(2001, 1, 5),
-        "DATE '2050-11-23'" == NaiveDate::from_ymd(2050, 11, 23)
+        "DATE '2001-01-05'" == NaiveDate::from_ymd_opt(2001, 1, 5).unwrap(),
+        "DATE '2050-11-23'" == NaiveDate::from_ymd_opt(2050, 11, 23).unwrap()
     ));
 
     test_type!(chrono_time<NaiveTime>(Postgres,
-        "TIME '05:10:20.115100'" == NaiveTime::from_hms_micro(5, 10, 20, 115100)
+        "TIME '05:10:20.115100'" == NaiveTime::from_hms_micro_opt(5, 10, 20, 115100).unwrap()
     ));
 
     test_type!(chrono_date_time<NaiveDateTime>(Postgres,
-        "'2019-01-02 05:10:20'::timestamp" == NaiveDate::from_ymd(2019, 1, 2).and_hms(5, 10, 20)
+        "'2019-01-02 05:10:20'::timestamp" == NaiveDate::from_ymd_opt(2019, 1, 2).unwrap().and_hms_opt(5, 10, 20).unwrap()
     ));
 
     test_type!(chrono_date_time_vec<Vec<NaiveDateTime>>(Postgres,
         "array['2019-01-02 05:10:20']::timestamp[]"
-            == vec![NaiveDate::from_ymd(2019, 1, 2).and_hms(5, 10, 20)]
+            == vec![NaiveDate::from_ymd_opt(2019, 1, 2).unwrap().and_hms_opt(5, 10, 20).unwrap()]
     ));
 
     test_type!(chrono_date_time_tz_utc<DateTime::<Utc>>(Postgres,
         "TIMESTAMPTZ '2019-01-02 05:10:20.115100'"
-            == DateTime::<Utc>::from_utc(
-                NaiveDate::from_ymd(2019, 1, 2).and_hms_micro(5, 10, 20, 115100),
-                Utc,
+            == Utc.from_utc_datetime(
+                &NaiveDate::from_ymd_opt(2019, 1, 2).unwrap().and_hms_micro_opt(5, 10, 20, 115100).unwrap(),
             )
     ));
 
     test_type!(chrono_date_time_tz<DateTime::<FixedOffset>>(Postgres,
         "TIMESTAMPTZ '2019-01-02 05:10:20.115100+06:30'"
-            == FixedOffset::east(60 * 60 * 6 + 1800).ymd(2019, 1, 2).and_hms_micro(5, 10, 20, 115100)
+            == FixedOffset::east_opt(60 * 60 * 6 + 1800)
+                .unwrap()
+                .from_local_datetime(
+                    &NaiveDate::from_ymd_opt(2019, 1, 2)
+                        .unwrap()
+                        .and_hms_micro_opt(5, 10, 20, 115_100)
+                        .unwrap()
+                )
+                .unwrap()
     ));
 
     test_type!(chrono_date_time_tz_vec<Vec<DateTime::<Utc>>>(Postgres,
         "array['2019-01-02 05:10:20.115100']::timestamptz[]"
             == vec![
-                DateTime::<Utc>::from_utc(
-                    NaiveDate::from_ymd(2019, 1, 2).and_hms_micro(5, 10, 20, 115100),
-                    Utc,
+                Utc.from_utc_datetime(
+                    &NaiveDate::from_ymd_opt(2019, 1, 2).unwrap().and_hms_micro_opt(5, 10, 20, 115100).unwrap(),
                 )
             ]
     ));
 
     test_type!(chrono_time_tz<PgTimeTz>(Postgres,
-        "TIMETZ '05:10:20.115100+00'" == PgTimeTz { time: NaiveTime::from_hms_micro(5, 10, 20, 115100), offset: FixedOffset::east(0) },
-        "TIMETZ '05:10:20.115100+06:30'" == PgTimeTz { time: NaiveTime::from_hms_micro(5, 10, 20, 115100), offset: FixedOffset::east(60 * 60 * 6 + 1800) },
-        "TIMETZ '05:10:20.115100-05'" == PgTimeTz { time: NaiveTime::from_hms_micro(5, 10, 20, 115100), offset: FixedOffset::west(60 * 60 * 5) },
-        "TIMETZ '05:10:20+02'" == PgTimeTz { time: NaiveTime::from_hms(5, 10, 20), offset: FixedOffset::east(60 * 60 * 2 )}
+        "TIMETZ '05:10:20.115100+00'" == PgTimeTz { time: NaiveTime::from_hms_micro_opt(5, 10, 20, 115100).unwrap(), offset: FixedOffset::east_opt(0).unwrap() },
+        "TIMETZ '05:10:20.115100+06:30'" == PgTimeTz { time: NaiveTime::from_hms_micro_opt(5, 10, 20, 115100).unwrap(), offset: FixedOffset::east_opt(60 * 60 * 6 + 1800).unwrap() },
+        "TIMETZ '05:10:20.115100-05'" == PgTimeTz { time: NaiveTime::from_hms_micro_opt(5, 10, 20, 115100).unwrap(), offset: FixedOffset::west_opt(60 * 60 * 5).unwrap() },
+        "TIMETZ '05:10:20+02'" == PgTimeTz { time: NaiveTime::from_hms_opt(5, 10, 20).unwrap(), offset: FixedOffset::east_opt(60 * 60 * 2 ).unwrap() }
     ));
 }
 
@@ -426,7 +476,9 @@ mod json {
             .await?;
 
         let value: &JsonRawValue = row.try_get(0)?;
+        assert_eq!(value.get(), "{\"hello\": \"world\"}");
 
+        let value: Box<JsonRawValue> = row.try_get(0)?;
         assert_eq!(value.get(), "{\"hello\": \"world\"}");
 
         // prepared, binary API
@@ -435,7 +487,9 @@ mod json {
             .await?;
 
         let value: &JsonRawValue = row.try_get(0)?;
+        assert_eq!(value.get(), "{\"hello\": \"world\"}");
 
+        let value: Box<JsonRawValue> = row.try_get(0)?;
         assert_eq!(value.get(), "{\"hello\": \"world\"}");
 
         Ok(())
@@ -475,6 +529,69 @@ test_type!(numrange_bigdecimal<PgRange<sqlx::types::BigDecimal>>(Postgres,
     "'(1.3,2.4)'::numrange" == PgRange::from(
         (Bound::Excluded("1.3".parse::<sqlx::types::BigDecimal>().unwrap()),
          Bound::Excluded("2.4".parse::<sqlx::types::BigDecimal>().unwrap())))
+));
+
+#[cfg(not(postgres = "13"))]
+test_type!(cube<sqlx::postgres::types::PgCube>(Postgres,
+    "cube(2)" == sqlx::postgres::types::PgCube::Point(2.),
+    "cube(2.1)" == sqlx::postgres::types::PgCube::Point(2.1),
+    "cube(2,3)" == sqlx::postgres::types::PgCube::OneDimensionInterval(2., 3.),
+    "cube(2.2,-3.4)" == sqlx::postgres::types::PgCube::OneDimensionInterval(2.2, -3.4),
+    "cube(array[2,3])" == sqlx::postgres::types::PgCube::ZeroVolume(vec![2., 3.]),
+    "cube(array[2,3],array[4,5])" == sqlx::postgres::types::PgCube::MultiDimension(vec![vec![2.,3.],vec![4.,5.]]),
+    "cube(array[2,3,4],array[4,5,6])" == sqlx::postgres::types::PgCube::MultiDimension(vec![vec![2.,3.,4.],vec![4.,5.,6.]]),
+));
+
+#[cfg(not(postgres = "13"))]
+test_type!(_cube<Vec<sqlx::postgres::types::PgCube>>(Postgres,
+    "array[cube(2),cube(2)]" == vec![sqlx::postgres::types::PgCube::Point(2.), sqlx::postgres::types::PgCube::Point(2.)],
+    "array[cube(2.2,-3.4)]" == vec![sqlx::postgres::types::PgCube::OneDimensionInterval(2.2, -3.4)],
+));
+
+test_type!(point<sqlx::postgres::types::PgPoint>(Postgres,
+    "point(2.2,-3.4)" ~= sqlx::postgres::types::PgPoint { x: 2.2, y:-3.4 },
+));
+
+test_type!(_point<Vec<sqlx::postgres::types::PgPoint>>(Postgres,
+    "array[point(2,3),point(2.1,3.4)]" @= vec![sqlx::postgres::types::PgPoint { x:2., y: 3. }, sqlx::postgres::types::PgPoint { x:2.1, y: 3.4 }],
+    "array[point(2.2,-3.4)]" @= vec![sqlx::postgres::types::PgPoint { x: 2.2, y: -3.4 }],
+));
+
+test_type!(line<sqlx::postgres::types::PgLine>(Postgres,
+    "line('{1.1, -2.2, 3.3}')" == sqlx::postgres::types::PgLine { a: 1.1, b:-2.2, c: 3.3 },
+    "line('((0.0, 0.0), (1.0,1.0))')" == sqlx::postgres::types::PgLine { a: 1., b: -1., c: 0. },
+));
+
+test_type!(lseg<sqlx::postgres::types::PgLSeg>(Postgres,
+    "lseg('((1.0, 2.0), (3.0,4.0))')" == sqlx::postgres::types::PgLSeg { start_x: 1., start_y: 2., end_x: 3. , end_y: 4.},
+));
+
+test_type!(box<sqlx::postgres::types::PgBox>(Postgres,
+    "box('((1.0, 2.0), (3.0,4.0))')" == sqlx::postgres::types::PgBox { upper_right_x: 3., upper_right_y: 4., lower_left_x: 1. , lower_left_y: 2.},
+));
+
+test_type!(_box<Vec<sqlx::postgres::types::PgBox>>(Postgres,
+    "array[box('1,2,3,4'),box('((1.1, 2.2), (3.3, 4.4))')]" @= vec![sqlx::postgres::types::PgBox { upper_right_x: 3., upper_right_y: 4., lower_left_x: 1., lower_left_y: 2. }, sqlx::postgres::types::PgBox { upper_right_x: 3.3, upper_right_y: 4.4, lower_left_x: 1.1, lower_left_y: 2.2 }],
+));
+
+test_type!(path<sqlx::postgres::types::PgPath>(Postgres,
+    "path('((1.0, 2.0), (3.0,4.0))')" == sqlx::postgres::types::PgPath { closed: true, points: vec![ sqlx::postgres::types::PgPoint { x: 1., y: 2. }, sqlx::postgres::types::PgPoint { x: 3. , y: 4. } ]},
+    "path('[(1.0, 2.0), (3.0,4.0)]')" == sqlx::postgres::types::PgPath { closed: false, points: vec![ sqlx::postgres::types::PgPoint { x: 1., y: 2. }, sqlx::postgres::types::PgPoint { x: 3. , y: 4. } ]},
+));
+
+test_type!(polygon<sqlx::postgres::types::PgPolygon>(Postgres,
+    "polygon('((-2,-3),(-1,-3),(-1,-1),(1,1),(1,3),(2,3),(2,-3),(1,-3),(1,0),(-1,0),(-1,-2),(-2,-2))')" ~= sqlx::postgres::types::PgPolygon {  points: vec![
+            sqlx::postgres::types::PgPoint { x: -2., y: -3. }, sqlx::postgres::types::PgPoint { x: -1., y: -3. }, sqlx::postgres::types::PgPoint { x: -1., y: -1. }, sqlx::postgres::types::PgPoint { x: 1., y: 1. },
+            sqlx::postgres::types::PgPoint { x: 1., y: 3. },   sqlx::postgres::types::PgPoint { x: 2., y: 3. },   sqlx::postgres::types::PgPoint { x: 2., y: -3. },  sqlx::postgres::types::PgPoint { x: 1., y: -3. },
+            sqlx::postgres::types::PgPoint { x: 1., y: 0. },   sqlx::postgres::types::PgPoint { x: -1., y: 0. },  sqlx::postgres::types::PgPoint { x: -1., y: -2. }, sqlx::postgres::types::PgPoint { x: -2., y: -2. },
+    ]},
+));
+
+test_type!(circle<sqlx::postgres::types::PgCircle>(Postgres,
+    "circle('<(1.1, -2.2), 3.3>')" ~= sqlx::postgres::types::PgCircle { x: 1.1, y:-2.2, radius: 3.3 },
+    "circle('((1.1, -2.2), 3.3)')" ~= sqlx::postgres::types::PgCircle { x: 1.1, y:-2.2, radius: 3.3 },
+    "circle('(1.1, -2.2), 3.3')" ~= sqlx::postgres::types::PgCircle { x: 1.1, y:-2.2, radius: 3.3 },
+    "circle('1.1, -2.2, 3.3')" ~= sqlx::postgres::types::PgCircle { x: 1.1, y:-2.2, radius: 3.3 },
 ));
 
 #[cfg(feature = "rust_decimal")]
@@ -564,24 +681,96 @@ test_prepared_type!(citext_array<Vec<PgCiText>>(Postgres,
     ],
 ));
 
-// FIXME: needed to disable `ltree` tests in version that don't have a binary format for it
-// but `PgLTree` should just fall back to text format
-#[cfg(any(postgres_14, postgres_15))]
 test_type!(ltree<sqlx::postgres::types::PgLTree>(Postgres,
     "'Foo.Bar.Baz.Quux'::ltree" == sqlx::postgres::types::PgLTree::from_str("Foo.Bar.Baz.Quux").unwrap(),
-    "'Alpha.Beta.Delta.Gamma'::ltree" == sqlx::postgres::types::PgLTree::from_iter(["Alpha", "Beta", "Delta", "Gamma"]).unwrap(),
+    "'Alpha.Beta.Delta.Gamma'::ltree" == sqlx::postgres::types::PgLTree::try_from_iter(["Alpha", "Beta", "Delta", "Gamma"]).unwrap(),
 ));
 
-// FIXME: needed to disable `ltree` tests in version that don't have a binary format for it
-// but `PgLTree` should just fall back to text format
-#[cfg(any(postgres_14, postgres_15))]
 test_type!(ltree_vec<Vec<sqlx::postgres::types::PgLTree>>(Postgres,
     "array['Foo.Bar.Baz.Quux', 'Alpha.Beta.Delta.Gamma']::ltree[]" ==
         vec![
             sqlx::postgres::types::PgLTree::from_str("Foo.Bar.Baz.Quux").unwrap(),
-            sqlx::postgres::types::PgLTree::from_iter(["Alpha", "Beta", "Delta", "Gamma"]).unwrap()
+            sqlx::postgres::types::PgLTree::try_from_iter(["Alpha", "Beta", "Delta", "Gamma"]).unwrap()
         ]
 ));
+
+#[derive(sqlx::Type, Debug, PartialEq)]
+#[sqlx(type_name = "positive_int")]
+struct PositiveInt(i32);
+
+#[derive(sqlx::Type, Debug, PartialEq)]
+#[sqlx(type_name = "percentage")]
+struct Percentage(PositiveInt);
+
+#[derive(sqlx::Type, Debug, PartialEq)]
+struct Person {
+    id: i32,
+    age: PositiveInt,
+    percent: Percentage,
+}
+
+test_type!(nested_domain_types_1<Person>(Postgres,
+    "ROW(1, 21::positive_int, 50::percentage)::person" == Person { id: 1, age: PositiveInt(21), percent: Percentage(PositiveInt(50)) })
+);
+
+test_type!(domain_type_array_1<Vec<PositiveInt>>(Postgres,
+    "ARRAY[1, 50, 1000]::positive_int[]" == vec![
+        PositiveInt(1),
+        PositiveInt(50),
+        PositiveInt(1000),
+    ],
+));
+
+test_type!(domain_type_array_2<Vec<Percentage>>(Postgres,
+    "ARRAY[4, 66, 100]::percentage[]" == vec![
+        Percentage(PositiveInt(4)),
+        Percentage(PositiveInt(66)),
+        Percentage(PositiveInt(100))
+    ],
+));
+
+#[derive(sqlx::Type, Debug, PartialEq)]
+#[sqlx(type_name = "leaf_composite")]
+struct LeafComposite {
+    prim: i32,
+}
+
+#[derive(sqlx::Type, Debug, PartialEq)]
+#[sqlx(type_name = "domain")]
+struct Domain(LeafComposite);
+
+#[derive(sqlx::Type, Debug, PartialEq)]
+#[sqlx(type_name = "root_composite")]
+struct RootComposite {
+    domain: Domain,
+}
+
+test_type!(nested_domain_types_2<RootComposite>(Postgres,
+    "ROW(ROW(1))::root_composite" == RootComposite { domain: Domain(LeafComposite { prim: 1 }) })
+);
+
+test_type!(domain_type_array_3<Vec<Domain>>(Postgres,
+    "ARRAY[ROW(50), ROW(1), ROW(1000)]::domain[]" == vec![
+        Domain(LeafComposite { prim: 50 }),
+        Domain(LeafComposite { prim: 1 }),
+        Domain(LeafComposite { prim: 1000 }),
+    ]
+));
+
+test_type!(test_arc<Arc<i32>>(Postgres, "1::INT4" == Arc::new(1i32)));
+test_type!(test_cow<Cow<'_, i32>>(Postgres, "1::INT4" == Cow::<i32>::Owned(1i32)));
+test_type!(test_box<Box<i32>>(Postgres, "1::INT4" == Box::new(1i32)));
+test_type!(test_rc<Rc<i32>>(Postgres, "1::INT4" == Rc::new(1i32)));
+
+test_type!(test_box_str<Box<str>>(Postgres, "'John'::TEXT" == Box::<str>::from("John")));
+test_type!(test_cow_str<Cow<'_, str>>(Postgres, "'Phil'::TEXT" == Cow::<'static, str>::from("Phil")));
+test_type!(test_arc_str<Arc<str>>(Postgres, "'1234'::TEXT" == Arc::<str>::from("1234")));
+test_type!(test_rc_str<Rc<str>>(Postgres, "'5678'::TEXT" == Rc::<str>::from("5678")));
+
+test_prepared_type!(test_box_slice<Box<[u8]>>(Postgres, "'\\x01020304'::BYTEA" == Box::<[u8]>::from([1,2,3,4])));
+test_prepared_type!(test_cow_slice<Cow<'_, [u8]>>(Postgres, "'\\x01020304'::BYTEA" == Cow::<'static, [u8]>::from(&[1,2,3,4])));
+test_prepared_type!(test_arc_slice<Arc<[u8]>>(Postgres, "'\\x01020304'::BYTEA" == Arc::<[u8]>::from([1,2,3,4])));
+test_prepared_type!(test_rc_slice<Rc<[u8]>>(Postgres, "'\\x01020304'::BYTEA" == Rc::<[u8]>::from([1,2,3,4])));
 
 #[sqlx_macros::test]
 async fn test_text_adapter() -> anyhow::Result<()> {

@@ -28,9 +28,9 @@ use std::convert::TryFrom;
 use bytes::Bytes;
 
 use std::error::Error;
+use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::str::{self, FromStr};
-use std::{fmt, u16, u8};
 
 use self::scheme::Scheme2;
 
@@ -135,6 +135,7 @@ enum ErrorKind {
     SchemeMissing,
     AuthorityMissing,
     PathAndQueryMissing,
+    PathDoesNotStartWithSlash,
     TooLong,
     Empty,
     SchemeTooLong,
@@ -149,6 +150,7 @@ const MAX_LEN: usize = (u16::MAX - 1) as usize;
 // of this table is that all entries above 127 are invalid. This makes all of the
 // valid entries a valid single-byte UTF-8 code point. This means that a slice
 // of such valid entries is valid UTF-8.
+#[rustfmt::skip]
 const URI_CHARS: [u8; 256] = [
     //  0      1      2      3      4      5      6      7      8      9
         0,     0,     0,     0,     0,     0,     0,     0,     0,     0, //   x
@@ -244,10 +246,8 @@ impl Uri {
             if src.path_and_query.is_none() {
                 return Err(ErrorKind::PathAndQueryMissing.into());
             }
-        } else {
-            if src.authority.is_some() && src.path_and_query.is_some() {
-                return Err(ErrorKind::SchemeMissing.into());
-            }
+        } else if src.authority.is_some() && src.path_and_query.is_some() {
+            return Err(ErrorKind::SchemeMissing.into());
         }
 
         let scheme = match src.scheme {
@@ -268,9 +268,9 @@ impl Uri {
         };
 
         Ok(Uri {
-            scheme: scheme,
-            authority: authority,
-            path_and_query: path_and_query,
+            scheme,
+            authority,
+            path_and_query,
         })
     }
 
@@ -321,7 +321,7 @@ impl Uri {
 
                     return Ok(Uri {
                         scheme: Scheme::empty(),
-                        authority: authority,
+                        authority,
                         path_and_query: PathAndQuery::empty(),
                     });
                 }
@@ -650,7 +650,7 @@ impl Uri {
     /// assert_eq!(uri.port_u16(), Some(80));
     /// ```
     pub fn port_u16(&self) -> Option<u16> {
-        self.port().and_then(|p| Some(p.as_u16()))
+        self.port().map(|p| p.as_u16())
     }
 
     /// Get the query string of this `Uri`, starting after the `?`.
@@ -706,29 +706,29 @@ impl Uri {
     }
 }
 
-impl<'a> TryFrom<&'a [u8]> for Uri {
+impl TryFrom<&[u8]> for Uri {
     type Error = InvalidUri;
 
     #[inline]
-    fn try_from(t: &'a [u8]) -> Result<Self, Self::Error> {
+    fn try_from(t: &[u8]) -> Result<Self, Self::Error> {
         Uri::from_shared(Bytes::copy_from_slice(t))
     }
 }
 
-impl<'a> TryFrom<&'a str> for Uri {
+impl TryFrom<&str> for Uri {
     type Error = InvalidUri;
 
     #[inline]
-    fn try_from(t: &'a str) -> Result<Self, Self::Error> {
+    fn try_from(t: &str) -> Result<Self, Self::Error> {
         t.parse()
     }
 }
 
-impl<'a> TryFrom<&'a String> for Uri {
+impl TryFrom<&String> for Uri {
     type Error = InvalidUri;
 
     #[inline]
-    fn try_from(t: &'a String) -> Result<Self, Self::Error> {
+    fn try_from(t: &String) -> Result<Self, Self::Error> {
         t.parse()
     }
 }
@@ -742,7 +742,7 @@ impl TryFrom<String> for Uri {
     }
 }
 
-impl<'a> TryFrom<Vec<u8>> for Uri {
+impl TryFrom<Vec<u8>> for Uri {
     type Error = InvalidUri;
 
     #[inline]
@@ -760,11 +760,11 @@ impl TryFrom<Parts> for Uri {
     }
 }
 
-impl<'a> TryFrom<&'a Uri> for Uri {
+impl TryFrom<&Uri> for Uri {
     type Error = crate::Error;
 
     #[inline]
-    fn try_from(src: &'a Uri) -> Result<Self, Self::Error> {
+    fn try_from(src: &Uri) -> Result<Self, Self::Error> {
         Ok(src.clone())
     }
 }
@@ -812,9 +812,9 @@ impl From<Uri> for Parts {
         };
 
         Parts {
-            scheme: scheme,
-            authority: authority,
-            path_and_query: path_and_query,
+            scheme,
+            authority,
+            path_and_query,
             _priv: (),
         }
     }
@@ -858,7 +858,7 @@ fn parse_full(mut s: Bytes) -> Result<Uri, InvalidUri> {
 
         return Ok(Uri {
             scheme: scheme.into(),
-            authority: authority,
+            authority,
             path_and_query: PathAndQuery::empty(),
         });
     }
@@ -873,10 +873,17 @@ fn parse_full(mut s: Bytes) -> Result<Uri, InvalidUri> {
         data: unsafe { ByteStr::from_utf8_unchecked(authority) },
     };
 
+    // When absolute, path is coered to / if empty.
+    let path_and_query = if s.is_empty() {
+        PathAndQuery::slash()
+    } else {
+        PathAndQuery::from_shared(s)?
+    };
+
     Ok(Uri {
         scheme: scheme.into(),
-        authority: authority,
-        path_and_query: PathAndQuery::from_shared(s)?,
+        authority,
+        path_and_query,
     })
 }
 
@@ -965,8 +972,8 @@ impl PartialEq<str> for Uri {
         }
 
         if let Some(query) = self.query() {
-            if other.len() == 0 {
-                return query.len() == 0;
+            if other.is_empty() {
+                return query.is_empty();
             }
 
             if other[0] != b'?' {
@@ -996,13 +1003,13 @@ impl PartialEq<Uri> for str {
     }
 }
 
-impl<'a> PartialEq<&'a str> for Uri {
-    fn eq(&self, other: &&'a str) -> bool {
+impl PartialEq<&str> for Uri {
+    fn eq(&self, other: &&str) -> bool {
         self == *other
     }
 }
 
-impl<'a> PartialEq<Uri> for &'a str {
+impl PartialEq<Uri> for &str {
     fn eq(&self, uri: &Uri) -> bool {
         uri == *self
     }
@@ -1025,17 +1032,19 @@ impl Default for Uri {
 impl fmt::Display for Uri {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(scheme) = self.scheme() {
-            write!(f, "{}://", scheme)?;
+            f.write_str(scheme.as_str())?;
+            f.write_str("://")?;
         }
 
         if let Some(authority) = self.authority() {
-            write!(f, "{}", authority)?;
+            f.write_str(authority.as_str())?;
         }
 
-        write!(f, "{}", self.path())?;
+        f.write_str(self.path())?;
 
         if let Some(query) = self.query() {
-            write!(f, "?{}", query)?;
+            f.write_str("?")?;
+            f.write_str(query)?;
         }
 
         Ok(())
@@ -1061,6 +1070,10 @@ impl From<ErrorKind> for InvalidUriParts {
 }
 
 impl InvalidUri {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0 == ErrorKind::Empty
+    }
+
     fn s(&self) -> &str {
         match self.0 {
             ErrorKind::InvalidUriChar => "invalid uri character",
@@ -1071,6 +1084,7 @@ impl InvalidUri {
             ErrorKind::SchemeMissing => "scheme missing",
             ErrorKind::AuthorityMissing => "authority missing",
             ErrorKind::PathAndQueryMissing => "path missing",
+            ErrorKind::PathDoesNotStartWithSlash => "path does not start with slash",
             ErrorKind::TooLong => "uri too long",
             ErrorKind::Empty => "empty string",
             ErrorKind::SchemeTooLong => "scheme too long",

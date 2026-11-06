@@ -3,8 +3,8 @@ use quote::ToTokens;
 use syn::{DeriveInput, Field, Ident, Meta};
 
 use crate::codegen::FromVariantImpl;
-use crate::options::{DataShape, OuterFrom, ParseAttribute, ParseData};
-use crate::{FromMeta, Result};
+use crate::options::{DataShape, ForwardedField, OuterFrom, ParseAttribute, ParseData};
+use crate::{FromField, FromMeta, Result};
 
 #[derive(Debug, Clone)]
 pub struct FromVariantOptions {
@@ -12,7 +12,7 @@ pub struct FromVariantOptions {
     /// The field on the deriving struct into which the discriminant expression
     /// should be placed by the derived `FromVariant` impl.
     pub discriminant: Option<Ident>,
-    pub fields: Option<Ident>,
+    pub fields: Option<ForwardedField>,
     pub supports: Option<DataShape>,
 }
 
@@ -36,9 +36,8 @@ impl<'a> From<&'a FromVariantOptions> for FromVariantImpl<'a> {
             ident: v.base.ident.as_ref(),
             discriminant: v.discriminant.as_ref(),
             fields: v.fields.as_ref(),
-            attrs: v.base.attrs.as_ref(),
             attr_names: &v.base.attr_names,
-            forward_attrs: v.base.forward_attrs.as_ref(),
+            forward_attrs: v.base.as_forward_attrs(),
             from_ident: v.base.from_ident,
             supports: v.supports.as_ref(),
         }
@@ -60,15 +59,19 @@ impl ParseData for FromVariantOptions {
     fn parse_field(&mut self, field: &Field) -> Result<()> {
         match field.ident.as_ref().map(|v| v.to_string()).as_deref() {
             Some("discriminant") => {
-                self.discriminant = field.ident.clone();
+                self.discriminant.clone_from(&field.ident);
                 Ok(())
             }
             Some("fields") => {
-                self.fields = field.ident.clone();
+                self.fields = ForwardedField::from_field(field).map(Some)?;
                 Ok(())
             }
             _ => self.base.parse_field(field),
         }
+    }
+
+    fn validate_body(&self, errors: &mut crate::error::Accumulator) {
+        self.base.validate_body(errors);
     }
 }
 

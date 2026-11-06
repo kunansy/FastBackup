@@ -69,9 +69,9 @@ create_format!(
     /// Use lowercase characters
     Lowercase
 
-    /// Use in combination with [`OneOrMany`](crate::OneOrMany). Emit single element for lists of size 1.
+    /// Use in combination with [`OneOrMany`]. Emit single element for lists of size 1.
     PreferOne
-    /// Use in combination with [`OneOrMany`](crate::OneOrMany). Always emit the list form.
+    /// Use in combination with [`OneOrMany`]. Always emit the list form.
     PreferMany
 
     /// Emit padding during serialization.
@@ -136,5 +136,25 @@ impl Separator for ColonSeparator {
     #[inline]
     fn separator() -> &'static str {
         ":"
+    }
+}
+
+/// Predefined separator using a single linefeed.
+pub struct UnixLineSeparator;
+
+impl Separator for UnixLineSeparator {
+    #[inline]
+    fn separator() -> &'static str {
+        "\n"
+    }
+}
+
+/// Predefined separator using a DOS/Windows line ending.
+pub struct DosLineSeparator;
+
+impl Separator for DosLineSeparator {
+    #[inline]
+    fn separator() -> &'static str {
+        "\r\n"
     }
 }

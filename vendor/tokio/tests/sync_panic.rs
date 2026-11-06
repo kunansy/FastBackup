@@ -1,5 +1,8 @@
 #![warn(rust_2018_idioms)]
-#![cfg(all(feature = "full", not(target_os = "wasi")))]
+#![cfg(any(
+    all(feature = "full", not(target_os = "wasi")),
+    all(target_os = "emscripten", feature = "rt", feature = "sync")
+))]
 #![cfg(panic = "unwind")]
 
 use std::{error::Error, sync::Arc};
@@ -130,6 +133,22 @@ fn mpsc_bounded_receiver_blocking_recv_panic_caller() -> Result<(), Box<dyn Erro
 }
 
 #[test]
+fn mpsc_bounded_receiver_blocking_recv_many_panic_caller() -> Result<(), Box<dyn Error>> {
+    let panic_location_file = test_panic(|| {
+        let rt = current_thread();
+        let (_tx, mut rx) = mpsc::channel::<u8>(1);
+        rt.block_on(async {
+            let _ = rx.blocking_recv();
+        });
+    });
+
+    // The panic location should be in this file
+    assert_eq!(&panic_location_file.unwrap(), file!());
+
+    Ok(())
+}
+
+#[test]
 fn mpsc_bounded_sender_blocking_send_panic_caller() -> Result<(), Box<dyn Error>> {
     let panic_location_file = test_panic(|| {
         let rt = current_thread();
@@ -152,6 +171,23 @@ fn mpsc_unbounded_receiver_blocking_recv_panic_caller() -> Result<(), Box<dyn Er
         let (_tx, mut rx) = mpsc::unbounded_channel::<u8>();
         rt.block_on(async {
             let _ = rx.blocking_recv();
+        });
+    });
+
+    // The panic location should be in this file
+    assert_eq!(&panic_location_file.unwrap(), file!());
+
+    Ok(())
+}
+
+#[test]
+fn mpsc_unbounded_receiver_blocking_recv_many_panic_caller() -> Result<(), Box<dyn Error>> {
+    let panic_location_file = test_panic(|| {
+        let rt = current_thread();
+        let (_tx, mut rx) = mpsc::unbounded_channel::<u8>();
+        let mut vec = vec![];
+        rt.block_on(async {
+            let _ = rx.blocking_recv_many(&mut vec, 1);
         });
     });
 

@@ -1,24 +1,26 @@
-use std::borrow::Cow;
 use std::future::Future;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
 
-use futures_intrusive::sync::{Mutex, MutexGuard};
-
 use futures_channel::oneshot;
-use sqlx_core::describe::Describe;
+use futures_intrusive::sync::{Mutex, MutexGuard};
+use sqlx_core::sql_str::SqlStr;
+use tracing::span::Span;
+
 use sqlx_core::error::Error;
 use sqlx_core::transaction::{
     begin_ansi_transaction_sql, commit_ansi_transaction_sql, rollback_ansi_transaction_sql,
 };
 use sqlx_core::Either;
 
-use crate::connection::describe::describe;
 use crate::connection::establish::EstablishParams;
+use crate::connection::execute;
 use crate::connection::ConnectionState;
-use crate::connection::{execute, ConnectionHandleRaw};
-use crate::{Sqlite, SqliteArguments, SqliteQueryResult, SqliteRow, SqliteStatement};
+use crate::{SqliteArguments, SqliteQueryResult, SqliteRow, SqliteStatement};
+
+#[cfg(feature = "deserialize")]
+use crate::connection::deserialize::{deserialize, serialize, SchemaName, SqliteOwnedBuf};
 
 // Each SQLite connection has a dedicated thread.
 
@@ -27,35 +29,59 @@ use crate::{Sqlite, SqliteArguments, SqliteQueryResult, SqliteRow, SqliteStateme
 //       unlikely.
 
 pub(crate) struct ConnectionWorker {
-    command_tx: flume::Sender<Command>,
-    /// The `sqlite3` pointer. NOTE: access is unsynchronized!
-    pub(crate) _handle_raw: ConnectionHandleRaw,
+    command_tx: flume::Sender<(Command, tracing::Span)>,
     /// Mutex for locking access to the database.
     pub(crate) shared: Arc<WorkerSharedState>,
 }
 
 pub(crate) struct WorkerSharedState {
-    pub(crate) cached_statements_size: AtomicUsize,
+    transaction_depth: AtomicUsize,
+    cached_statements_size: AtomicUsize,
     pub(crate) conn: Mutex<ConnectionState>,
+}
+
+impl WorkerSharedState {
+    pub(crate) fn get_transaction_depth(&self) -> usize {
+        self.transaction_depth.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn get_cached_statements_size(&self) -> usize {
+        self.cached_statements_size.load(Ordering::Acquire)
+    }
 }
 
 enum Command {
     Prepare {
-        query: Box<str>,
-        tx: oneshot::Sender<Result<SqliteStatement<'static>, Error>>,
+        query: SqlStr,
+        tx: oneshot::Sender<Result<SqliteStatement, Error>>,
     },
+    #[cfg(feature = "offline")]
     Describe {
-        query: Box<str>,
-        tx: oneshot::Sender<Result<Describe<Sqlite>, Error>>,
+        query: SqlStr,
+        tx: oneshot::Sender<Result<sqlx_core::describe::Describe<crate::Sqlite>, Error>>,
     },
     Execute {
-        query: Box<str>,
-        arguments: Option<SqliteArguments<'static>>,
+        query: SqlStr,
+        arguments: Option<SqliteArguments>,
         persistent: bool,
         tx: flume::Sender<Result<Either<SqliteQueryResult, SqliteRow>, Error>>,
+        limit: Option<usize>,
+    },
+    #[cfg(feature = "deserialize")]
+    Serialize {
+        schema: Option<SchemaName>,
+        tx: oneshot::Sender<Result<SqliteOwnedBuf, Error>>,
+    },
+    #[cfg(feature = "deserialize")]
+    Deserialize {
+        schema: Option<SchemaName>,
+        data: SqliteOwnedBuf,
+        read_only: bool,
+        tx: oneshot::Sender<Result<(), Error>>,
     },
     Begin {
         tx: rendezvous_oneshot::Sender<Result<(), Error>>,
+        statement: Option<SqlStr>,
     },
     Commit {
         tx: rendezvous_oneshot::Sender<Result<(), Error>>,
@@ -93,6 +119,7 @@ impl ConnectionWorker {
                 };
 
                 let shared = Arc::new(WorkerSharedState {
+                    transaction_depth: AtomicUsize::new(0),
                     cached_statements_size: AtomicUsize::new(0),
                     // note: must be fair because in `Command::UnlockDb` we unlock the mutex
                     // and then immediately try to relock it; an unfair mutex would immediately
@@ -104,7 +131,6 @@ impl ConnectionWorker {
                 if establish_tx
                     .send(Ok(Self {
                         command_tx,
-                        _handle_raw: conn.handle.to_raw(),
                         shared: Arc::clone(&shared),
                     }))
                     .is_err()
@@ -117,28 +143,31 @@ impl ConnectionWorker {
                 // would rollback an already completed transaction.
                 let mut ignore_next_start_rollback = false;
 
-                for cmd in command_rx {
+                for (cmd, span) in command_rx {
+                    let _guard = span.enter();
                     match cmd {
                         Command::Prepare { query, tx } => {
-                            tx.send(prepare(&mut conn, &query).map(|prepared| {
-                                update_cached_statements_size(
-                                    &conn,
-                                    &shared.cached_statements_size,
-                                );
-                                prepared
-                            }))
-                            .ok();
+                            tx.send(prepare(&mut conn, query)).ok();
+
+                            // This may issue an unnecessary write on failure,
+                            // but it doesn't matter in the grand scheme of things.
+                            update_cached_statements_size(
+                                &conn,
+                                &shared.cached_statements_size,
+                            );
                         }
+                        #[cfg(feature = "offline")]
                         Command::Describe { query, tx } => {
-                            tx.send(describe(&mut conn, &query)).ok();
+                            tx.send(crate::connection::describe::describe(&mut conn, query)).ok();
                         }
                         Command::Execute {
                             query,
                             arguments,
                             persistent,
                             tx,
+                            limit
                         } => {
-                            let iter = match execute::iter(&mut conn, &query, arguments, persistent)
+                            let iter = match execute::iter(&mut conn, query, arguments, persistent)
                             {
                                 Ok(iter) => iter,
                                 Err(e) => {
@@ -147,21 +176,68 @@ impl ConnectionWorker {
                                 }
                             };
 
-                            for res in iter {
-                                if tx.send(res).is_err() {
-                                    break;
-                                }
+                            match limit {
+                                None => {
+                                    for res in iter {
+                                        let has_error = res.is_err();
+                                        if tx.send(res).is_err() || has_error {
+                                            break;
+                                        }
+                                    }
+                                },
+                                Some(limit) => {
+                                    let mut iter = iter;
+                                    let mut rows_returned = 0;
+
+                                    while let Some(res) = iter.next() {
+                                        if let Ok(ok) = &res {
+                                            if ok.is_right() {
+                                                rows_returned += 1;
+                                                if rows_returned >= limit {
+                                                    drop(iter);
+                                                    let _ = tx.send(res);
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        let has_error = res.is_err();
+                                        if tx.send(res).is_err() || has_error {
+                                            break;
+                                        }
+                                    }
+                                },
                             }
 
                             update_cached_statements_size(&conn, &shared.cached_statements_size);
                         }
-                        Command::Begin { tx } => {
-                            let depth = conn.transaction_depth;
+                        Command::Begin { tx, statement } => {
+                            let depth = shared.transaction_depth.load(Ordering::Acquire);
+
+                            let is_custom_statement = statement.is_some();
+                            let statement = match statement {
+                                // custom `BEGIN` statements are not allowed if
+                                // we're already in a transaction (we need to
+                                // issue a `SAVEPOINT` instead)
+                                Some(_) if depth > 0 => {
+                                    if tx.blocking_send(Err(Error::InvalidSavePointStatement)).is_err() {
+                                        break;
+                                    }
+                                    continue;
+                                },
+                                Some(statement) => statement,
+                                None => begin_ansi_transaction_sql(depth),
+                            };
                             let res =
                                 conn.handle
-                                    .exec(begin_ansi_transaction_sql(depth))
-                                    .map(|_| {
-                                        conn.transaction_depth += 1;
+                                    .exec(statement.as_str())
+                                    .and_then(|res| {
+                                        if is_custom_statement && !conn.handle.in_transaction() {
+                                            return Err(Error::BeginFailed)
+                                        }
+
+                                        shared.transaction_depth.fetch_add(1, Ordering::Release);
+
+                                        Ok(res)
                                     });
                             let res_ok = res.is_ok();
 
@@ -172,9 +248,9 @@ impl ConnectionWorker {
                                 // immediately otherwise it would remain started forever.
                                 if let Err(error) = conn
                                     .handle
-                                    .exec(rollback_ansi_transaction_sql(depth + 1))
+                                    .exec(rollback_ansi_transaction_sql(depth + 1).as_str())
                                     .map(|_| {
-                                        conn.transaction_depth -= 1;
+                                        shared.transaction_depth.fetch_sub(1, Ordering::Release);
                                     })
                                 {
                                     // The rollback failed. To prevent leaving the connection
@@ -186,13 +262,13 @@ impl ConnectionWorker {
                             }
                         }
                         Command::Commit { tx } => {
-                            let depth = conn.transaction_depth;
+                            let depth = shared.transaction_depth.load(Ordering::Acquire);
 
                             let res = if depth > 0 {
                                 conn.handle
-                                    .exec(commit_ansi_transaction_sql(depth))
+                                    .exec(commit_ansi_transaction_sql(depth).as_str())
                                     .map(|_| {
-                                        conn.transaction_depth -= 1;
+                                        shared.transaction_depth.fetch_sub(1, Ordering::Release);
                                     })
                             } else {
                                 Ok(())
@@ -212,13 +288,13 @@ impl ConnectionWorker {
                                 continue;
                             }
 
-                            let depth = conn.transaction_depth;
+                            let depth = shared.transaction_depth.load(Ordering::Acquire);
 
                             let res = if depth > 0 {
                                 conn.handle
-                                    .exec(rollback_ansi_transaction_sql(depth))
+                                    .exec(rollback_ansi_transaction_sql(depth).as_str())
                                     .map(|_| {
-                                        conn.transaction_depth -= 1;
+                                        shared.transaction_depth.fetch_sub(1, Ordering::Release);
                                     })
                             } else {
                                 Ok(())
@@ -235,6 +311,14 @@ impl ConnectionWorker {
                                     ignore_next_start_rollback = true;
                                 }
                             }
+                        }
+                        #[cfg(feature = "deserialize")]
+                        Command::Serialize { schema, tx } => {
+                            tx.send(serialize(&mut conn, schema)).ok();
+                        }
+                        #[cfg(feature = "deserialize")]
+                        Command::Deserialize { schema, data, read_only, tx } => {
+                            tx.send(deserialize(&mut conn, schema, data, read_only)).ok();
                         }
                         Command::ClearCache { tx } => {
                             conn.statements.clear();
@@ -263,46 +347,49 @@ impl ConnectionWorker {
         establish_rx.await.map_err(|_| Error::WorkerCrashed)?
     }
 
-    pub(crate) async fn prepare(&mut self, query: &str) -> Result<SqliteStatement<'static>, Error> {
-        self.oneshot_cmd(|tx| Command::Prepare {
-            query: query.into(),
-            tx,
-        })
-        .await?
+    pub(crate) async fn prepare(&mut self, query: SqlStr) -> Result<SqliteStatement, Error> {
+        self.oneshot_cmd(|tx| Command::Prepare { query, tx })
+            .await?
     }
 
-    pub(crate) async fn describe(&mut self, query: &str) -> Result<Describe<Sqlite>, Error> {
-        self.oneshot_cmd(|tx| Command::Describe {
-            query: query.into(),
-            tx,
-        })
-        .await?
+    #[cfg(feature = "offline")]
+    pub(crate) async fn describe(
+        &mut self,
+        query: SqlStr,
+    ) -> Result<sqlx_core::describe::Describe<crate::Sqlite>, Error> {
+        self.oneshot_cmd(|tx| Command::Describe { query, tx })
+            .await?
     }
 
     pub(crate) async fn execute(
         &mut self,
-        query: &str,
-        args: Option<SqliteArguments<'_>>,
+        query: SqlStr,
+        args: Option<SqliteArguments>,
         chan_size: usize,
         persistent: bool,
+        limit: Option<usize>,
     ) -> Result<flume::Receiver<Result<Either<SqliteQueryResult, SqliteRow>, Error>>, Error> {
         let (tx, rx) = flume::bounded(chan_size);
 
         self.command_tx
-            .send_async(Command::Execute {
-                query: query.into(),
-                arguments: args.map(SqliteArguments::into_static),
-                persistent,
-                tx,
-            })
+            .send_async((
+                Command::Execute {
+                    query,
+                    arguments: args,
+                    persistent,
+                    tx,
+                    limit,
+                },
+                Span::current(),
+            ))
             .await
             .map_err(|_| Error::WorkerCrashed)?;
 
         Ok(rx)
     }
 
-    pub(crate) async fn begin(&mut self) -> Result<(), Error> {
-        self.oneshot_cmd_with_ack(|tx| Command::Begin { tx })
+    pub(crate) async fn begin(&mut self, statement: Option<SqlStr>) -> Result<(), Error> {
+        self.oneshot_cmd_with_ack(|tx| Command::Begin { tx, statement })
             .await?
     }
 
@@ -318,12 +405,37 @@ impl ConnectionWorker {
 
     pub(crate) fn start_rollback(&mut self) -> Result<(), Error> {
         self.command_tx
-            .send(Command::Rollback { tx: None })
+            .send((Command::Rollback { tx: None }, Span::current()))
             .map_err(|_| Error::WorkerCrashed)
     }
 
     pub(crate) async fn ping(&mut self) -> Result<(), Error> {
         self.oneshot_cmd(|tx| Command::Ping { tx }).await
+    }
+
+    #[cfg(feature = "deserialize")]
+    pub(crate) async fn deserialize(
+        &mut self,
+        schema: Option<SchemaName>,
+        data: SqliteOwnedBuf,
+        read_only: bool,
+    ) -> Result<(), Error> {
+        self.oneshot_cmd(|tx| Command::Deserialize {
+            schema,
+            data,
+            read_only,
+            tx,
+        })
+        .await?
+    }
+
+    #[cfg(feature = "deserialize")]
+    pub(crate) async fn serialize(
+        &mut self,
+        schema: Option<SchemaName>,
+    ) -> Result<SqliteOwnedBuf, Error> {
+        self.oneshot_cmd(|tx| Command::Serialize { schema, tx })
+            .await?
     }
 
     async fn oneshot_cmd<F, T>(&mut self, command: F) -> Result<T, Error>
@@ -333,7 +445,7 @@ impl ConnectionWorker {
         let (tx, rx) = oneshot::channel();
 
         self.command_tx
-            .send_async(command(tx))
+            .send_async((command(tx), Span::current()))
             .await
             .map_err(|_| Error::WorkerCrashed)?;
 
@@ -347,7 +459,7 @@ impl ConnectionWorker {
         let (tx, rx) = rendezvous_oneshot::channel();
 
         self.command_tx
-            .send_async(command(tx))
+            .send_async((command(tx), Span::current()))
             .await
             .map_err(|_| Error::WorkerCrashed)?;
 
@@ -362,7 +474,8 @@ impl ConnectionWorker {
         let (guard, res) = futures_util::future::join(
             // we need to join the wait queue for the lock before we send the message
             self.shared.conn.lock(),
-            self.command_tx.send_async(Command::UnlockDb),
+            self.command_tx
+                .send_async((Command::UnlockDb, Span::current())),
         )
         .await;
 
@@ -379,7 +492,7 @@ impl ConnectionWorker {
 
         let send_res = self
             .command_tx
-            .send(Command::Shutdown { tx })
+            .send((Command::Shutdown { tx }, Span::current()))
             .map_err(|_| Error::WorkerCrashed);
 
         async move {
@@ -391,9 +504,9 @@ impl ConnectionWorker {
     }
 }
 
-fn prepare(conn: &mut ConnectionState, query: &str) -> Result<SqliteStatement<'static>, Error> {
+fn prepare(conn: &mut ConnectionState, query: SqlStr) -> Result<SqliteStatement, Error> {
     // prepare statement object (or checkout from cache)
-    let statement = conn.statements.get(query, true)?;
+    let statement = conn.statements.get(query.as_str(), true)?;
 
     let mut parameters = 0;
     let mut columns = None;
@@ -410,7 +523,7 @@ fn prepare(conn: &mut ConnectionState, query: &str) -> Result<SqliteStatement<'s
     }
 
     Ok(SqliteStatement {
-        sql: Cow::Owned(query.to_string()),
+        sql: query,
         columns: columns.unwrap_or_default(),
         column_names: column_names.unwrap_or_default(),
         parameters,

@@ -14,6 +14,10 @@ mod wheel;
 
 pub mod delay_queue;
 
+// re-export `FutureExt` to avoid breaking change
+#[doc(inline)]
+pub use crate::future::FutureExt;
+
 #[doc(inline)]
 pub use delay_queue::DelayQueue;
 
@@ -36,7 +40,7 @@ fn ms(duration: Duration, round: Round) -> u64 {
 
     // Round up.
     let millis = match round {
-        Round::Up => (duration.subsec_nanos() + NANOS_PER_MILLI - 1) / NANOS_PER_MILLI,
+        Round::Up => duration.subsec_nanos().div_ceil(NANOS_PER_MILLI),
         Round::Down => duration.subsec_millis(),
     };
 

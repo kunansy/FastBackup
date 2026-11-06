@@ -1,12 +1,12 @@
-use std::str::from_utf8;
+use std::str;
 
+use crate::collation::Collation;
+use crate::error::Error;
+use crate::io::MySqlBufExt;
+use crate::io::ProtocolDecode;
+use crate::protocol::Capabilities;
 use bitflags::bitflags;
 use bytes::{Buf, Bytes};
-
-use crate::error::Error;
-use crate::io::Decode;
-use crate::io::MySqlBufExt;
-use crate::protocol::Capabilities;
 
 // https://dev.mysql.com/doc/dev/mysql-server/8.0.12/group__group__cs__column__definition__flags.html
 
@@ -41,7 +41,7 @@ bitflags! {
         /// Field is an enumeration.
         const ENUM = 256;
 
-        /// Field is an auto-incement field.
+        /// Field is an auto-increment field.
         const AUTO_INCREMENT = 512;
 
         /// Field is a timestamp.
@@ -104,15 +104,13 @@ pub enum ColumnType {
 pub(crate) struct ColumnDefinition {
     #[allow(unused)]
     catalog: Bytes,
-    #[allow(unused)]
     schema: Bytes,
     #[allow(unused)]
     table_alias: Bytes,
-    #[allow(unused)]
     table: Bytes,
     alias: Bytes,
     name: Bytes,
-    pub(crate) char_set: u16,
+    pub(crate) collation: Collation,
     pub(crate) max_size: u32,
     pub(crate) r#type: ColumnType,
     pub(crate) flags: ColumnFlags,
@@ -124,25 +122,33 @@ impl ColumnDefinition {
     // NOTE: strings in-protocol are transmitted according to the client character set
     //       as this is UTF-8, all these strings should be UTF-8
 
+    pub(crate) fn schema(&self) -> Result<&str, Error> {
+        str::from_utf8(&self.schema).map_err(Error::protocol)
+    }
+
+    pub(crate) fn table(&self) -> Result<&str, Error> {
+        str::from_utf8(&self.table).map_err(Error::protocol)
+    }
+
     pub(crate) fn name(&self) -> Result<&str, Error> {
-        from_utf8(&self.name).map_err(Error::protocol)
+        str::from_utf8(&self.name).map_err(Error::protocol)
     }
 
     pub(crate) fn alias(&self) -> Result<&str, Error> {
-        from_utf8(&self.alias).map_err(Error::protocol)
+        str::from_utf8(&self.alias).map_err(Error::protocol)
     }
 }
 
-impl Decode<'_, Capabilities> for ColumnDefinition {
+impl ProtocolDecode<'_, Capabilities> for ColumnDefinition {
     fn decode_with(mut buf: Bytes, _: Capabilities) -> Result<Self, Error> {
-        let catalog = buf.get_bytes_lenenc();
-        let schema = buf.get_bytes_lenenc();
-        let table_alias = buf.get_bytes_lenenc();
-        let table = buf.get_bytes_lenenc();
-        let alias = buf.get_bytes_lenenc();
-        let name = buf.get_bytes_lenenc();
-        let _next_len = buf.get_uint_lenenc(); // always 0x0c
-        let char_set = buf.get_u16_le();
+        let catalog = buf.get_bytes_lenenc()?;
+        let schema = buf.get_bytes_lenenc()?;
+        let table_alias = buf.get_bytes_lenenc()?;
+        let table = buf.get_bytes_lenenc()?;
+        let alias = buf.get_bytes_lenenc()?;
+        let name = buf.get_bytes_lenenc()?;
+        let _next_len = buf.get_uint_lenenc()?; // always 0x0c
+        let collation = buf.get_u16_le();
         let max_size = buf.get_u32_le();
         let type_id = buf.get_u8();
         let flags = buf.get_u16_le();
@@ -155,7 +161,7 @@ impl Decode<'_, Capabilities> for ColumnDefinition {
             table,
             alias,
             name,
-            char_set,
+            collation: Collation(collation),
             max_size,
             r#type: ColumnType::try_from_u16(type_id)?,
             flags: ColumnFlags::from_bits_truncate(flags),
@@ -165,13 +171,8 @@ impl Decode<'_, Capabilities> for ColumnDefinition {
 }
 
 impl ColumnType {
-    pub(crate) fn name(
-        self,
-        char_set: u16,
-        flags: ColumnFlags,
-        max_size: Option<u32>,
-    ) -> &'static str {
-        let is_binary = char_set == 63;
+    pub(crate) fn name(self, flags: ColumnFlags, max_size: Option<u32>) -> &'static str {
+        let is_binary = flags.contains(ColumnFlags::BINARY);
         let is_unsigned = flags.contains(ColumnFlags::UNSIGNED);
         let is_enum = flags.contains(ColumnFlags::ENUM);
 

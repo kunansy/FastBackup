@@ -1,3 +1,7 @@
+use std::borrow::Cow;
+use std::rc::Rc;
+use std::sync::Arc;
+
 use crate::decode::Decode;
 use crate::encode::{Encode, IsNull};
 use crate::error::BoxDynError;
@@ -11,12 +15,6 @@ impl PgHasArrayType for u8 {
 }
 
 impl PgHasArrayType for &'_ [u8] {
-    fn array_type_info() -> PgTypeInfo {
-        PgTypeInfo::BYTEA_ARRAY
-    }
-}
-
-impl<const N: usize> PgHasArrayType for &'_ [u8; N] {
     fn array_type_info() -> PgTypeInfo {
         PgTypeInfo::BYTEA_ARRAY
     }
@@ -41,27 +39,21 @@ impl<const N: usize> PgHasArrayType for [u8; N] {
 }
 
 impl Encode<'_, Postgres> for &'_ [u8] {
-    fn encode_by_ref(&self, buf: &mut PgArgumentBuffer) -> IsNull {
+    fn encode_by_ref(&self, buf: &mut PgArgumentBuffer) -> Result<IsNull, BoxDynError> {
         buf.extend_from_slice(self);
 
-        IsNull::No
-    }
-}
-
-impl Encode<'_, Postgres> for Box<[u8]> {
-    fn encode_by_ref(&self, buf: &mut PgArgumentBuffer) -> IsNull {
-        <&[u8] as Encode<Postgres>>::encode(self.as_ref(), buf)
+        Ok(IsNull::No)
     }
 }
 
 impl Encode<'_, Postgres> for Vec<u8> {
-    fn encode_by_ref(&self, buf: &mut PgArgumentBuffer) -> IsNull {
+    fn encode_by_ref(&self, buf: &mut PgArgumentBuffer) -> Result<IsNull, BoxDynError> {
         <&[u8] as Encode<Postgres>>::encode(self, buf)
     }
 }
 
 impl<const N: usize> Encode<'_, Postgres> for [u8; N] {
-    fn encode_by_ref(&self, buf: &mut PgArgumentBuffer) -> IsNull {
+    fn encode_by_ref(&self, buf: &mut PgArgumentBuffer) -> Result<IsNull, BoxDynError> {
         <&[u8] as Encode<Postgres>>::encode(self.as_slice(), buf)
     }
 }
@@ -86,15 +78,6 @@ fn text_hex_decode_input(value: PgValueRef<'_>) -> Result<&[u8], BoxDynError> {
         .map_err(Into::into)
 }
 
-impl Decode<'_, Postgres> for Box<[u8]> {
-    fn decode(value: PgValueRef<'_>) -> Result<Self, BoxDynError> {
-        Ok(match value.format() {
-            PgValueFormat::Binary => Box::from(value.as_bytes()?),
-            PgValueFormat::Text => Box::from(hex::decode(text_hex_decode_input(value)?)?),
-        })
-    }
-}
-
 impl Decode<'_, Postgres> for Vec<u8> {
     fn decode(value: PgValueRef<'_>) -> Result<Self, BoxDynError> {
         Ok(match value.format() {
@@ -116,3 +99,8 @@ impl<const N: usize> Decode<'_, Postgres> for [u8; N] {
         Ok(bytes)
     }
 }
+
+forward_encode_impl!(Arc<[u8]>, &[u8], Postgres);
+forward_encode_impl!(Rc<[u8]>, &[u8], Postgres);
+forward_encode_impl!(Box<[u8]>, &[u8], Postgres);
+forward_encode_impl!(Cow<'_, [u8]>, &[u8], Postgres);

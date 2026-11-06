@@ -21,10 +21,10 @@ impl Type<MySql> for Uuid {
 }
 
 impl Encode<'_, MySql> for Uuid {
-    fn encode_by_ref(&self, buf: &mut Vec<u8>) -> IsNull {
+    fn encode_by_ref(&self, buf: &mut Vec<u8>) -> Result<IsNull, BoxDynError> {
         buf.put_bytes_lenenc(self.as_bytes());
 
-        IsNull::No
+        Ok(IsNull::No)
     }
 }
 
@@ -32,6 +32,15 @@ impl Decode<'_, MySql> for Uuid {
     fn decode(value: MySqlValueRef<'_>) -> Result<Self, BoxDynError> {
         // delegate to the &[u8] type to decode from MySQL
         let bytes = <&[u8] as Decode<MySql>>::decode(value)?;
+
+        if bytes.len() != 16 {
+            return Err(format!(
+                "Expected 16 bytes, got {}; `Uuid` uses binary format for MySQL/MariaDB. \
+                 For text-formatted UUIDs, use `uuid::fmt::Hyphenated` instead of `Uuid`.",
+                bytes.len(),
+            )
+            .into());
+        }
 
         // construct a Uuid from the returned bytes
         Uuid::from_slice(bytes).map_err(Into::into)
@@ -49,10 +58,10 @@ impl Type<MySql> for Hyphenated {
 }
 
 impl Encode<'_, MySql> for Hyphenated {
-    fn encode_by_ref(&self, buf: &mut Vec<u8>) -> IsNull {
+    fn encode_by_ref(&self, buf: &mut Vec<u8>) -> Result<IsNull, BoxDynError> {
         buf.put_str_lenenc(&self.to_string());
 
-        IsNull::No
+        Ok(IsNull::No)
     }
 }
 
@@ -79,10 +88,10 @@ impl Type<MySql> for Simple {
 }
 
 impl Encode<'_, MySql> for Simple {
-    fn encode_by_ref(&self, buf: &mut Vec<u8>) -> IsNull {
+    fn encode_by_ref(&self, buf: &mut Vec<u8>) -> Result<IsNull, BoxDynError> {
         buf.put_str_lenenc(&self.to_string());
 
-        IsNull::No
+        Ok(IsNull::No)
     }
 }
 

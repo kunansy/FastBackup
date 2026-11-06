@@ -2,10 +2,13 @@ use crate::loom::sync::atomic::AtomicUsize;
 use crate::runtime::io::ScheduledIo;
 use crate::util::linked_list::{self, LinkedList};
 
+use crate::loom::sync::Arc;
 use std::io;
 use std::ptr::NonNull;
 use std::sync::atomic::Ordering::{Acquire, Release};
-use std::sync::Arc;
+
+// Kind of arbitrary, but buffering 16 `ScheduledIo`s doesn't seem like much
+const NOTIFY_AFTER: usize = 16;
 
 pub(super) struct RegistrationSet {
     num_pending_release: AtomicUsize,
@@ -17,7 +20,7 @@ pub(super) struct Synced {
     is_shutdown: bool,
 
     // List of all registrations tracked by the set
-    registrations: LinkedList<Arc<ScheduledIo>, ScheduledIo>,
+    registrations: LinkedList<Arc<ScheduledIo>>,
 
     // Registrations that are pending drop. When a `Registration` is dropped, it
     // stores its `ScheduledIo` in this list. The I/O driver is responsible for
@@ -35,7 +38,7 @@ impl RegistrationSet {
         let synced = Synced {
             is_shutdown: false,
             registrations: LinkedList::new(),
-            pending_release: Vec::with_capacity(16),
+            pending_release: Vec::with_capacity(NOTIFY_AFTER),
         };
 
         (set, synced)
@@ -52,8 +55,7 @@ impl RegistrationSet {
 
     pub(super) fn allocate(&self, synced: &mut Synced) -> io::Result<Arc<ScheduledIo>> {
         if synced.is_shutdown {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
+            return Err(io::Error::other(
                 crate::util::error::RUNTIME_SHUTTING_DOWN_ERROR,
             ));
         }
@@ -69,9 +71,6 @@ impl RegistrationSet {
     // Returns `true` if the caller should unblock the I/O driver to purge
     // registrations pending release.
     pub(super) fn deregister(&self, synced: &mut Synced, registration: &Arc<ScheduledIo>) -> bool {
-        // Kind of arbitrary, but buffering 16 `ScheduledIo`s doesn't seem like much
-        const NOTIFY_AFTER: usize = 16;
-
         synced.pending_release.push(registration.clone());
 
         let len = synced.pending_release.len();
@@ -102,12 +101,25 @@ impl RegistrationSet {
     }
 
     pub(super) fn release(&self, synced: &mut Synced) {
-        for io in synced.pending_release.drain(..) {
+        let pending = std::mem::take(&mut synced.pending_release);
+
+        for io in pending {
             // safety: the registration is part of our list
-            let _ = unsafe { synced.registrations.remove(io.as_ref().into()) };
+            unsafe { self.remove(synced, &io) }
         }
 
         self.num_pending_release.store(0, Release);
+    }
+
+    // This function is marked as unsafe, because the caller must make sure that
+    // `io` is part of the registration set.
+    pub(super) unsafe fn remove(&self, synced: &mut Synced, io: &Arc<ScheduledIo>) {
+        // SAFETY: Pointers into an Arc are never null.
+        let io = unsafe { NonNull::new_unchecked(Arc::as_ptr(io).cast_mut()) };
+
+        super::EXPOSE_IO.unexpose_provenance(io.as_ptr());
+        // SAFETY: the caller guarantees that `io` is part of this list.
+        let _ = unsafe { synced.registrations.remove(io) };
     }
 }
 
@@ -129,6 +141,84 @@ unsafe impl linked_list::Link for Arc<ScheduledIo> {
     unsafe fn pointers(
         target: NonNull<Self::Target>,
     ) -> NonNull<linked_list::Pointers<ScheduledIo>> {
-        NonNull::new_unchecked(target.as_ref().linked_list_pointers.get())
+        // safety: `target.as_ref().linked_list_pointers` is a `UnsafeCell` that
+        // always returns a non-null pointer.
+        unsafe { NonNull::new_unchecked(target.as_ref().linked_list_pointers.get()) }
+    }
+}
+
+#[cfg(all(test, loom))]
+mod loom_tests {
+    use super::*;
+    use crate::io::ready::Ready;
+    use crate::loom::sync::Mutex;
+    use crate::loom::thread;
+
+    // Models only Tokio's registration lifetime. Mio polling and OS deregistration
+    // are outside the model; the production Handle remains unchanged under Loom.
+    struct Registrations {
+        set: RegistrationSet,
+        synced: Mutex<Synced>,
+    }
+
+    impl Registrations {
+        fn new() -> Self {
+            let (set, synced) = RegistrationSet::new();
+            Self {
+                set,
+                synced: Mutex::new(synced),
+            }
+        }
+
+        fn allocate(&self) -> Arc<ScheduledIo> {
+            self.set.allocate(&mut self.synced.lock()).unwrap()
+        }
+
+        fn deregister(&self, io: &Arc<ScheduledIo>) {
+            self.set.deregister(&mut self.synced.lock(), io);
+        }
+
+        fn release(&self) {
+            if self.set.needs_release() {
+                self.set.release(&mut self.synced.lock());
+            }
+        }
+    }
+
+    /// Models deregistration racing with delivery of an event already returned by
+    /// the poller. The driver completes delivery before its next release step.
+    #[test]
+    fn deregister_races_with_prior_event_delivery() {
+        loom::model(|| {
+            let handle = Arc::new(Registrations::new());
+            let scheduled_io = handle.allocate();
+            let token = scheduled_io.token();
+
+            let handle_clone = handle.clone();
+            let driver_th = thread::spawn(move || {
+                // Driver thread: has already obtained an event from poll() for `token`.
+                // Delivers event to ScheduledIo via its exposed raw pointer token.
+                //
+                // SAFETY: The driver holds the registration alive in `RegistrationSet`
+                // until `release()` is called. In this model, event delivery occurs
+                // before the driver's release step.
+                unsafe {
+                    super::super::driver::dispatch_event(token, Ready::READABLE);
+                }
+                // Simulates deferred release performed at the start of the next turn/poll.
+                handle_clone.release();
+            });
+
+            // Worker thread: deregisters the resource and drops its Arc handle.
+            handle.deregister(&scheduled_io);
+            drop(scheduled_io);
+
+            driver_th.join().unwrap();
+
+            // Flush any remaining release if worker deregistered after driver's release step.
+            handle.release();
+
+            assert!(!handle.set.needs_release());
+        });
     }
 }

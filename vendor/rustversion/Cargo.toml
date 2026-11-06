@@ -13,9 +13,14 @@
 edition = "2018"
 rust-version = "1.31"
 name = "rustversion"
-version = "1.0.14"
+version = "1.0.23"
 authors = ["David Tolnay <dtolnay@gmail.com>"]
 build = "build/build.rs"
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
 description = "Conditional compilation according to rustc compiler version"
 documentation = "https://docs.rs/rustversion"
 readme = "README.md"
@@ -28,11 +33,36 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/dtolnay/rustversion"
 
 [package.metadata.docs.rs]
-rustdoc-args = ["--generate-link-to-definition"]
 targets = ["x86_64-unknown-linux-gnu"]
+rustdoc-args = [
+    "--generate-link-to-definition",
+    "--generate-macro-expansion",
+    "--extern-html-root-url=core=https://doc.rust-lang.org",
+    "--extern-html-root-url=alloc=https://doc.rust-lang.org",
+    "--extern-html-root-url=std=https://doc.rust-lang.org",
+    "--extern-html-root-url=proc_macro=https://doc.rust-lang.org",
+]
 
 [lib]
+name = "rustversion"
+path = "src/lib.rs"
 proc-macro = true
+
+[[test]]
+name = "compiletest"
+path = "tests/compiletest.rs"
+
+[[test]]
+name = "test_const"
+path = "tests/test_const.rs"
+
+[[test]]
+name = "test_eval"
+path = "tests/test_eval.rs"
+
+[[test]]
+name = "test_parse"
+path = "tests/test_parse.rs"
 
 [dev-dependencies.trybuild]
 version = "1.0.49"

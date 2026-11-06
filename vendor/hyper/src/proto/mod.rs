@@ -17,6 +17,7 @@ cfg_feature! {
 pub(crate) mod h2;
 
 /// An Incoming Message head. Includes request/status line, and headers.
+#[cfg(feature = "http1")]
 #[derive(Debug, Default)]
 pub(crate) struct MessageHead<S> {
     /// HTTP version of the message.
@@ -44,9 +45,9 @@ pub(crate) type ResponseHead = MessageHead<http::StatusCode>;
 #[derive(Debug)]
 #[cfg(feature = "http1")]
 pub(crate) enum BodyLength {
-    /// Content-Length
+    /// `Content-Length`.
     Known(u64),
-    /// Transfer-Encoding: chunked (if h1)
+    /// `Transfer-Encoding: chunked` (if h1).
     Unknown,
 }
 
@@ -59,6 +60,7 @@ pub(crate) enum Dispatched {
     Upgrade(crate::upgrade::Pending),
 }
 
+#[cfg(all(feature = "client", feature = "http1"))]
 impl MessageHead<http::StatusCode> {
     fn into_response<B>(self, body: B) -> http::Response<B> {
         let mut res = http::Response::new(body);

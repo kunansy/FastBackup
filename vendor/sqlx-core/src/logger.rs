@@ -1,4 +1,4 @@
-use crate::connection::LogSettings;
+use crate::{connection::LogSettings, sql_str::SqlStr};
 use std::time::Instant;
 
 // Yes these look silly. `tracing` doesn't currently support dynamic levels
@@ -54,18 +54,22 @@ pub fn private_level_filter_to_levels(
     tracing_level.zip(filter.to_level())
 }
 
-pub use sqlformat;
+pub(crate) fn private_level_filter_to_trace_level(
+    filter: log::LevelFilter,
+) -> Option<tracing::Level> {
+    private_level_filter_to_levels(filter).map(|(level, _)| level)
+}
 
-pub struct QueryLogger<'q> {
-    sql: &'q str,
+pub struct QueryLogger {
+    sql: SqlStr,
     rows_returned: u64,
     rows_affected: u64,
     start: Instant,
     settings: LogSettings,
 }
 
-impl<'q> QueryLogger<'q> {
-    pub fn new(sql: &'q str, settings: LogSettings) -> Self {
+impl QueryLogger {
+    pub fn new(sql: SqlStr, settings: LogSettings) -> Self {
         Self {
             sql,
             rows_returned: 0,
@@ -81,6 +85,10 @@ impl<'q> QueryLogger<'q> {
 
     pub fn increase_rows_affected(&mut self, n: u64) {
         self.rows_affected += n;
+    }
+
+    pub fn sql(&self) -> &SqlStr {
+        &self.sql
     }
 
     pub fn finish(&self) {
@@ -100,18 +108,11 @@ impl<'q> QueryLogger<'q> {
             let log_is_enabled = log::log_enabled!(target: "sqlx::query", log_level)
                 || private_tracing_dynamic_enabled!(target: "sqlx::query", tracing_level);
             if log_is_enabled {
-                let mut summary = parse_query_summary(&self.sql);
+                let mut summary = parse_query_summary(self.sql.as_str());
 
-                let sql = if summary != self.sql {
+                let sql = if summary != self.sql.as_str() {
                     summary.push_str(" …");
-                    format!(
-                        "\n\n{}\n",
-                        sqlformat::format(
-                            &self.sql,
-                            &sqlformat::QueryParams::None,
-                            sqlformat::FormatOptions::default()
-                        )
-                    )
+                    format!("\n\n{}\n", self.sql.as_str())
                 } else {
                     String::new()
                 };
@@ -124,7 +125,10 @@ impl<'q> QueryLogger<'q> {
                         db.statement = sql,
                         rows_affected = self.rows_affected,
                         rows_returned = self.rows_returned,
+                        // Human-friendly - includes units (usually ms). Also kept for backward compatibility
                         ?elapsed,
+                        // Search friendly - numeric
+                        elapsed_secs = elapsed.as_secs_f64(),
                         // When logging to JSON, one can trigger alerts from the presence of this field.
                         slow_threshold=?self.settings.slow_statements_duration,
                         // Make sure to use "slow" in the message as that's likely
@@ -139,7 +143,10 @@ impl<'q> QueryLogger<'q> {
                         db.statement = sql,
                         rows_affected = self.rows_affected,
                         rows_returned = self.rows_returned,
+                        // Human-friendly - includes units (usually ms). Also kept for backward compatibility
                         ?elapsed,
+                        // Search friendly - numeric
+                        elapsed_secs = elapsed.as_secs_f64(),
                     );
                 }
             }
@@ -147,7 +154,7 @@ impl<'q> QueryLogger<'q> {
     }
 }
 
-impl<'q> Drop for QueryLogger<'q> {
+impl Drop for QueryLogger {
     fn drop(&mut self) {
         self.finish();
     }

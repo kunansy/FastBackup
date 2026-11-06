@@ -5,9 +5,395 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-# Unreleased
 
-- None.
+# 0.8.9
+
+- **added:** `WebSocketUpgrade::{requested_protocols, set_selected_protocol}` for more
+  flexible subprotocol selection ([#3597])
+- **changed:** Update minimum rust version to 1.80 ([#3620])
+- **fixed:** Set connect endpoint on correct field in MethodRouter ([#3656])
+- **fixed:** Return specific error message when multipart body limit is exceeded ([#3611])
+
+[#3597]: https://github.com/tokio-rs/axum/pull/3597
+[#3620]: https://github.com/tokio-rs/axum/pull/3620
+[#3656]: https://github.com/tokio-rs/axum/pull/3656
+[#3611]: https://github.com/tokio-rs/axum/pull/3611
+
+# 0.8.8
+
+- Clarify documentation for `Router::route_layer` ([#3567])
+
+[#3567]: https://github.com/tokio-rs/axum/pull/3567
+
+# 0.8.7
+
+- Relax implicit `Send` / `Sync` bounds on `RouterAsService`, `RouterIntoService` ([#3555])
+- Make it easier to visually scan for default features ([#3550])
+- Fix some documentation typos
+
+[#3550]: https://github.com/tokio-rs/axum/pull/3550
+[#3555]: https://github.com/tokio-rs/axum/pull/3555
+
+# 0.8.6
+
+Released without changes to fix docs.rs build.
+
+# 0.8.5
+
+- **fixed:** Reject JSON request bodies with trailing characters after the JSON document ([#3453])
+- **added:** Implement `OptionalFromRequest` for `Multipart` ([#3220])
+- **added:** Getter methods `Location::{status_code, location}`
+- **added:** Support for writing arbitrary binary data into server-sent events ([#3425])]
+- **added:** `middleware::ResponseAxumBodyLayer` for mapping response body to `axum::body::Body` ([#3469])
+- **added:** `impl FusedStream for WebSocket` ([#3443])
+- **changed:** The `sse` module and `Sse` type no longer depend on the `tokio` feature ([#3154])
+- **changed:** If the location given to one of `Redirect`s constructors is not a valid
+  header value, instead of panicking on construction, the `IntoResponse` impl now returns
+  an HTTP 500, just like `Json` does when serialization fails ([#3377])
+- **changed:** Update minimum rust version to 1.78 ([#3412])
+
+[#3154]: https://github.com/tokio-rs/axum/pull/3154
+[#3220]: https://github.com/tokio-rs/axum/pull/3220
+[#3377]: https://github.com/tokio-rs/axum/pull/3377
+[#3412]: https://github.com/tokio-rs/axum/pull/3412
+[#3425]: https://github.com/tokio-rs/axum/pull/3425
+[#3443]: https://github.com/tokio-rs/axum/pull/3443
+[#3453]: https://github.com/tokio-rs/axum/pull/3453
+[#3469]: https://github.com/tokio-rs/axum/pull/3469
+
+# 0.8.4
+
+- **added:** `Router::reset_fallback` ([#3320])
+- **added:** `WebSocketUpgrade::selected_protocol` ([#3248])
+- **fixed:** Panic location for overlapping method routes ([#3319])
+- **fixed:** Don't leak a tokio task when using `serve` without graceful shutdown ([#3129])
+
+[#3319]: https://github.com/tokio-rs/axum/pull/3319
+[#3320]: https://github.com/tokio-rs/axum/pull/3320
+[#3248]: https://github.com/tokio-rs/axum/pull/3248
+[#3129]: https://github.com/tokio-rs/axum/pull/3129
+
+# 0.8.3
+
+- **added:** Implement `From<Bytes>` for `Message` ([#3273])
+- **added:** Implement `OptionalFromRequest` for `Json` ([#3142])
+- **added:** Implement `OptionalFromRequest` for `Extension` ([#3157])
+- **added:** Allow setting the read buffer capacity of `WebSocketUpgrade` ([#3178])
+- **changed:** Improved code size / compile time of dependent crates ([#3285], [#3294])
+
+[#3273]: https://github.com/tokio-rs/axum/pull/3273
+[#3142]: https://github.com/tokio-rs/axum/pull/3142
+[#3157]: https://github.com/tokio-rs/axum/pull/3157
+[#3178]: https://github.com/tokio-rs/axum/pull/3178
+[#3285]: https://github.com/tokio-rs/axum/pull/3285
+[#3294]: https://github.com/tokio-rs/axum/pull/3294
+
+# 0.8.2
+
+Yanked from crates.io due to unforeseen breaking change, see [#3190] for details.
+
+[#3190]: https://github.com/tokio-rs/axum/pull/3190
+
+# 0.8.1
+
+- **fixed:** Removed the warning about breaking changes from README
+
+# 0.8.0
+
+## since rc.1
+
+<details>
+
+- **breaking:** `axum::extract::ws::Message` now uses `Bytes` in place of `Vec<u8>`,
+  and a new `Utf8Bytes` type in place of `String`, for its variants ([#3078])
+- **breaking:** Remove `OptionalFromRequestParts` impl for `Query` ([#3088])
+- **changed:** Upgraded `tokio-tungstenite` to 0.26 ([#3078])
+- **changed:** Query/Form: Use `serde_path_to_error` to report fields that failed to parse ([#3081])
+
+[#3088]: https://github.com/tokio-rs/axum/pull/3088
+
+</details>
+
+## full changelog
+
+*Note: there are further relevant changes in [axum-core's changelog][core-changelog]*
+
+- **breaking:** Upgrade matchit to 0.8, changing the path parameter syntax from `/:single` and `/*many`
+  to `/{single}` and `/{*many}`; the old syntax produces a panic to avoid silent change in behavior ([#2645])
+- **breaking:** Require `Sync` for all handlers and services added to `Router`
+  and `MethodRouter` ([#2473])
+- **breaking:** The tuple and tuple_struct `Path` extractor deserializers now check that the number of parameters matches the tuple length exactly ([#2931])
+- **breaking:** Move `Host` extractor to `axum-extra` ([#2956])
+- **breaking:** Remove `WebSocket::close`.
+  Users should explicitly send close messages themselves. ([#2974])
+- **breaking:** Make `serve` generic over the listener and IO types ([#2941])
+- **breaking:** Remove `Serve::tcp_nodelay` and `WithGracefulShutdown::tcp_nodelay`.
+  See `serve::ListenerExt` for an API that let you set arbitrary TCP stream properties. ([#2941])
+- **breaking:** `Option<Path<T>>` no longer swallows all error conditions,
+  instead rejecting the request in many cases; see its documentation for details ([#2475])
+- **breaking:** `axum::extract::ws::Message` now uses `Bytes` in place of `Vec<u8>`,
+  and a new `Utf8Bytes` type in place of `String`, for its variants ([#3078])
+- **fixed:** Skip SSE incompatible chars of `serde_json::RawValue` in `Event::json_data` ([#2992])
+- **fixed:** Don't panic when array type is used for path segment ([#3039])
+- **fixed:** Avoid setting `content-length` before middleware.
+  This allows middleware to add bodies to requests without needing to manually set `content-length` ([#2897])
+- **change:** Update minimum rust version to 1.75 ([#2943])
+- **changed:** Upgraded `tokio-tungstenite` to 0.26 ([#3078])
+- **changed:** Query/Form: Use `serde_path_to_error` to report fields that failed to parse ([#3081])
+- **added:** Add `method_not_allowed_fallback` to set a fallback when a path matches but there is no handler for the given HTTP method ([#2903])
+- **added:** Add `NoContent` as a self-described shortcut for `StatusCode::NO_CONTENT` ([#2978])
+- **added:** Add support for WebSockets over HTTP/2.
+  They can be enabled by changing `get(ws_endpoint)` handlers to `any(ws_endpoint)` ([#2894])
+- **added:** Add `MethodFilter::CONNECT`, `routing::connect[_service]`
+  and `MethodRouter::connect[_service]` ([#2961])
+- **added:** Extend `FailedToDeserializePathParams::kind` enum with (`ErrorKind::DeserializeError`)
+  This new variant captures both `key`, `value`, and `message` from named path parameters parse errors,
+  instead of only deserialization error message in `ErrorKind::Message`. ([#2720])
+
+[#3078]: https://github.com/tokio-rs/axum/pull/3078
+[#3081]: https://github.com/tokio-rs/axum/pull/3081
+
+## rc.1
+
+*Note: there are further relevant changes in [axum-core's changelog][core-changelog]*
+
+- **breaking:** Move `Host` extractor to `axum-extra` ([#2956])
+- **breaking:** Remove `WebSocket::close`.
+  Users should explicitly send close messages themselves. ([#2974])
+- **breaking:** Make `serve` generic over the listener and IO types ([#2941])
+- **breaking:** Remove `Serve::tcp_nodelay` and `WithGracefulShutdown::tcp_nodelay`.
+  See `serve::ListenerExt` for an API that let you set arbitrary TCP stream properties. ([#2941])
+- **breaking:** `Option<Path<T>>` and `Option<Query<T>>` no longer swallow all error conditions,
+  instead rejecting the request in many cases; see their documentation for details ([#2475])
+- **fixed:** Skip SSE incompatible chars of `serde_json::RawValue` in `Event::json_data` ([#2992])
+- **fixed:** Don't panic when array type is used for path segment ([#3039])
+- **fixed:** Avoid setting `content-length` before middleware.
+  This allows middleware to add bodies to requests without needing to manually set `content-length` ([#2897])
+- **added:** Add `method_not_allowed_fallback` to set a fallback when a path matches but there is no handler for the given HTTP method ([#2903])
+- **added:** Add `NoContent` as a self-described shortcut for `StatusCode::NO_CONTENT` ([#2978])
+- **added:** Add support for WebSockets over HTTP/2.
+  They can be enabled by changing `get(ws_endpoint)` handlers to `any(ws_endpoint)` ([#2894])
+- **added:** Add `MethodFilter::CONNECT`, `routing::connect[_service]`
+  and `MethodRouter::connect[_service]` ([#2961])
+- **added:** Extend `FailedToDeserializePathParams::kind` enum with (`ErrorKind::DeserializeError`)
+  This new variant captures both `key`, `value`, and `message` from named path parameters parse errors,
+  instead of only deserialization error message in `ErrorKind::Message`. ([#2720])
+
+[core-changelog]: ../axum-core/CHANGELOG.md
+[#2475]: https://github.com/tokio-rs/axum/pull/2475
+[#2897]: https://github.com/tokio-rs/axum/pull/2897
+[#2903]: https://github.com/tokio-rs/axum/pull/2903
+[#2894]: https://github.com/tokio-rs/axum/pull/2894
+[#2956]: https://github.com/tokio-rs/axum/pull/2956
+[#2961]: https://github.com/tokio-rs/axum/pull/2961
+[#2974]: https://github.com/tokio-rs/axum/pull/2974
+[#2978]: https://github.com/tokio-rs/axum/pull/2978
+[#2992]: https://github.com/tokio-rs/axum/pull/2992
+[#2720]: https://github.com/tokio-rs/axum/pull/2720
+[#3039]: https://github.com/tokio-rs/axum/pull/3039
+[#2941]: https://github.com/tokio-rs/axum/pull/2941
+
+## alpha.1
+
+- **breaking:** Require `Sync` for all handlers and services added to `Router`
+  and `MethodRouter` ([#2473])
+- **breaking:** The tuple and tuple_struct `Path` extractor deserializers now check that the number of parameters matches the tuple length exactly ([#2931])
+- **breaking:** Upgrade matchit to 0.8, changing the path parameter syntax from `/:single` and `/*many`
+  to `/{single}` and `/{*many}`; the old syntax produces a panic to avoid silent change in behavior ([#2645])
+- **change:** Update minimum rust version to 1.75 ([#2943])
+
+[#2473]: https://github.com/tokio-rs/axum/pull/2473
+[#2645]: https://github.com/tokio-rs/axum/pull/2645
+[#2931]: https://github.com/tokio-rs/axum/pull/2931
+[#2943]: https://github.com/tokio-rs/axum/pull/2943
+
+# 0.7.9
+
+- **fixed:** Avoid setting content-length before middleware ([#3031])
+
+[#3031]:https://github.com/tokio-rs/axum/pull/3031
+
+# 0.7.8
+
+- **fixed:** Skip SSE incompatible chars of `serde_json::RawValue` in `Event::json_data` ([#2992])
+- **added:** Add `method_not_allowed_fallback` to set a fallback when a path matches but there is no handler for the given HTTP method ([#2903])
+- **added:** Add `MethodFilter::CONNECT`, `routing::connect[_service]`
+  and `MethodRouter::connect[_service]` ([#2961])
+- **added:** Add `NoContent` as a self-described shortcut for `StatusCode::NO_CONTENT` ([#2978])
+
+[#2903]: https://github.com/tokio-rs/axum/pull/2903
+[#2961]: https://github.com/tokio-rs/axum/pull/2961
+[#2978]: https://github.com/tokio-rs/axum/pull/2978
+[#2992]: https://github.com/tokio-rs/axum/pull/2992
+
+# 0.7.7
+
+- **change**: Remove manual tables of content from the documentation, since
+  rustdoc now generates tables of content in the sidebar ([#2921])
+
+[#2921]: https://github.com/tokio-rs/axum/pull/2921
+
+# 0.7.6
+
+- **change:** Avoid cloning `Arc` during deserialization of `Path`
+- **added:** `axum::serve::Serve::tcp_nodelay` and `axum::serve::WithGracefulShutdown::tcp_nodelay` ([#2653])
+- **added:** `Router::has_routes` function ([#2790])
+- **change:** Update tokio-tungstenite to 0.23 ([#2841])
+- **added:** `Serve::local_addr` and `WithGracefulShutdown::local_addr` functions ([#2881])
+
+[#2653]: https://github.com/tokio-rs/axum/pull/2653
+[#2790]: https://github.com/tokio-rs/axum/pull/2790
+[#2841]: https://github.com/tokio-rs/axum/pull/2841
+[#2881]: https://github.com/tokio-rs/axum/pull/2881
+
+# 0.7.5 (24. March, 2024)
+
+- **fixed:** Fixed layers being cloned when calling `axum::serve` directly with
+  a `Router` or `MethodRouter` ([#2586])
+- **fixed:** `h2` is no longer pulled as a dependency unless the `http2` feature
+  is enabled ([#2605])
+- **added:** Add `#[debug_middleware]` ([#1993], [#2725])
+
+[#1993]: https://github.com/tokio-rs/axum/pull/1993
+[#2725]: https://github.com/tokio-rs/axum/pull/2725
+[#2586]: https://github.com/tokio-rs/axum/pull/2586
+[#2605]: https://github.com/tokio-rs/axum/pull/2605
+
+# 0.7.4 (13. January, 2024)
+
+- **fixed:** Fix performance regression present since axum 0.7.0 ([#2483])
+- **fixed:** Improve `debug_handler` on tuple response types ([#2201])
+- **added:** Add `must_use` attribute to `Serve` and `WithGracefulShutdown` ([#2484])
+- **added:** Re-export `axum_core::body::BodyDataStream` from axum
+
+[#2201]: https://github.com/tokio-rs/axum/pull/2201
+[#2483]: https://github.com/tokio-rs/axum/pull/2483
+[#2484]: https://github.com/tokio-rs/axum/pull/2484
+
+# 0.7.3 (29. December, 2023)
+
+- **added:** `Body` implements `From<()>` now ([#2411])
+- **change:** Update version of multer used internally for multipart ([#2433])
+- **change:** Update tokio-tungstenite to 0.21 ([#2435])
+- **added:** Enable `tracing` feature by default ([#2460])
+- **added:** Support graceful shutdown on `serve` ([#2398])
+- **added:** `RouterIntoService` implements `Clone` ([#2456])
+
+[#2411]: https://github.com/tokio-rs/axum/pull/2411
+[#2433]: https://github.com/tokio-rs/axum/pull/2433
+[#2435]: https://github.com/tokio-rs/axum/pull/2435
+[#2460]: https://github.com/tokio-rs/axum/pull/2460
+[#2398]: https://github.com/tokio-rs/axum/pull/2398
+[#2456]: https://github.com/tokio-rs/axum/pull/2456
+
+# 0.7.2 (03. December, 2023)
+
+- **added:** Add `axum::body::to_bytes` ([#2373])
+- **fixed:** Gracefully handle accept errors in `serve` ([#2400])
+
+[#2373]: https://github.com/tokio-rs/axum/pull/2373
+[#2400]: https://github.com/tokio-rs/axum/pull/2400
+
+# 0.7.1 (27. November, 2023)
+
+- **fix**: Fix readme.
+
+# 0.7.0 (27. November, 2023)
+
+- **breaking:** Update public dependencies. axum now requires
+    - [hyper](https://crates.io/crates/hyper) 1.0
+    - [http](https://crates.io/crates/http) 1.0
+    - [http-body](https://crates.io/crates/http-body) 1.0
+- **breaking:** axum now requires [tower-http](https://crates.io/crates/tower-http) 0.5
+- **breaking:** Remove deprecated `WebSocketUpgrade::max_send_queue`
+- **breaking:** The following types/traits are no longer generic over the request body
+  (i.e. the `B` type param has been removed) ([#1751] and [#1789]):
+  - `FromRequestParts`
+  - `FromRequest`
+  - `HandlerService`
+  - `HandlerWithoutStateExt`
+  - `Handler`
+  - `LayeredFuture`
+  - `Layered`
+  - `MethodRouter`
+  - `Next`
+  - `RequestExt`
+  - `RouteFuture`
+  - `Route`
+  - `Router`
+- **breaking:** axum no longer re-exports `hyper::Body` as that type is removed
+  in hyper 1.0. Instead axum has its own body type at `axum::body::Body` ([#1751])
+- **breaking:** `extract::BodyStream` has been removed as `body::Body`
+  implements `Stream` and `FromRequest` directly ([#1751])
+- **breaking:** Change `sse::Event::json_data` to use `axum_core::Error` as its error type ([#1762])
+- **breaking:** Rename `DefaultOnFailedUpdgrade` to `DefaultOnFailedUpgrade` ([#1664])
+- **breaking:** Rename `OnFailedUpdgrade` to `OnFailedUpgrade` ([#1664])
+- **breaking:** `TypedHeader` has been moved to `axum-extra` as `axum_extra::TypedHeader` and requires enabling the `typed-header` feature on `axum-extra`. The `headers` feature has been removed from axum; what it provided under `axum::headers` is now found in `axum_extra::headers` by default. ([#1850])
+- **breaking:** Removed re-exports of `Empty` and `Full`. Use
+  `axum::body::Body::empty` and `axum::body::Body::from` respectively ([#1789])
+- **breaking:** The response returned by `IntoResponse::into_response` must use
+  `axum::body::Body` as the body type. `axum::response::Response` does this
+  ([#1789])
+- **breaking:** Removed the `BoxBody` type alias and its `box_body`
+  constructor. Use `axum::body::Body::new` instead ([#1789])
+- **breaking:** Remove `RawBody` extractor. `axum::body::Body` implements `FromRequest` directly ([#1789])
+- **breaking:** The following types from `http-body` no longer implement `IntoResponse`:
+  - `Full`, use `Body::from` instead
+  - `Empty`, use `Body::empty` instead
+  - `BoxBody`, use `Body::new` instead
+  - `UnsyncBoxBody`, use `Body::new` instead
+  - `MapData`, use `Body::new` instead
+  - `MapErr`, use `Body::new` instead
+- **added:** Add `axum::extract::Request` type alias where the body is `axum::body::Body` ([#1789])
+- **added:** Add `Router::as_service` and `Router::into_service` to workaround
+  type inference issues when calling `ServiceExt` methods on a `Router` ([#1835])
+- **breaking:** Removed `axum::Server` as it was removed in hyper 1.0. Instead
+  use `axum::serve(listener, service)` or hyper/hyper-util for more configuration options ([#1868])
+- **breaking:** Only inherit fallbacks for routers nested with `Router::nest`.
+  Routers nested with `Router::nest_service` will no longer inherit fallbacks ([#1956])
+- **fixed:** Don't remove the `Sec-WebSocket-Key` header in `WebSocketUpgrade` ([#1972])
+- **added:** Add `axum::extract::Query::try_from_uri` ([#2058])
+- **added:** Implement `IntoResponse` for `Box<str>` and `Box<[u8]>` ([#2035])
+- **breaking:** Simplify `MethodFilter`. It no longer uses bitflags ([#2073])
+- **fixed:** Fix bugs around merging routers with nested fallbacks ([#2096])
+- **fixed:** Fix `.source()` of composite rejections ([#2030])
+- **fixed:** Allow unreachable code in `#[debug_handler]` ([#2014])
+- **change:** axum's MSRV is now 1.66 ([#1882])
+- **added:** Implement `IntoResponse` for `(R,) where R: IntoResponse` ([#2143])
+- **changed:** For SSE, add space between field and value for compatibility ([#2149])
+- **added:** Add `NestedPath` extractor ([#1924])
+- **added:** Add `handle_error` function to existing `ServiceExt` trait ([#2235])
+- **breaking:** `impl<T> IntoResponse(Parts) for Extension<T>` now requires
+  `T: Clone`, as that is required by the http crate ([#1882])
+- **added:** Add `axum::Json::from_bytes` ([#2244])
+- **added:** Implement `FromRequestParts` for `http::request::Parts` ([#2328])
+- **added:** Implement `FromRequestParts` for `http::Extensions` ([#2328])
+- **fixed:** Clearly document applying `DefaultBodyLimit` to individual routes ([#2157])
+
+[#1664]: https://github.com/tokio-rs/axum/pull/1664
+[#1751]: https://github.com/tokio-rs/axum/pull/1751
+[#1762]: https://github.com/tokio-rs/axum/pull/1762
+[#1789]: https://github.com/tokio-rs/axum/pull/1789
+[#1835]: https://github.com/tokio-rs/axum/pull/1835
+[#1850]: https://github.com/tokio-rs/axum/pull/1850
+[#1868]: https://github.com/tokio-rs/axum/pull/1868
+[#1882]: https://github.com/tokio-rs/axum/pull/1882
+[#1924]: https://github.com/tokio-rs/axum/pull/1924
+[#1956]: https://github.com/tokio-rs/axum/pull/1956
+[#1972]: https://github.com/tokio-rs/axum/pull/1972
+[#2014]: https://github.com/tokio-rs/axum/pull/2014
+[#2021]: https://github.com/tokio-rs/axum/pull/2021
+[#2030]: https://github.com/tokio-rs/axum/pull/2030
+[#2058]: https://github.com/tokio-rs/axum/pull/2058
+[#2073]: https://github.com/tokio-rs/axum/pull/2073
+[#2096]: https://github.com/tokio-rs/axum/pull/2096
+[#2140]: https://github.com/tokio-rs/axum/pull/2140
+[#2143]: https://github.com/tokio-rs/axum/pull/2143
+[#2149]: https://github.com/tokio-rs/axum/pull/2149
+[#2157]: https://github.com/tokio-rs/axum/pull/2157
+[#2235]: https://github.com/tokio-rs/axum/pull/2235
+[#2244]: https://github.com/tokio-rs/axum/pull/2244
+[#2328]: https://github.com/tokio-rs/axum/pull/2328
 
 # 0.6.20 (03. August, 2023)
 
@@ -421,7 +807,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ```rust
   use axum::{Json, http::HeaderMap};
 
-  // This wont compile on 0.6 because both `Json` and `String` need to consume
+  // This won't compile on 0.6 because both `Json` and `String` need to consume
   // the request body. You can use either `Json` or `String`, but not both.
   async fn handler_1(
       json: Json<serde_json::Value>,
@@ -452,7 +838,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ```rust
   struct MyExtractor { /* ... */ }
 
-  #[async_trait]
   impl<B> FromRequest<B> for MyExtractor
   where
       B: Send,
@@ -471,13 +856,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   use axum::{
       extract::{FromRequest, FromRequestParts},
       http::{StatusCode, Request, request::Parts},
-      async_trait,
   };
 
   struct MyExtractor { /* ... */ }
 
   // implement `FromRequestParts` if you don't need to consume the request body
-  #[async_trait]
   impl<S> FromRequestParts<S> for MyExtractor
   where
       S: Send + Sync,
@@ -490,7 +873,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   }
 
   // implement `FromRequest` if you do need to consume the request body
-  #[async_trait]
   impl<S, B> FromRequest<S, B> for MyExtractor
   where
       S: Send + Sync,
@@ -640,9 +1022,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Router::new().route(...).with_state(state);
   ```
 
-- **breaking:**: `Router::inherit_state` has been removed. Use
+- **breaking:** `Router::inherit_state` has been removed. Use
   `Router::with_state` instead ([#1532])
-- **breaking:**: `Router::nest` and `Router::merge` now only supports nesting
+- **breaking:** `Router::nest` and `Router::merge` now only supports nesting
   routers that use the same state type as the router they're being merged into.
   Use `FromRef` for substates ([#1532])
 
@@ -1007,7 +1389,7 @@ Yanked, as it didn't compile in release mode.
   ```rust
   use axum::{Json, http::HeaderMap};
 
-  // This wont compile on 0.6 because both `Json` and `String` need to consume
+  // This won't compile on 0.6 because both `Json` and `String` need to consume
   // the request body. You can use either `Json` or `String`, but not both.
   async fn handler_1(
       json: Json<serde_json::Value>,
@@ -1038,7 +1420,6 @@ Yanked, as it didn't compile in release mode.
   ```rust
   struct MyExtractor { /* ... */ }
 
-  #[async_trait]
   impl<B> FromRequest<B> for MyExtractor
   where
       B: Send,
@@ -1057,13 +1438,11 @@ Yanked, as it didn't compile in release mode.
   use axum::{
       extract::{FromRequest, FromRequestParts},
       http::{StatusCode, Request, request::Parts},
-      async_trait,
   };
 
   struct MyExtractor { /* ... */ }
 
   // implement `FromRequestParts` if you don't need to consume the request body
-  #[async_trait]
   impl<S> FromRequestParts<S> for MyExtractor
   where
       S: Send + Sync,
@@ -1076,7 +1455,6 @@ Yanked, as it didn't compile in release mode.
   }
 
   // implement `FromRequest` if you do need to consume the request body
-  #[async_trait]
   impl<S, B> FromRequest<S, B> for MyExtractor
   where
       S: Send + Sync,

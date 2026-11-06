@@ -1,13 +1,43 @@
+/*
+ *
+ * Copyright 2025 gRPC authors.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to
+ * deal in the Software without restriction, including without limitation the
+ * rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+ * sell copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+ * IN THE SOFTWARE.
+ *
+ */
+
 use crate::metadata::{MetadataMap, MetadataValue};
-#[cfg(all(feature = "transport", feature = "tls"))]
+#[cfg(feature = "server")]
+use crate::transport::server::TcpConnectInfo;
+#[cfg(all(feature = "server", feature = "_tls-any"))]
 use crate::transport::server::TlsConnectInfo;
-#[cfg(feature = "transport")]
-use crate::transport::{server::TcpConnectInfo, Certificate};
-use crate::Extensions;
-#[cfg(feature = "transport")]
+use http::Extensions;
+#[cfg(feature = "server")]
+use std::net::SocketAddr;
+#[cfg(all(feature = "server", feature = "_tls-any"))]
 use std::sync::Arc;
-use std::{net::SocketAddr, time::Duration};
+use std::time::Duration;
+
+#[cfg(all(feature = "server", feature = "_tls-any"))]
+use tokio_rustls::rustls::pki_types::CertificateDer;
 use tokio_stream::Stream;
+use tokio_util::sync::CancellationToken;
 
 /// A gRPC request and metadata from an RPC call.
 #[derive(Debug)]
@@ -157,7 +187,7 @@ impl<T> Request<T> {
         Request {
             metadata: MetadataMap::from_headers(parts.headers),
             message,
-            extensions: Extensions::from_http(parts.extensions),
+            extensions: parts.extensions,
         }
     }
 
@@ -183,7 +213,7 @@ impl<T> Request<T> {
             SanitizeHeaders::Yes => self.metadata.into_sanitized_headers(),
             SanitizeHeaders::No => self.metadata.into_headers(),
         };
-        *request.extensions_mut() = self.extensions.into_http();
+        *request.extensions_mut() = self.extensions;
 
         request
     }
@@ -207,33 +237,21 @@ impl<T> Request<T> {
     /// This will return `None` if the `IO` type used
     /// does not implement `Connected` or when using a unix domain socket.
     /// This currently only works on the server side.
+    #[cfg(feature = "server")]
     pub fn local_addr(&self) -> Option<SocketAddr> {
-        #[cfg(feature = "transport")]
-        {
-            #[cfg(feature = "tls")]
-            {
-                self.extensions()
-                    .get::<TcpConnectInfo>()
-                    .and_then(|i| i.local_addr())
-                    .or_else(|| {
-                        self.extensions()
-                            .get::<TlsConnectInfo<TcpConnectInfo>>()
-                            .and_then(|i| i.get_ref().local_addr())
-                    })
-            }
+        let addr = self
+            .extensions()
+            .get::<TcpConnectInfo>()
+            .and_then(|i| i.local_addr());
 
-            #[cfg(not(feature = "tls"))]
-            {
-                self.extensions()
-                    .get::<TcpConnectInfo>()
-                    .and_then(|i| i.local_addr())
-            }
-        }
+        #[cfg(feature = "_tls-any")]
+        let addr = addr.or_else(|| {
+            self.extensions()
+                .get::<TlsConnectInfo<TcpConnectInfo>>()
+                .and_then(|i| i.get_ref().local_addr())
+        });
 
-        #[cfg(not(feature = "transport"))]
-        {
-            None
-        }
+        addr
     }
 
     /// Get the remote address of this connection.
@@ -241,33 +259,21 @@ impl<T> Request<T> {
     /// This will return `None` if the `IO` type used
     /// does not implement `Connected` or when using a unix domain socket.
     /// This currently only works on the server side.
+    #[cfg(feature = "server")]
     pub fn remote_addr(&self) -> Option<SocketAddr> {
-        #[cfg(feature = "transport")]
-        {
-            #[cfg(feature = "tls")]
-            {
-                self.extensions()
-                    .get::<TcpConnectInfo>()
-                    .and_then(|i| i.remote_addr())
-                    .or_else(|| {
-                        self.extensions()
-                            .get::<TlsConnectInfo<TcpConnectInfo>>()
-                            .and_then(|i| i.get_ref().remote_addr())
-                    })
-            }
+        let addr = self
+            .extensions()
+            .get::<TcpConnectInfo>()
+            .and_then(|i| i.remote_addr());
 
-            #[cfg(not(feature = "tls"))]
-            {
-                self.extensions()
-                    .get::<TcpConnectInfo>()
-                    .and_then(|i| i.remote_addr())
-            }
-        }
+        #[cfg(feature = "_tls-any")]
+        let addr = addr.or_else(|| {
+            self.extensions()
+                .get::<TlsConnectInfo<TcpConnectInfo>>()
+                .and_then(|i| i.get_ref().remote_addr())
+        });
 
-        #[cfg(not(feature = "transport"))]
-        {
-            None
-        }
+        addr
     }
 
     /// Get the peer certificates of the connected client.
@@ -276,20 +282,11 @@ impl<T> Request<T> {
     /// and is mostly used for mTLS. This currently only returns
     /// `Some` on the server side of the `transport` server with
     /// TLS enabled connections.
-    #[cfg(feature = "transport")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "transport")))]
-    pub fn peer_certs(&self) -> Option<Arc<Vec<Certificate>>> {
-        #[cfg(feature = "tls")]
-        {
-            self.extensions()
-                .get::<TlsConnectInfo<TcpConnectInfo>>()
-                .and_then(|i| i.peer_certs())
-        }
-
-        #[cfg(not(feature = "tls"))]
-        {
-            None
-        }
+    #[cfg(all(feature = "server", feature = "_tls-any"))]
+    pub fn peer_certs(&self) -> Option<Arc<Vec<CertificateDer<'static>>>> {
+        self.extensions()
+            .get::<TlsConnectInfo<TcpConnectInfo>>()
+            .and_then(|i| i.peer_certs())
     }
 
     /// Set the max duration the request is allowed to take.
@@ -337,19 +334,20 @@ impl<T> Request<T> {
     /// Extensions can be set in interceptors:
     ///
     /// ```no_run
-    /// use tonic::{Request, service::interceptor};
+    /// use tonic::{Request, Status};
     ///
+    /// #[derive(Clone)] // Extensions must be Clone
     /// struct MyExtension {
     ///     some_piece_of_data: String,
     /// }
     ///
-    /// interceptor(|mut request: Request<()>| {
+    /// fn intercept(mut request: Request<()>) -> Result<Request<()>, Status> {
     ///     request.extensions_mut().insert(MyExtension {
     ///         some_piece_of_data: "foo".to_string(),
     ///     });
     ///
     ///     Ok(request)
-    /// });
+    /// }
     /// ```
     ///
     /// And picked up by RPCs:
@@ -377,6 +375,22 @@ impl<T> Request<T> {
     /// ```
     pub fn extensions_mut(&mut self) -> &mut Extensions {
         &mut self.extensions
+    }
+
+    /// Get a cancellation handle for this request.
+    ///
+    /// Cancellation is only supported on the client side. Calling `cancel` on
+    /// the handle will abort the request by sending an HTTP/2 RST_STREAM.
+    pub fn cancellation_handle(&mut self) -> CancellationHandle {
+        self.extensions
+            .get_or_insert(CancellationHandle {
+                token: CancellationToken::new(),
+            })
+            .clone()
+    }
+
+    pub(crate) fn remove_cancellation_handle(&mut self) -> Option<CancellationHandle> {
+        self.extensions_mut().remove()
     }
 }
 
@@ -436,7 +450,7 @@ fn duration_to_grpc_timeout(duration: Duration) -> String {
         if value > max_size {
             None
         } else {
-            Some(format!("{}{}", value, unit))
+            Some(format!("{value}{unit}"))
         }
     }
 
@@ -463,10 +477,38 @@ pub(crate) enum SanitizeHeaders {
     No,
 }
 
+/// A handle that allows triggering the cancellation of an outbound request
+/// stream.
+///
+/// This handle can be stored by the user and invoked to abort the request.
+///
+/// Cancellation is only supported on the client side.
+#[derive(Debug, Clone)]
+pub struct CancellationHandle {
+    token: CancellationToken,
+}
+
+impl CancellationHandle {
+    /// Cancel the stream.
+    ///
+    /// This will result in the outbound stream getting cancelled with an
+    /// RST_STREAM frame, if it hasn't gracefully closed.
+    ///
+    /// Consumes `self` to ensure cancellation is only requested once.
+    pub fn cancel(self) {
+        self.token.cancel();
+    }
+
+    pub(crate) fn into_token(self) -> CancellationToken {
+        self.token
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::metadata::MetadataValue;
+    use crate::metadata::{MetadataKey, MetadataValue};
+
     use http::Uri;
 
     #[test]
@@ -474,8 +516,10 @@ mod tests {
         let mut r = Request::new(1);
 
         for header in &MetadataMap::GRPC_RESERVED_HEADERS {
-            r.metadata_mut()
-                .insert(*header, MetadataValue::from_static("invalid"));
+            r.metadata_mut().insert(
+                MetadataKey::unchecked_from_header_name(header.clone()),
+                MetadataValue::from_static("invalid"),
+            );
         }
 
         let http_request = r.into_http(
@@ -485,6 +529,25 @@ mod tests {
             SanitizeHeaders::Yes,
         );
         assert!(http_request.headers().is_empty());
+    }
+
+    #[test]
+    fn preserves_user_agent() {
+        let mut r = Request::new(1);
+
+        r.metadata_mut().insert(
+            MetadataKey::from_static("user-agent"),
+            MetadataValue::from_static("Custom/1.2.3"),
+        );
+
+        let http_request = r.into_http(
+            Uri::default(),
+            http::Method::POST,
+            http::Version::HTTP_2,
+            SanitizeHeaders::Yes,
+        );
+        let user_agent = http_request.headers().get("user-agent").unwrap();
+        assert_eq!(user_agent, "Custom/1.2.3");
     }
 
     #[test]
@@ -506,5 +569,35 @@ mod tests {
         let one_hour = Duration::from_secs(60 * 60);
         let value = duration_to_grpc_timeout(one_hour);
         assert_eq!(value, format!("{}m", one_hour.as_millis()));
+    }
+
+    #[test]
+    fn test_cancellation() {
+        let mut req = Request::new(());
+        let handle = req.cancellation_handle();
+
+        let token = req.cancellation_handle().into_token();
+
+        assert!(!token.is_cancelled());
+
+        handle.cancel();
+
+        assert!(token.is_cancelled());
+    }
+
+    #[test]
+    fn test_cancellation_clone() {
+        let mut req = Request::new(());
+        let handle1 = req.cancellation_handle();
+        let handle2 = req.cancellation_handle();
+
+        let token = req.cancellation_handle().into_token();
+
+        assert!(!token.is_cancelled());
+
+        handle1.cancel();
+
+        assert!(token.is_cancelled());
+        assert!(handle2.into_token().is_cancelled());
     }
 }

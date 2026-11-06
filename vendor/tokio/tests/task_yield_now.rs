@@ -1,4 +1,11 @@
-#![cfg(all(feature = "full", tokio_unstable))]
+#![cfg(all(
+    any(
+        feature = "full",
+        all(target_os = "emscripten", feature = "rt", feature = "macros")
+    ),
+    not(target_os = "wasi"),
+    tokio_unstable
+))]
 
 use tokio::task;
 use tokio_test::task::spawn;
@@ -13,4 +20,13 @@ fn yield_now_outside_of_runtime() {
     assert!(task.poll().is_pending());
     assert!(task.is_woken());
     assert!(task.poll().is_ready());
+}
+
+#[cfg(not(target_family = "wasm"))]
+#[tokio::test(flavor = "multi_thread")]
+async fn yield_now_external_executor_and_block_in_place() {
+    let j = tokio::spawn(async {
+        task::block_in_place(|| futures::executor::block_on(task::yield_now()));
+    });
+    j.await.unwrap();
 }

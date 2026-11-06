@@ -1,7 +1,7 @@
 #![warn(rust_2018_idioms)]
 #![cfg(all(unix, feature = "full"))]
 
-use std::os::unix::io::{AsRawFd, IntoRawFd, RawFd};
+use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -10,14 +10,16 @@ use std::time::Duration;
 use std::{
     future::Future,
     io::{self, ErrorKind, Read, Write},
+    os::fd::OwnedFd,
     task::{Context, Waker},
 };
 
-use nix::unistd::{close, read, write};
+use nix::unistd::{read, write};
 
 use futures::poll;
 
 use tokio::io::unix::{AsyncFd, AsyncFdReadyGuard};
+use tokio::io::Interest;
 use tokio_test::{assert_err, assert_pending};
 
 struct TestWaker {
@@ -57,18 +59,18 @@ impl TestWaker {
 
 #[derive(Debug)]
 struct FileDescriptor {
-    fd: RawFd,
+    fd: std::os::fd::OwnedFd,
 }
 
 impl AsRawFd for FileDescriptor {
     fn as_raw_fd(&self) -> RawFd {
-        self.fd
+        self.fd.as_raw_fd()
     }
 }
 
 impl Read for &FileDescriptor {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        read(self.fd, buf).map_err(io::Error::from)
+        read(&self.fd, buf).map_err(io::Error::from)
     }
 }
 
@@ -80,7 +82,7 @@ impl Read for FileDescriptor {
 
 impl Write for &FileDescriptor {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        write(self.fd, buf).map_err(io::Error::from)
+        write(&self.fd, buf).map_err(io::Error::from)
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -98,16 +100,10 @@ impl Write for FileDescriptor {
     }
 }
 
-impl Drop for FileDescriptor {
-    fn drop(&mut self) {
-        let _ = close(self.fd);
-    }
-}
-
-fn set_nonblocking(fd: RawFd) {
+fn set_nonblocking(fd: &OwnedFd) {
     use nix::fcntl::{OFlag, F_GETFL, F_SETFL};
 
-    let flags = nix::fcntl::fcntl(fd, F_GETFL).expect("fcntl(F_GETFD)");
+    let flags = nix::fcntl::fcntl(fd, F_GETFL).expect("fcntl(F_GETFL)");
 
     if flags < 0 {
         panic!(
@@ -119,7 +115,7 @@ fn set_nonblocking(fd: RawFd) {
 
     let flags = OFlag::from_bits_truncate(flags) | OFlag::O_NONBLOCK;
 
-    nix::fcntl::fcntl(fd, F_SETFL(flags)).expect("fcntl(F_SETFD)");
+    nix::fcntl::fcntl(fd, F_SETFL(flags)).expect("fcntl(F_SETFL)");
 }
 
 fn socketpair() -> (FileDescriptor, FileDescriptor) {
@@ -132,30 +128,22 @@ fn socketpair() -> (FileDescriptor, FileDescriptor) {
         SockFlag::empty(),
     )
     .expect("socketpair");
-    let fds = (
-        FileDescriptor {
-            fd: fd_a.into_raw_fd(),
-        },
-        FileDescriptor {
-            fd: fd_b.into_raw_fd(),
-        },
-    );
+    let fds = (FileDescriptor { fd: fd_a }, FileDescriptor { fd: fd_b });
 
-    set_nonblocking(fds.0.fd);
-    set_nonblocking(fds.1.fd);
+    set_nonblocking(&fds.0.fd);
+    set_nonblocking(&fds.1.fd);
 
     fds
 }
 
-fn drain(mut fd: &FileDescriptor) {
+fn drain(mut fd: &FileDescriptor, mut amt: usize) {
     let mut buf = [0u8; 512];
-
-    loop {
+    while amt > 0 {
         match fd.read(&mut buf[..]) {
-            Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+            Err(e) if e.kind() == ErrorKind::WouldBlock => {}
             Ok(0) => panic!("unexpected EOF"),
-            Err(e) => panic!("unexpected error: {:?}", e),
-            Ok(_) => continue,
+            Err(e) => panic!("unexpected error: {e:?}"),
+            Ok(x) => amt -= x,
         }
     }
 }
@@ -164,8 +152,8 @@ fn drain(mut fd: &FileDescriptor) {
 async fn initially_writable() {
     let (a, b) = socketpair();
 
-    let afd_a = AsyncFd::new(a).unwrap();
-    let afd_b = AsyncFd::new(b).unwrap();
+    let afd_a = unsafe { AsyncFd::register(a) }.unwrap();
+    let afd_b = unsafe { AsyncFd::register(b) }.unwrap();
 
     afd_a.writable().await.unwrap().clear_ready();
     afd_b.writable().await.unwrap().clear_ready();
@@ -182,7 +170,7 @@ async fn initially_writable() {
 async fn reset_readable() {
     let (a, mut b) = socketpair();
 
-    let afd_a = AsyncFd::new(a).unwrap();
+    let afd_a = unsafe { AsyncFd::register(a) }.unwrap();
 
     let readable = afd_a.readable();
     tokio::pin!(readable);
@@ -226,15 +214,15 @@ async fn reset_readable() {
 async fn reset_writable() {
     let (a, b) = socketpair();
 
-    let afd_a = AsyncFd::new(a).unwrap();
+    let afd_a = unsafe { AsyncFd::register(a) }.unwrap();
 
     let mut guard = afd_a.writable().await.unwrap();
 
     // Write until we get a WouldBlock. This also clears the ready state.
-    while guard
-        .try_io(|_| afd_a.get_ref().write(&[0; 512][..]))
-        .is_ok()
-    {}
+    let mut bytes = 0;
+    while let Ok(Ok(amt)) = guard.try_io(|_| afd_a.get_ref().write(&[0; 512][..])) {
+        bytes += amt;
+    }
 
     // Writable state should be cleared now.
     let writable = afd_a.writable();
@@ -246,7 +234,7 @@ async fn reset_writable() {
     }
 
     // Read from the other side; we should become writable now.
-    drain(&b);
+    drain(&b, bytes);
 
     let _ = writable.await.unwrap();
 }
@@ -263,7 +251,7 @@ impl<T: AsRawFd> AsRawFd for ArcFd<T> {
 async fn drop_closes() {
     let (a, mut b) = socketpair();
 
-    let afd_a = AsyncFd::new(a).unwrap();
+    let afd_a = unsafe { AsyncFd::register(a) }.unwrap();
 
     assert_eq!(
         ErrorKind::WouldBlock,
@@ -277,7 +265,7 @@ async fn drop_closes() {
     // into_inner does not close the fd
 
     let (a, mut b) = socketpair();
-    let afd_a = AsyncFd::new(a).unwrap();
+    let afd_a = unsafe { AsyncFd::register(a) }.unwrap();
     let _a: FileDescriptor = afd_a.into_inner();
 
     assert_eq!(
@@ -288,7 +276,7 @@ async fn drop_closes() {
     // Drop closure behavior is delegated to the inner object
     let (a, mut b) = socketpair();
     let arc_fd = Arc::new(a);
-    let afd_a = AsyncFd::new(ArcFd(arc_fd.clone())).unwrap();
+    let afd_a = unsafe { AsyncFd::register(ArcFd(arc_fd.clone())) }.unwrap();
     std::mem::drop(afd_a);
 
     assert_eq!(
@@ -303,18 +291,18 @@ async fn drop_closes() {
 async fn reregister() {
     let (a, _b) = socketpair();
 
-    let afd_a = AsyncFd::new(a).unwrap();
+    let afd_a = unsafe { AsyncFd::register(a) }.unwrap();
     let a = afd_a.into_inner();
-    AsyncFd::new(a).unwrap();
+    unsafe { AsyncFd::register(a) }.unwrap();
 }
 
 #[tokio::test]
-async fn try_io() {
+async fn guard_try_io() {
     let (a, mut b) = socketpair();
 
     b.write_all(b"0").unwrap();
 
-    let afd_a = AsyncFd::new(a).unwrap();
+    let afd_a = unsafe { AsyncFd::register(a) }.unwrap();
 
     let mut guard = afd_a.readable().await.unwrap();
 
@@ -344,9 +332,109 @@ async fn try_io() {
 }
 
 #[tokio::test]
+async fn try_io_readable() {
+    let (a, mut b) = socketpair();
+    let mut afd_a = unsafe { AsyncFd::register(a) }.unwrap();
+
+    // Give the runtime some time to update bookkeeping.
+    tokio::task::yield_now().await;
+
+    {
+        let mut called = false;
+        let _ = afd_a.try_io_mut(Interest::READABLE, |_| {
+            called = true;
+            Ok(())
+        });
+        assert!(
+            !called,
+            "closure should not have been called, since socket should not be readable"
+        );
+    }
+
+    // Make `a` readable by writing to `b`.
+    // Give the runtime some time to update bookkeeping.
+    b.write_all(&[0]).unwrap();
+    tokio::task::yield_now().await;
+
+    {
+        let mut called = false;
+        let _ = afd_a.try_io(Interest::READABLE, |_| {
+            called = true;
+            Ok(())
+        });
+        assert!(
+            called,
+            "closure should have been called, since socket should have data available to read"
+        );
+    }
+
+    {
+        let mut called = false;
+        let _ = afd_a.try_io(Interest::READABLE, |_| {
+            called = true;
+            io::Result::<()>::Err(ErrorKind::WouldBlock.into())
+        });
+        assert!(
+            called,
+            "closure should have been called, since socket should have data available to read"
+        );
+    }
+
+    {
+        let mut called = false;
+        let _ = afd_a.try_io(Interest::READABLE, |_| {
+            called = true;
+            Ok(())
+        });
+        assert!(!called, "closure should not have been called, since socket readable state should have been cleared");
+    }
+}
+
+#[tokio::test]
+async fn try_io_writable() {
+    let (a, _b) = socketpair();
+    let afd_a = unsafe { AsyncFd::register(a) }.unwrap();
+
+    // Give the runtime some time to update bookkeeping.
+    tokio::task::yield_now().await;
+
+    {
+        let mut called = false;
+        let _ = afd_a.try_io(Interest::WRITABLE, |_| {
+            called = true;
+            Ok(())
+        });
+        assert!(
+            called,
+            "closure should have been called, since socket should still be marked as writable"
+        );
+    }
+    {
+        let mut called = false;
+        let _ = afd_a.try_io(Interest::WRITABLE, |_| {
+            called = true;
+            io::Result::<()>::Err(ErrorKind::WouldBlock.into())
+        });
+        assert!(
+            called,
+            "closure should have been called, since socket should still be marked as writable"
+        );
+    }
+
+    {
+        let mut called = false;
+        let _ = afd_a.try_io(Interest::WRITABLE, |_| {
+            called = true;
+            Ok(())
+        });
+        assert!(!called, "closure should not have been called, since socket writable state should have been cleared");
+    }
+}
+
+#[tokio::test]
 async fn multiple_waiters() {
     let (a, mut b) = socketpair();
-    let afd_a = Arc::new(AsyncFd::new(a).unwrap());
+    let afd_a = Arc::new(unsafe { AsyncFd::register(a) }.unwrap());
 
     let barrier = Arc::new(tokio::sync::Barrier::new(11));
 
@@ -384,7 +472,7 @@ async fn multiple_waiters() {
             panic!("Tasks exited unexpectedly")
         },
         _ = barrier.wait() => {}
-    };
+    }
 
     b.write_all(b"0").unwrap();
 
@@ -394,11 +482,14 @@ async fn multiple_waiters() {
 #[tokio::test]
 async fn poll_fns() {
     let (a, b) = socketpair();
-    let afd_a = Arc::new(AsyncFd::new(a).unwrap());
-    let afd_b = Arc::new(AsyncFd::new(b).unwrap());
+    let afd_a = Arc::new(unsafe { AsyncFd::register(a) }.unwrap());
+    let afd_b = Arc::new(unsafe { AsyncFd::register(b) }.unwrap());
 
     // Fill up the write side of A
-    while afd_a.get_ref().write(&[0; 512]).is_ok() {}
+    let mut bytes = 0;
+    while let Ok(amt) = afd_a.get_ref().write(&[0; 512]) {
+        bytes += amt;
+    }
 
     let waker = TestWaker::new();
 
@@ -410,12 +501,12 @@ async fn poll_fns() {
 
     let read_fut = tokio::spawn(async move {
         // Move waker onto this task first
-        assert_pending!(poll!(futures::future::poll_fn(|cx| afd_a_2
+        assert_pending!(poll!(std::future::poll_fn(|cx| afd_a_2
             .as_ref()
             .poll_read_ready(cx))));
         barrier_clone.wait().await;
 
-        let _ = futures::future::poll_fn(|cx| afd_a_2.as_ref().poll_read_ready(cx)).await;
+        let _ = std::future::poll_fn(|cx| afd_a_2.as_ref().poll_read_ready(cx)).await;
     });
 
     let afd_a_2 = afd_a.clone();
@@ -424,12 +515,12 @@ async fn poll_fns() {
 
     let mut write_fut = tokio::spawn(async move {
         // Move waker onto this task first
-        assert_pending!(poll!(futures::future::poll_fn(|cx| afd_a_2
+        assert_pending!(poll!(std::future::poll_fn(|cx| afd_a_2
             .as_ref()
             .poll_write_ready(cx))));
         barrier_clone.wait().await;
 
-        let _ = futures::future::poll_fn(|cx| afd_a_2.as_ref().poll_write_ready(cx)).await;
+        let _ = std::future::poll_fn(|cx| afd_a_2.as_ref().poll_write_ready(cx)).await;
     });
 
     r_barrier.wait().await;
@@ -458,7 +549,7 @@ async fn poll_fns() {
     }
 
     // Make it writable now
-    drain(afd_b.get_ref());
+    drain(afd_b.get_ref(), bytes);
 
     // now we should be writable (ie - the waker for poll_write should still be registered after we wake the read side)
     let _ = write_fut.await;
@@ -488,7 +579,7 @@ fn driver_shutdown_wakes_currently_pending() {
     let (a, _b) = socketpair();
     let afd_a = {
         let _enter = rt.enter();
-        AsyncFd::new(a).unwrap()
+        unsafe { AsyncFd::register(a) }.unwrap()
     };
 
     let readable = assert_pending(afd_a.readable());
@@ -509,7 +600,7 @@ fn driver_shutdown_wakes_future_pending() {
     let (a, _b) = socketpair();
     let afd_a = {
         let _enter = rt.enter();
-        AsyncFd::new(a).unwrap()
+        unsafe { AsyncFd::register(a) }.unwrap()
     };
 
     std::mem::drop(rt);
@@ -519,32 +610,31 @@ fn driver_shutdown_wakes_future_pending() {
 
 #[test]
 fn driver_shutdown_wakes_pending_race() {
-    // TODO: make this a loom test
-    for _ in 0..100 {
-        let rt = rt();
+    let rt = rt();
 
-        let (a, _b) = socketpair();
-        let afd_a = {
-            let _enter = rt.enter();
-            AsyncFd::new(a).unwrap()
-        };
+    let (a, _b) = socketpair();
+    let afd_a = {
+        let _enter = rt.enter();
+        unsafe { AsyncFd::register(a) }.unwrap()
+    };
 
-        let _ = std::thread::spawn(move || std::mem::drop(rt));
+    let shutdown = std::thread::spawn(move || std::mem::drop(rt));
 
-        // This may or may not return an error (but will be awoken)
-        let _ = futures::executor::block_on(afd_a.readable());
+    // This may or may not return an error (but will be awoken)
+    let _ = futures::executor::block_on(afd_a.readable());
 
-        // However retrying will always return an error
-        assert_err!(futures::executor::block_on(afd_a.readable()));
-    }
+    shutdown.join().unwrap();
+
+    // However retrying will always return an error
+    assert_err!(futures::executor::block_on(afd_a.readable()));
 }
 
 async fn poll_readable<T: AsRawFd>(fd: &AsyncFd<T>) -> std::io::Result<AsyncFdReadyGuard<'_, T>> {
-    futures::future::poll_fn(|cx| fd.poll_read_ready(cx)).await
+    std::future::poll_fn(|cx| fd.poll_read_ready(cx)).await
 }
 
 async fn poll_writable<T: AsRawFd>(fd: &AsyncFd<T>) -> std::io::Result<AsyncFdReadyGuard<'_, T>> {
-    futures::future::poll_fn(|cx| fd.poll_write_ready(cx)).await
+    std::future::poll_fn(|cx| fd.poll_write_ready(cx)).await
 }
 
 #[test]
@@ -554,7 +644,7 @@ fn driver_shutdown_wakes_currently_pending_polls() {
     let (a, _b) = socketpair();
     let afd_a = {
         let _enter = rt.enter();
-        AsyncFd::new(a).unwrap()
+        unsafe { AsyncFd::register(a) }.unwrap()
     };
 
     while afd_a.get_ref().write(&[0; 512]).is_ok() {} // make not writable
@@ -576,7 +666,7 @@ fn driver_shutdown_wakes_poll() {
     let (a, _b) = socketpair();
     let afd_a = {
         let _enter = rt.enter();
-        AsyncFd::new(a).unwrap()
+        unsafe { AsyncFd::register(a) }.unwrap()
     };
 
     std::mem::drop(rt);
@@ -592,7 +682,7 @@ fn driver_shutdown_then_clear_readiness() {
     let (a, _b) = socketpair();
     let afd_a = {
         let _enter = rt.enter();
-        AsyncFd::new(a).unwrap()
+        unsafe { AsyncFd::register(a) }.unwrap()
     };
 
     let mut write_ready = rt.block_on(afd_a.writable()).unwrap();
@@ -604,27 +694,27 @@ fn driver_shutdown_then_clear_readiness() {
 
 #[test]
 fn driver_shutdown_wakes_poll_race() {
-    // TODO: make this a loom test
-    for _ in 0..100 {
-        let rt = rt();
+    let rt = rt();
 
-        let (a, _b) = socketpair();
-        let afd_a = {
-            let _enter = rt.enter();
-            AsyncFd::new(a).unwrap()
-        };
+    let (a, _b) = socketpair();
+    let afd_a = {
+        let _enter = rt.enter();
+        unsafe { AsyncFd::register(a) }.unwrap()
+    };
 
-        while afd_a.get_ref().write(&[0; 512]).is_ok() {} // make not writable
+    while afd_a.get_ref().write(&[0; 512]).is_ok() {} // make not writable
 
-        let _ = std::thread::spawn(move || std::mem::drop(rt));
+    let shutdown = std::thread::spawn(move || std::mem::drop(rt));
 
-        // The poll variants will always return an error in this case
-        assert_err!(futures::executor::block_on(poll_readable(&afd_a)));
-        assert_err!(futures::executor::block_on(poll_writable(&afd_a)));
-    }
+    // The poll variants will always return an error in this case
+    assert_err!(futures::executor::block_on(poll_readable(&afd_a)));
+    assert_err!(futures::executor::block_on(poll_writable(&afd_a)));
+
+    shutdown.join().unwrap();
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // No socket in miri.
 #[cfg(any(target_os = "linux", target_os = "android"))]
 async fn priority_event_on_oob_data() {
     use std::net::SocketAddr;
@@ -637,7 +727,7 @@ async fn priority_event_on_oob_data() {
     let addr = listener.local_addr().unwrap();
 
     let client = std::net::TcpStream::connect(addr).unwrap();
-    let client = AsyncFd::with_interest(client, Interest::PRIORITY).unwrap();
+    let client = unsafe { AsyncFd::register_with_interest(client, Interest::PRIORITY) }.unwrap();
 
     let (stream, _) = listener.accept().unwrap();
 
@@ -670,7 +760,7 @@ async fn clear_ready_matching_clears_ready() {
 
     let (a, mut b) = socketpair();
 
-    let afd_a = AsyncFd::new(a).unwrap();
+    let afd_a = unsafe { AsyncFd::register(a) }.unwrap();
     b.write_all(b"0").unwrap();
 
     let mut guard = afd_a
@@ -693,7 +783,7 @@ async fn clear_ready_matching_clears_ready_mut() {
 
     let (a, mut b) = socketpair();
 
-    let mut afd_a = AsyncFd::new(a).unwrap();
+    let mut afd_a = unsafe { AsyncFd::register(a) }.unwrap();
     b.write_all(b"0").unwrap();
 
     let mut guard = afd_a
@@ -711,6 +801,7 @@ async fn clear_ready_matching_clears_ready_mut() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // No socket in miri.
 #[cfg(target_os = "linux")]
 async fn await_error_readiness_timestamping() {
     use std::net::{Ipv4Addr, SocketAddr};
@@ -729,7 +820,7 @@ async fn await_error_readiness_timestamping() {
 
     socket.connect(address_b).unwrap();
 
-    let fd = AsyncFd::new(socket).unwrap();
+    let fd = unsafe { AsyncFd::register(socket) }.unwrap();
 
     tokio::select! {
         _ = fd.ready(Interest::ERROR) => panic!(),
@@ -767,6 +858,7 @@ fn configure_timestamping_socket(udp_socket: &std::net::UdpSocket) -> std::io::R
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // No socket in miri.
 #[cfg(target_os = "linux")]
 async fn await_error_readiness_invalid_address() {
     use std::net::{Ipv4Addr, SocketAddr};
@@ -829,8 +921,83 @@ async fn await_error_readiness_invalid_address() {
         }
     });
 
-    let fd = AsyncFd::new(socket).unwrap();
+    let fd = unsafe { AsyncFd::register(socket) }.unwrap();
 
     let guard = fd.ready(Interest::ERROR).await.unwrap();
     assert_eq!(guard.ready(), Ready::ERROR);
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct InvalidSource;
+
+impl AsRawFd for InvalidSource {
+    fn as_raw_fd(&self) -> RawFd {
+        -1
+    }
+}
+
+#[tokio::test]
+async fn register_error() {
+    let original = Arc::new(InvalidSource);
+
+    let error = unsafe { AsyncFd::register(original.clone()) }.unwrap_err();
+    let (returned, _cause) = error.into_parts();
+
+    assert!(Arc::ptr_eq(&original, &returned));
+}
+
+#[tokio::test]
+async fn register_with_interest_error() {
+    let original = Arc::new(InvalidSource);
+
+    let error = unsafe { AsyncFd::register_with_interest(original.clone(), Interest::READABLE) }
+        .unwrap_err();
+    let (returned, _cause) = error.into_parts();
+
+    assert!(Arc::ptr_eq(&original, &returned));
+}
+
+#[tokio::test]
+#[allow(deprecated)]
+async fn try_new() {
+    let original = Arc::new(InvalidSource);
+
+    let error = AsyncFd::try_new(original.clone()).unwrap_err();
+    let (returned, _cause) = error.into_parts();
+
+    assert!(Arc::ptr_eq(&original, &returned));
+}
+
+#[tokio::test]
+#[allow(deprecated)]
+async fn try_with_interest() {
+    let original = Arc::new(InvalidSource);
+
+    let error = AsyncFd::try_with_interest(original.clone(), Interest::READABLE).unwrap_err();
+    let (returned, _cause) = error.into_parts();
+
+    assert!(Arc::ptr_eq(&original, &returned));
+}
+
+#[tokio::test]
+#[allow(deprecated)]
+async fn drop_after_closing_raw_fd_with_live_duplicate() {
+    let (original, mut peer) = socketpair();
+    let duplicate = original.fd.try_clone().unwrap();
+
+    let registered = AsyncFd::with_interest(original.as_raw_fd(), Interest::READABLE).unwrap();
+
+    // Closing the original fd while `duplicate` stays open keeps the open file
+    // description registered in epoll on Linux, while causing `EPOLL_CTL_DEL`
+    // to fail with `EBADF` when `registered` is dropped.
+    drop(original);
+    drop(registered);
+
+    // Let the I/O driver run a turn so any pending registration releases happen.
+    tokio::task::yield_now().await;
+
+    peer.write_all(b"x").unwrap();
+    tokio::task::yield_now().await;
+
+    drop(duplicate);
 }

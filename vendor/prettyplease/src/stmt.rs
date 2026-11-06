@@ -1,9 +1,13 @@
 use crate::algorithm::Printer;
+use crate::classify;
+use crate::expr;
+use crate::fixup::FixupContext;
+use crate::mac;
 use crate::INDENT;
 use syn::{BinOp, Expr, Stmt};
 
 impl Printer {
-    pub fn stmt(&mut self, stmt: &Stmt) {
+    pub fn stmt(&mut self, stmt: &Stmt, is_last: bool) {
         match stmt {
             Stmt::Local(local) => {
                 self.outer_attrs(&local.attrs);
@@ -13,32 +17,26 @@ impl Printer {
                 if let Some(local_init) = &local.init {
                     self.word(" = ");
                     self.neverbreak();
-                    self.expr(&local_init.expr);
+                    self.subexpr(
+                        &local_init.expr,
+                        local_init.diverge.is_some()
+                            && classify::expr_trailing_brace(&local_init.expr),
+                        FixupContext::NONE,
+                    );
                     if let Some((_else, diverge)) = &local_init.diverge {
                         self.space();
                         self.word("else ");
                         self.end();
                         self.neverbreak();
-                        if let Expr::Block(expr) = diverge.as_ref() {
-                            self.cbox(INDENT);
+                        self.cbox(INDENT);
+                        if let Some(expr) = expr::simple_block(diverge) {
                             self.small_block(&expr.block, &[]);
-                            self.end();
                         } else {
-                            self.word("{");
-                            self.space();
-                            self.ibox(INDENT);
-                            self.expr(diverge);
-                            self.end();
-                            self.space();
-                            self.offset(-INDENT);
-                            self.word("}");
+                            self.expr_as_small_block(diverge, INDENT);
                         }
-                    } else {
-                        self.end();
                     }
-                } else {
-                    self.end();
                 }
+                self.end();
                 self.word(";");
                 self.hardbreak();
             }
@@ -46,14 +44,14 @@ impl Printer {
             Stmt::Expr(expr, None) => {
                 if break_after(expr) {
                     self.ibox(0);
-                    self.expr_beginning_of_line(expr, true);
+                    self.expr_beginning_of_line(expr, false, true, FixupContext::new_stmt());
                     if add_semi(expr) {
                         self.word(";");
                     }
                     self.end();
                     self.hardbreak();
                 } else {
-                    self.expr_beginning_of_line(expr, true);
+                    self.expr_beginning_of_line(expr, false, true, FixupContext::new_stmt());
                 }
             }
             Stmt::Expr(expr, Some(_semi)) => {
@@ -63,7 +61,7 @@ impl Printer {
                     }
                 }
                 self.ibox(0);
-                self.expr_beginning_of_line(expr, true);
+                self.expr_beginning_of_line(expr, false, true, FixupContext::new_stmt());
                 if !remove_semi(expr) {
                     self.word(";");
                 }
@@ -72,7 +70,8 @@ impl Printer {
             }
             Stmt::Macro(stmt) => {
                 self.outer_attrs(&stmt.attrs);
-                let semicolon = true;
+                let semicolon = stmt.semi_token.is_some()
+                    || !is_last && mac::requires_semi(&stmt.mac.delimiter);
                 self.mac(&stmt.mac, None, semicolon);
                 self.hardbreak();
             }
@@ -82,41 +81,45 @@ impl Printer {
 
 pub fn add_semi(expr: &Expr) -> bool {
     match expr {
+        #![cfg_attr(all(test, exhaustive), deny(non_exhaustive_omitted_patterns))]
         Expr::Assign(_) | Expr::Break(_) | Expr::Continue(_) | Expr::Return(_) | Expr::Yield(_) => {
             true
         }
-        Expr::Binary(expr) => match expr.op {
-            BinOp::AddAssign(_)
-            | BinOp::SubAssign(_)
-            | BinOp::MulAssign(_)
-            | BinOp::DivAssign(_)
-            | BinOp::RemAssign(_)
-            | BinOp::BitXorAssign(_)
-            | BinOp::BitAndAssign(_)
-            | BinOp::BitOrAssign(_)
-            | BinOp::ShlAssign(_)
-            | BinOp::ShrAssign(_) => true,
-            BinOp::Add(_)
-            | BinOp::Sub(_)
-            | BinOp::Mul(_)
-            | BinOp::Div(_)
-            | BinOp::Rem(_)
-            | BinOp::And(_)
-            | BinOp::Or(_)
-            | BinOp::BitXor(_)
-            | BinOp::BitAnd(_)
-            | BinOp::BitOr(_)
-            | BinOp::Shl(_)
-            | BinOp::Shr(_)
-            | BinOp::Eq(_)
-            | BinOp::Lt(_)
-            | BinOp::Le(_)
-            | BinOp::Ne(_)
-            | BinOp::Ge(_)
-            | BinOp::Gt(_) => false,
-            #[cfg_attr(all(test, exhaustive), deny(non_exhaustive_omitted_patterns))]
-            _ => unimplemented!("unknown BinOp"),
-        },
+        Expr::Binary(expr) =>
+        {
+            match expr.op {
+                #![cfg_attr(all(test, exhaustive), deny(non_exhaustive_omitted_patterns))]
+                BinOp::AddAssign(_)
+                | BinOp::SubAssign(_)
+                | BinOp::MulAssign(_)
+                | BinOp::DivAssign(_)
+                | BinOp::RemAssign(_)
+                | BinOp::BitXorAssign(_)
+                | BinOp::BitAndAssign(_)
+                | BinOp::BitOrAssign(_)
+                | BinOp::ShlAssign(_)
+                | BinOp::ShrAssign(_) => true,
+                BinOp::Add(_)
+                | BinOp::Sub(_)
+                | BinOp::Mul(_)
+                | BinOp::Div(_)
+                | BinOp::Rem(_)
+                | BinOp::And(_)
+                | BinOp::Or(_)
+                | BinOp::BitXor(_)
+                | BinOp::BitAnd(_)
+                | BinOp::BitOr(_)
+                | BinOp::Shl(_)
+                | BinOp::Shr(_)
+                | BinOp::Eq(_)
+                | BinOp::Lt(_)
+                | BinOp::Le(_)
+                | BinOp::Ne(_)
+                | BinOp::Ge(_)
+                | BinOp::Gt(_) => false,
+                _ => unimplemented!("unknown BinOp"),
+            }
+        }
         Expr::Group(group) => add_semi(&group.expr),
 
         Expr::Array(_)
@@ -141,6 +144,7 @@ pub fn add_semi(expr: &Expr) -> bool {
         | Expr::Paren(_)
         | Expr::Path(_)
         | Expr::Range(_)
+        | Expr::RawAddr(_)
         | Expr::Reference(_)
         | Expr::Repeat(_)
         | Expr::Struct(_)
@@ -152,7 +156,6 @@ pub fn add_semi(expr: &Expr) -> bool {
         | Expr::Verbatim(_)
         | Expr::While(_) => false,
 
-        #[cfg_attr(all(test, exhaustive), deny(non_exhaustive_omitted_patterns))]
         _ => false,
     }
 }
@@ -168,6 +171,7 @@ pub fn break_after(expr: &Expr) -> bool {
 
 fn remove_semi(expr: &Expr) -> bool {
     match expr {
+        #![cfg_attr(all(test, exhaustive), deny(non_exhaustive_omitted_patterns))]
         Expr::ForLoop(_) | Expr::While(_) => true,
         Expr::Group(group) => remove_semi(&group.expr),
         Expr::If(expr) => match &expr.else_branch {
@@ -199,6 +203,7 @@ fn remove_semi(expr: &Expr) -> bool {
         | Expr::Paren(_)
         | Expr::Path(_)
         | Expr::Range(_)
+        | Expr::RawAddr(_)
         | Expr::Reference(_)
         | Expr::Repeat(_)
         | Expr::Return(_)
@@ -211,7 +216,6 @@ fn remove_semi(expr: &Expr) -> bool {
         | Expr::Verbatim(_)
         | Expr::Yield(_) => false,
 
-        #[cfg_attr(all(test, exhaustive), deny(non_exhaustive_omitted_patterns))]
         _ => false,
     }
 }

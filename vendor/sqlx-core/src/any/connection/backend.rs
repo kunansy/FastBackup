@@ -1,5 +1,5 @@
-use crate::any::{Any, AnyArguments, AnyQueryResult, AnyRow, AnyStatement, AnyTypeInfo};
-use crate::describe::Describe;
+use crate::any::{AnyArguments, AnyQueryResult, AnyRow, AnyStatement, AnyTypeInfo};
+use crate::sql_str::SqlStr;
 use either::Either;
 use futures_core::future::BoxFuture;
 use futures_core::stream::BoxStream;
@@ -27,14 +27,38 @@ pub trait AnyConnectionBackend: std::any::Any + Debug + Send + 'static {
 
     /// Begin a new transaction or establish a savepoint within the active transaction.
     ///
-    /// Returns a [`Transaction`] for controlling and tracking the new transaction.
-    fn begin(&mut self) -> BoxFuture<'_, crate::Result<()>>;
+    /// If this is a new transaction, `statement` may be used instead of the
+    /// default "BEGIN" statement.
+    ///
+    /// If we are already inside a transaction and `statement.is_some()`, then
+    /// `Error::InvalidSavePoint` is returned without running any statements.
+    fn begin(&mut self, statement: Option<SqlStr>) -> BoxFuture<'_, crate::Result<()>>;
 
     fn commit(&mut self) -> BoxFuture<'_, crate::Result<()>>;
 
     fn rollback(&mut self) -> BoxFuture<'_, crate::Result<()>>;
 
     fn start_rollback(&mut self);
+
+    /// Returns the current transaction depth.
+    ///
+    /// Transaction depth indicates the level of nested transactions:
+    /// - Level 0: No active transaction.
+    /// - Level 1: A transaction is active.
+    /// - Level 2 or higher: A transaction is active and one or more SAVEPOINTs have been created within it.
+    fn get_transaction_depth(&self) -> usize {
+        unimplemented!("get_transaction_depth() is not implemented for this backend. This is a provided method to avoid a breaking change, but it will become a required method in version 0.9 and later.");
+    }
+
+    /// Checks if the connection is currently in a transaction.
+    ///
+    /// This method returns `true` if the current transaction depth is greater than 0,
+    /// indicating that a transaction is active. It returns `false` if the transaction depth is 0,
+    /// meaning no transaction is active.
+    #[inline]
+    fn is_in_transaction(&self) -> bool {
+        self.get_transaction_depth() != 0
+    }
 
     /// The number of statements currently cached in the connection.
     fn cached_statements_size(&self) -> usize {
@@ -69,23 +93,29 @@ pub trait AnyConnectionBackend: std::any::Any + Debug + Send + 'static {
         ))
     }
 
-    fn fetch_many<'q>(
-        &'q mut self,
-        query: &'q str,
-        arguments: Option<AnyArguments<'q>>,
-    ) -> BoxStream<'q, crate::Result<Either<AnyQueryResult, AnyRow>>>;
+    fn fetch_many(
+        &mut self,
+        query: SqlStr,
+        persistent: bool,
+        arguments: Option<AnyArguments>,
+    ) -> BoxStream<'_, crate::Result<Either<AnyQueryResult, AnyRow>>>;
 
-    fn fetch_optional<'q>(
-        &'q mut self,
-        query: &'q str,
-        arguments: Option<AnyArguments<'q>>,
-    ) -> BoxFuture<'q, crate::Result<Option<AnyRow>>>;
+    fn fetch_optional(
+        &mut self,
+        query: SqlStr,
+        persistent: bool,
+        arguments: Option<AnyArguments>,
+    ) -> BoxFuture<'_, crate::Result<Option<AnyRow>>>;
 
     fn prepare_with<'c, 'q: 'c>(
         &'c mut self,
-        sql: &'q str,
+        sql: SqlStr,
         parameters: &[AnyTypeInfo],
-    ) -> BoxFuture<'c, crate::Result<AnyStatement<'q>>>;
+    ) -> BoxFuture<'c, crate::Result<AnyStatement>>;
 
-    fn describe<'q>(&'q mut self, sql: &'q str) -> BoxFuture<'q, crate::Result<Describe<Any>>>;
+    #[cfg(feature = "offline")]
+    fn describe(
+        &mut self,
+        sql: SqlStr,
+    ) -> BoxFuture<'_, crate::Result<crate::describe::Describe<crate::any::Any>>>;
 }

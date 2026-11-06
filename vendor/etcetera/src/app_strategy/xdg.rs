@@ -1,5 +1,5 @@
-use crate::base_strategy;
 use crate::base_strategy::BaseStrategy;
+use crate::{HomeDirError, base_strategy};
 use std::path::{Path, PathBuf};
 
 /// This strategy implements the [XDG Base Directories Specification](https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html). It is the most common on Linux, but is increasingly being adopted elsewhere.
@@ -13,11 +13,13 @@ use std::path::{Path, PathBuf};
 /// use std::path::Path;
 ///
 /// // Remove the environment variables that the strategy reads from.
+/// unsafe {
 /// std::env::remove_var("XDG_CONFIG_HOME");
 /// std::env::remove_var("XDG_DATA_HOME");
 /// std::env::remove_var("XDG_CACHE_HOME");
 /// std::env::remove_var("XDG_STATE_HOME");
 /// std::env::remove_var("XDG_RUNTIME_DIR");
+/// }
 ///
 /// let app_strategy = Xdg::new(AppStrategyArgs {
 ///     top_level_domain: "org".to_string(),
@@ -88,11 +90,13 @@ use std::path::{Path, PathBuf};
 ///     "/my_runtime_location/"
 /// };
 ///
+/// unsafe {
 /// std::env::set_var("XDG_CONFIG_HOME", config_path);
 /// std::env::set_var("XDG_DATA_HOME", data_path);
 /// std::env::set_var("XDG_CACHE_HOME", cache_path);
 /// std::env::set_var("XDG_STATE_HOME", state_path);
 /// std::env::set_var("XDG_RUNTIME_DIR", runtime_path);
+/// }
 ///
 /// let app_strategy = Xdg::new(AppStrategyArgs {
 ///     top_level_domain: "org".to_string(),
@@ -131,11 +135,13 @@ use std::path::{Path, PathBuf};
 /// use std::path::Path;
 ///
 /// // Remove the environment variables that the strategy reads from.
+/// unsafe {
 /// std::env::set_var("XDG_CONFIG_HOME", "relative_path/");
 /// std::env::set_var("XDG_DATA_HOME", "./another_one/");
 /// std::env::set_var("XDG_CACHE_HOME", "yet_another/");
 /// std::env::set_var("XDG_STATE_HOME", "./and_another");
 /// std::env::set_var("XDG_RUNTIME_DIR", "relative_path/");
+/// }
 ///
 /// let app_strategy = Xdg::new(AppStrategyArgs {
 ///     top_level_domain: "org".to_string(),
@@ -173,16 +179,17 @@ pub struct Xdg {
     unixy_name: String,
 }
 
-impl super::AppStrategy for Xdg {
-    type CreationError = crate::HomeDirError;
-
-    fn new(args: super::AppStrategyArgs) -> Result<Self, Self::CreationError> {
+impl Xdg {
+    /// Create a new Xdg AppStrategy
+    pub fn new(args: super::AppStrategyArgs) -> Result<Self, HomeDirError> {
         Ok(Self {
             base_strategy: base_strategy::Xdg::new()?,
             unixy_name: args.unixy_name(),
         })
     }
+}
 
+impl super::AppStrategy for Xdg {
     fn home_dir(&self) -> &Path {
         self.base_strategy.home_dir()
     }

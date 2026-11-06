@@ -15,7 +15,7 @@ macro_rules! ast_struct {
 
         #[cfg(not(feature = "full"))]
         $(#[$attr])* $pub $struct $name {
-            _noconstruct: ::std::marker::PhantomData<::proc_macro2::Span>,
+            _noconstruct: ::core::marker::PhantomData<::proc_macro2::Span>,
         }
 
         #[cfg(all(not(feature = "full"), feature = "printing"))]
@@ -60,49 +60,8 @@ macro_rules! ast_enum_of_structs {
 
         $(#[$enum_attr])* $pub $enum $name $body
 
-        ast_enum_of_structs_impl!($name $body);
-    };
-}
-
-macro_rules! ast_enum_of_structs_impl {
-    (
-        $name:ident {
-            $(
-                $(#[cfg $cfg_attr:tt])*
-                $(#[doc $($doc_attr:tt)*])*
-                $variant:ident $( ($($member:ident)::+) )*,
-            )*
-        }
-    ) => {
-        $($(
-            ast_enum_from_struct!($name::$variant, $($member)::+);
-        )*)*
-
         #[cfg(feature = "printing")]
-        generate_to_tokens! {
-            ()
-            tokens
-            $name {
-                $(
-                    $(#[cfg $cfg_attr])*
-                    $(#[doc $($doc_attr)*])*
-                    $variant $($($member)::+)*,
-                )*
-            }
-        }
-    };
-}
-
-macro_rules! ast_enum_from_struct {
-    // No From<TokenStream> for verbatim variants.
-    ($name:ident::Verbatim, $member:ident) => {};
-
-    ($name:ident::$variant:ident, $member:ident) => {
-        impl From<$member> for $name {
-            fn from(e: $member) -> $name {
-                $name::$variant(e)
-            }
-        }
+        generate_to_tokens!(() tokens $name $body);
     };
 }
 
@@ -110,34 +69,34 @@ macro_rules! ast_enum_from_struct {
 macro_rules! generate_to_tokens {
     (
         ($($arms:tt)*) $tokens:ident $name:ident {
-            $(#[cfg $cfg_attr:tt])*
             $(#[doc $($doc_attr:tt)*])*
+            $(#[cfg_attr $cfg_attr:tt])*
             $variant:ident,
             $($next:tt)*
         }
     ) => {
         generate_to_tokens!(
-            ($($arms)* $(#[cfg $cfg_attr])* $name::$variant => {})
+            ($($arms)* $name::$variant => {})
             $tokens $name { $($next)* }
         );
     };
 
     (
         ($($arms:tt)*) $tokens:ident $name:ident {
-            $(#[cfg $cfg_attr:tt])*
             $(#[doc $($doc_attr:tt)*])*
-            $variant:ident $member:ident,
+            $(#[cfg_attr $cfg_attr:tt])*
+            $variant:ident($member:ident),
             $($next:tt)*
         }
     ) => {
         generate_to_tokens!(
-            ($($arms)* $(#[cfg $cfg_attr])* $name::$variant(_e) => _e.to_tokens($tokens),)
+            ($($arms)* $name::$variant(_e) => _e.to_tokens($tokens),)
             $tokens $name { $($next)* }
         );
     };
 
     (($($arms:tt)*) $tokens:ident $name:ident {}) => {
-        #[cfg_attr(doc_cfg, doc(cfg(feature = "printing")))]
+        #[cfg_attr(docsrs, doc(cfg(feature = "printing")))]
         impl ::quote::ToTokens for $name {
             fn to_tokens(&self, $tokens: &mut ::proc_macro2::TokenStream) {
                 match self {
@@ -173,4 +132,20 @@ macro_rules! check_keyword_matches {
     (enum enum) => {};
     (pub pub) => {};
     (struct struct) => {};
+}
+
+#[cfg(any(feature = "full", feature = "derive"))]
+macro_rules! return_impl_trait {
+    (
+        $(#[$attr:meta])*
+        $vis:vis fn $name:ident $args:tt -> $impl_trait:ty [$concrete:ty] $body:block
+    ) => {
+        #[cfg(not(docsrs))]
+        $(#[$attr])*
+        $vis fn $name $args -> $concrete $body
+
+        #[cfg(docsrs)]
+        $(#[$attr])*
+        $vis fn $name $args -> $impl_trait $body
+    };
 }

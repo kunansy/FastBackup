@@ -3,18 +3,17 @@ use std::ffi::CString;
 use std::fmt::{self, Debug, Formatter};
 use std::os::raw::{c_int, c_void};
 use std::slice;
-use std::str::from_utf8_unchecked;
 use std::sync::Arc;
 
 use libsqlite3_sys::{sqlite3_create_collation_v2, SQLITE_OK, SQLITE_UTF8};
 
 use crate::connection::handle::ConnectionHandle;
 use crate::error::Error;
-use crate::SqliteError;
 
 #[derive(Clone)]
 pub struct Collation {
     name: Arc<str>,
+    #[allow(clippy::type_complexity)]
     collate: Arc<dyn Fn(&str, &str) -> Ordering + Send + Sync + 'static>,
     // SAFETY: these must match the concrete type of `collate`
     call: unsafe extern "C" fn(
@@ -66,7 +65,7 @@ impl Collation {
         } else {
             // The xDestroy callback is not called if the sqlite3_create_collation_v2() function fails.
             drop(unsafe { Arc::from_raw(raw_f) });
-            Err(Error::Database(Box::new(SqliteError::new(handle.as_ptr()))))
+            Err(handle.expect_error().into())
         }
     }
 }
@@ -111,7 +110,7 @@ where
     } else {
         // The xDestroy callback is not called if the sqlite3_create_collation_v2() function fails.
         drop(unsafe { Box::from_raw(boxed_f) });
-        Err(Error::Database(Box::new(SqliteError::new(handle.as_ptr()))))
+        Err(handle.expect_error().into())
     }
 }
 
@@ -126,16 +125,30 @@ where
     C: Fn(&str, &str) -> Ordering,
 {
     let boxed_f: *mut C = data as *mut C;
-    debug_assert!(!boxed_f.is_null());
+
+    // Note: unwinding is now caught at the FFI boundary:
+    // https://doc.rust-lang.org/nomicon/ffi.html#ffi-and-unwinding
+    assert!(!boxed_f.is_null());
+
+    let left_len =
+        usize::try_from(left_len).unwrap_or_else(|_| panic!("left_len out of range: {left_len}"));
+
+    let right_len = usize::try_from(right_len)
+        .unwrap_or_else(|_| panic!("right_len out of range: {right_len}"));
+
+    // SQLite explicitly documents that invalid UTF-8 may be passed into
+    // application-defined collating sequences. The safe `Fn(&str, &str)`
+    // signature exposed to users must never observe invalid UTF-8, so
+    // lossily coerce the raw bytes here.
     let s1 = {
-        let c_slice = slice::from_raw_parts(left_ptr as *const u8, left_len as usize);
-        from_utf8_unchecked(c_slice)
+        let c_slice = slice::from_raw_parts(left_ptr as *const u8, left_len);
+        String::from_utf8_lossy(c_slice)
     };
     let s2 = {
-        let c_slice = slice::from_raw_parts(right_ptr as *const u8, right_len as usize);
-        from_utf8_unchecked(c_slice)
+        let c_slice = slice::from_raw_parts(right_ptr as *const u8, right_len);
+        String::from_utf8_lossy(c_slice)
     };
-    let t = (*boxed_f)(s1, s2);
+    let t = (*boxed_f)(&s1, &s2);
 
     match t {
         Ordering::Less => -1,

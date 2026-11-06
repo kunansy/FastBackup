@@ -1,11 +1,11 @@
-use crate::base_strategy;
 use crate::base_strategy::BaseStrategy;
+use crate::{HomeDirError, base_strategy};
 use std::path::{Path, PathBuf};
 
 /// This strategy follows Windows’ conventions. It seems that all Windows GUI apps, and some command-line ones follow this pattern. The specification is available [here](https://docs.microsoft.com/en-us/windows/win32/shell/knownfolderid).
 ///
 /// This initial example removes all the relevant environment variables to show the strategy’s use of the:
-/// - (on Windows) SHGetFolderPathW API.
+/// - (on Windows) SHGetKnownFolderPath API.
 /// - (on non-Windows) Windows default directories.
 ///
 /// ```
@@ -15,9 +15,11 @@ use std::path::{Path, PathBuf};
 /// use std::path::Path;
 ///
 /// // Remove the environment variables that the strategy reads from.
+/// unsafe {
 /// std::env::remove_var("USERPROFILE");
 /// std::env::remove_var("APPDATA");
 /// std::env::remove_var("LOCALAPPDATA");
+/// }
 ///
 /// let app_strategy = Windows::new(AppStrategyArgs {
 ///     top_level_domain: "org".to_string(),
@@ -77,9 +79,11 @@ use std::path::{Path, PathBuf};
 ///     "/my_cache_location/"
 /// };
 ///
+/// unsafe {
 /// std::env::set_var("USERPROFILE", &home_path);
 /// std::env::set_var("APPDATA", data_path);
 /// std::env::set_var("LOCALAPPDATA", cache_path);
+/// }
 ///
 /// let app_strategy = Windows::new(AppStrategyArgs {
 ///     top_level_domain: "org".to_string(),
@@ -129,16 +133,17 @@ macro_rules! dir_method {
     }};
 }
 
-impl super::AppStrategy for Windows {
-    type CreationError = crate::HomeDirError;
-
-    fn new(args: super::AppStrategyArgs) -> Result<Self, Self::CreationError> {
+impl Windows {
+    /// Create a new Windows AppStrategy
+    pub fn new(args: super::AppStrategyArgs) -> Result<Self, HomeDirError> {
         Ok(Self {
             base_strategy: base_strategy::Windows::new()?,
             author_app_name_path: PathBuf::from(args.author).join(args.app_name),
         })
     }
+}
 
+impl super::AppStrategy for Windows {
     fn home_dir(&self) -> &Path {
         self.base_strategy.home_dir()
     }

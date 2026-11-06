@@ -10,9 +10,16 @@
 # See Cargo.toml.orig for the original contents.
 
 [package]
-edition = "2018"
+edition = "2024"
+rust-version = "1.87.0"
 name = "etcetera"
-version = "0.8.0"
+version = "0.11.0"
+build = false
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
 description = "An unopinionated library for obtaining configuration, data, cache, & other directories"
 homepage = "https://github.com/lunacookies/etcetera"
 documentation = "https://docs.rs/etcetera"
@@ -28,15 +35,17 @@ categories = ["config"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/lunacookies/etcetera"
 
+[lib]
+name = "etcetera"
+path = "src/lib.rs"
+
 [dependencies.cfg-if]
 version = "1"
 
-[dependencies.home]
-version = "0.5"
-
 [target."cfg(windows)".dependencies.windows-sys]
-version = "0.48"
+version = "0.61"
 features = [
     "Win32_Foundation",
+    "Win32_System_Com",
     "Win32_UI_Shell",
 ]

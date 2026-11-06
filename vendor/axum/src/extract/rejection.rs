@@ -67,14 +67,6 @@ define_rejection! {
 
 define_rejection! {
     #[status = BAD_REQUEST]
-    #[body = "No host found in request"]
-    /// Rejection type used if the [`Host`](super::Host) extractor is unable to
-    /// resolve a host.
-    pub struct FailedToResolveHost;
-}
-
-define_rejection! {
-    #[status = BAD_REQUEST]
     #[body = "Failed to deserialize form"]
     /// Rejection type used if the [`Form`](super::Form) extractor is unable to
     /// deserialize the form into the target type.
@@ -178,16 +170,6 @@ composite_rejection! {
     }
 }
 
-composite_rejection! {
-    /// Rejection used for [`Host`](super::Host).
-    ///
-    /// Contains one variant for each way the [`Host`](super::Host) extractor
-    /// can fail.
-    pub enum HostRejection {
-        FailedToResolveHost,
-    }
-}
-
 #[cfg(feature = "matched-path")]
 define_rejection! {
     #[status = INTERNAL_SERVER_ERROR]
@@ -208,5 +190,11 @@ composite_rejection! {
     }
 }
 
-#[cfg(feature = "headers")]
-pub use crate::typed_header::{TypedHeaderRejection, TypedHeaderRejectionReason};
+define_rejection! {
+    #[status = INTERNAL_SERVER_ERROR]
+    #[body = "The matched route is not nested"]
+    /// Rejection type for [`NestedPath`](super::NestedPath).
+    ///
+    /// This rejection is used if the matched route wasn't nested.
+    pub struct NestedPathRejection;
+}

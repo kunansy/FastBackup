@@ -1,3 +1,27 @@
+/*
+ *
+ * Copyright 2025 gRPC authors.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to
+ * deal in the Software without restriction, including without limitation the
+ * rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+ * sell copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+ * IN THE SOFTWARE.
+ *
+ */
+
 //! This module provides utilities for generating `tonic` service stubs and clients
 //! purely in Rust without the need of `proto` files. It also enables you to set a custom `Codec`
 //! if you want to use a custom serialization format other than `protobuf`.
@@ -173,6 +197,8 @@ pub struct Method {
     client_streaming: bool,
     /// Identifies if server streams multiple server messages.
     server_streaming: bool,
+    /// Identifies if the method is deprecated.
+    deprecated: bool,
     /// The path to the codec to use for this method
     codec_path: String,
 }
@@ -209,6 +235,10 @@ impl crate::Method for Method {
 
     fn comment(&self) -> &[Self::Comment] {
         &self.comments
+    }
+
+    fn deprecated(&self) -> bool {
+        self.deprecated
     }
 
     fn request_response_name(
@@ -262,6 +292,8 @@ pub struct MethodBuilder {
     client_streaming: bool,
     /// Identifies if server streams multiple server messages.
     server_streaming: bool,
+    /// Identifies if the method is deprecated.
+    deprecated: bool,
     /// The path to the codec to use for this method
     codec_path: Option<String>,
 }
@@ -338,6 +370,7 @@ impl MethodBuilder {
             output_type: self.output_type.unwrap(),
             client_streaming: self.client_streaming,
             server_streaming: self.server_streaming,
+            deprecated: self.deprecated,
             codec_path: self.codec_path.unwrap(),
         }
     }

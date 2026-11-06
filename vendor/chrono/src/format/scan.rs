@@ -5,7 +5,7 @@
  * Various scanning routines for the parser.
  */
 
-use super::{ParseResult, INVALID, OUT_OF_RANGE, TOO_SHORT};
+use super::{INVALID, OUT_OF_RANGE, ParseResult, TOO_SHORT};
 use crate::Weekday;
 
 /// Tries to parse the non-negative number from `min` to `max` digits.
@@ -47,14 +47,15 @@ pub(super) fn number(s: &str, min: usize, max: usize) -> ParseResult<(&str, i64)
 
 /// Tries to consume at least one digits as a fractional second.
 /// Returns the number of whole nanoseconds (0--999,999,999).
-pub(super) fn nanosecond(s: &str) -> ParseResult<(&str, i64)> {
+pub(super) fn nanosecond(s: &str) -> ParseResult<(&str, u32)> {
     // record the number of digits consumed for later scaling.
     let origlen = s.len();
     let (s, v) = number(s, 1, 9)?;
+    let v = u32::try_from(v).expect("999,999,999 should fit u32");
     let consumed = origlen - s.len();
 
     // scale the number accordingly.
-    static SCALE: [i64; 10] =
+    const SCALE: [u32; 10] =
         [0, 100_000_000, 10_000_000, 1_000_000, 100_000, 10_000, 1_000, 100, 10, 1];
     let v = v.checked_mul(SCALE[consumed]).ok_or(OUT_OF_RANGE)?;
 
@@ -217,11 +218,7 @@ where
 
     const fn digits(s: &str) -> ParseResult<(u8, u8)> {
         let b = s.as_bytes();
-        if b.len() < 2 {
-            Err(TOO_SHORT)
-        } else {
-            Ok((b[0], b[1]))
-        }
+        if b.len() < 2 { Err(TOO_SHORT) } else { Ok((b[0], b[1])) }
     }
     let negative = match s.chars().next() {
         Some('+') => {
@@ -287,37 +284,39 @@ where
 /// See [RFC 2822 Section 4.3].
 ///
 /// [RFC 2822 Section 4.3]: https://tools.ietf.org/html/rfc2822#section-4.3
-pub(super) fn timezone_offset_2822(s: &str) -> ParseResult<(&str, Option<i32>)> {
+pub(super) fn timezone_offset_2822(s: &str) -> ParseResult<(&str, i32)> {
     // tries to parse legacy time zone names
     let upto = s.as_bytes().iter().position(|&c| !c.is_ascii_alphabetic()).unwrap_or(s.len());
     if upto > 0 {
         let name = &s.as_bytes()[..upto];
         let s = &s[upto..];
-        let offset_hours = |o| Ok((s, Some(o * 3600)));
-        if name.eq_ignore_ascii_case(b"gmt") || name.eq_ignore_ascii_case(b"ut") {
-            offset_hours(0)
+        let offset_hours = |o| Ok((s, o * 3600));
+        // RFC 2822 requires support for some named North America timezones, a small subset of all
+        // named timezones.
+        if name.eq_ignore_ascii_case(b"gmt")
+            || name.eq_ignore_ascii_case(b"ut")
+            || name.eq_ignore_ascii_case(b"z")
+        {
+            return offset_hours(0);
         } else if name.eq_ignore_ascii_case(b"edt") {
-            offset_hours(-4)
+            return offset_hours(-4);
         } else if name.eq_ignore_ascii_case(b"est") || name.eq_ignore_ascii_case(b"cdt") {
-            offset_hours(-5)
+            return offset_hours(-5);
         } else if name.eq_ignore_ascii_case(b"cst") || name.eq_ignore_ascii_case(b"mdt") {
-            offset_hours(-6)
+            return offset_hours(-6);
         } else if name.eq_ignore_ascii_case(b"mst") || name.eq_ignore_ascii_case(b"pdt") {
-            offset_hours(-7)
+            return offset_hours(-7);
         } else if name.eq_ignore_ascii_case(b"pst") {
-            offset_hours(-8)
+            return offset_hours(-8);
         } else if name.len() == 1 {
-            match name[0] {
+            if let b'a'..=b'i' | b'k'..=b'y' | b'A'..=b'I' | b'K'..=b'Y' = name[0] {
                 // recommended by RFC 2822: consume but treat it as -0000
-                b'a'..=b'i' | b'k'..=b'z' | b'A'..=b'I' | b'K'..=b'Z' => offset_hours(0),
-                _ => Ok((s, None)),
+                return Ok((s, 0));
             }
-        } else {
-            Ok((s, None))
         }
+        Err(INVALID)
     } else {
-        let (s_, offset) = timezone_offset(s, |s| Ok(s), false, false, false)?;
-        Ok((s_, Some(offset)))
+        timezone_offset(s, |s| Ok(s), false, false, false)
     }
 }
 
@@ -357,8 +356,8 @@ mod tests {
         comment_2822, nanosecond, nanosecond_fixed, short_or_long_month0, short_or_long_weekday,
         timezone_offset_2822,
     };
-    use crate::format::{INVALID, TOO_SHORT};
     use crate::Weekday;
+    use crate::format::{INVALID, TOO_SHORT};
 
     #[test]
     fn test_rfc2822_comments() {
@@ -388,19 +387,18 @@ mod tests {
             let actual = comment_2822(test_in).map(|(s, _)| s);
             assert_eq!(
                 *expected, actual,
-                "{:?} expected to produce {:?}, but produced {:?}.",
-                test_in, expected, actual
+                "{test_in:?} expected to produce {expected:?}, but produced {actual:?}."
             );
         }
     }
 
     #[test]
     fn test_timezone_offset_2822() {
-        assert_eq!(timezone_offset_2822("cSt").unwrap(), ("", Some(-21600)));
-        assert_eq!(timezone_offset_2822("pSt").unwrap(), ("", Some(-28800)));
-        assert_eq!(timezone_offset_2822("mSt").unwrap(), ("", Some(-25200)));
-        assert_eq!(timezone_offset_2822("-1551").unwrap(), ("", Some(-57060)));
-        assert_eq!(timezone_offset_2822("Gp").unwrap(), ("", None));
+        assert_eq!(timezone_offset_2822("cSt").unwrap(), ("", -21600));
+        assert_eq!(timezone_offset_2822("pSt").unwrap(), ("", -28800));
+        assert_eq!(timezone_offset_2822("mSt").unwrap(), ("", -25200));
+        assert_eq!(timezone_offset_2822("-1551").unwrap(), ("", -57060));
+        assert_eq!(timezone_offset_2822("Gp"), Err(INVALID));
     }
 
     #[test]

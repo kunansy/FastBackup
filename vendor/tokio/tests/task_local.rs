@@ -1,11 +1,15 @@
-#![cfg(all(feature = "full", not(target_os = "wasi")))] // Wasi doesn't support threads
+#![cfg(any(
+    all(feature = "full", not(target_os = "wasi")), // Wasi doesn't support threads
+    all(target_os = "emscripten", feature = "rt", feature = "macros")
+))]
 
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::sync::oneshot;
 
-#[tokio::test(flavor = "multi_thread")]
+#[cfg_attr(not(target_family = "wasm"), tokio::test(flavor = "multi_thread"))]
+#[cfg_attr(target_family = "wasm", tokio::test)]
 async fn local() {
     tokio::task_local! {
         static REQ_ID: u32;
@@ -116,4 +120,56 @@ async fn task_local_available_on_completion_drop() {
 
     assert_eq!(rx.await.unwrap(), 42);
     h.await.unwrap();
+}
+
+#[tokio::test]
+async fn take_value() {
+    tokio::task_local! {
+        static KEY: u32
+    }
+    let fut = KEY.scope(1, async {});
+    let mut pinned = Box::pin(fut);
+    assert_eq!(pinned.as_mut().take_value(), Some(1));
+    assert_eq!(pinned.as_mut().take_value(), None);
+}
+
+#[tokio::test]
+async fn poll_after_take_value_should_fail() {
+    tokio::task_local! {
+        static KEY: u32
+    }
+    let fut = KEY.scope(1, async {
+        let result = KEY.try_with(|_| {});
+        // The task local value no longer exists.
+        assert!(result.is_err());
+    });
+    let mut fut = Box::pin(fut);
+    fut.as_mut().take_value();
+
+    // Poll the future after `take_value` has been called
+    fut.await;
+}
+
+#[tokio::test]
+async fn get_value() {
+    tokio::task_local! {
+        static KEY: u32
+    }
+
+    KEY.scope(1, async {
+        assert_eq!(KEY.get(), 1);
+        assert_eq!(KEY.try_get().unwrap(), 1);
+    })
+    .await;
+
+    let fut = KEY.scope(1, async {
+        let result = KEY.try_get();
+        // The task local value no longer exists.
+        assert!(result.is_err());
+    });
+    let mut fut = Box::pin(fut);
+    fut.as_mut().take_value();
+
+    // Poll the future after `take_value` has been called
+    fut.await;
 }

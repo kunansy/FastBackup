@@ -10,13 +10,20 @@
 # See Cargo.toml.orig for the original contents.
 
 [package]
-edition = "2018"
+edition = "2021"
+rust-version = "1.83"
 name = "crc"
-version = "3.0.1"
+version = "3.4.0"
 authors = [
     "Rui Hu <code@mrhooray.com>",
     "Akhil Velagapudi <4@4khil.com>",
 ]
+build = false
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
 description = "Rust implementation of CRC with support of various standards"
 documentation = "https://docs.rs/crc"
 readme = "README.md"
@@ -34,5 +41,20 @@ categories = [
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/mrhooray/crc-rs.git"
 
+[lib]
+name = "crc"
+path = "src/lib.rs"
+
+[[test]]
+name = "crc"
+path = "tests/crc.rs"
+
+[[bench]]
+name = "bench"
+path = "benches/bench.rs"
+harness = true
+
 [dependencies.crc-catalog]
-version = "2.1.0"
+version = "2.4.0"
+
+[dev-dependencies]

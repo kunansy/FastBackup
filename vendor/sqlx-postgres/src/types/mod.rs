@@ -20,6 +20,15 @@
 //! | [`PgLTree`]                           | LTREE                                                |
 //! | [`PgLQuery`]                          | LQUERY                                               |
 //! | [`PgCiText`]                          | CITEXT<sup>1</sup>                                   |
+//! | [`PgCube`]                            | CUBE                                                 |
+//! | [`PgPoint`]                           | POINT                                                |
+//! | [`PgLine`]                            | LINE                                                 |
+//! | [`PgLSeg`]                            | LSEG                                                 |
+//! | [`PgBox`]                             | BOX                                                  |
+//! | [`PgPath`]                            | PATH                                                 |
+//! | [`PgPolygon`]                         | POLYGON                                              |
+//! | [`PgCircle`]                          | CIRCLE                                               |
+//! | [`PgHstore`]                          | HSTORE                                               |
 //!
 //! <sup>1</sup> SQLx generally considers `CITEXT` to be compatible with `String`, `&str`, etc.,
 //! but this wrapper type is available for edge cases, such as `CITEXT[]` which Postgres
@@ -32,12 +41,16 @@
 //! |---------------------------------------|------------------------------------------------------|
 //! | `bigdecimal::BigDecimal`              | NUMERIC                                              |
 //!
+#![doc=include_str!("bigdecimal-range.md")]
+//!
 //! ### [`rust_decimal`](https://crates.io/crates/rust_decimal)
 //! Requires the `rust_decimal` Cargo feature flag.
 //!
 //! | Rust type                             | Postgres type(s)                                        |
 //! |---------------------------------------|------------------------------------------------------|
 //! | `rust_decimal::Decimal`               | NUMERIC                                              |
+//!
+#![doc=include_str!("rust_decimal-range.md")]
 //!
 //! ### [`chrono`](https://crates.io/crates/chrono)
 //!
@@ -74,7 +87,7 @@
 //!
 //! ### [`ipnetwork`](https://crates.io/crates/ipnetwork)
 //!
-//! Requires the `ipnetwork` Cargo feature flag.
+//! Requires the `ipnetwork` Cargo feature flag (takes precedence over `ipnet` if both are used).
 //!
 //! | Rust type                             | Postgres type(s)                                     |
 //! |---------------------------------------|------------------------------------------------------|
@@ -86,6 +99,17 @@
 //! `/32` for IPv4 addresses and `/128` for IPv6 addresses.
 //!
 //! `IpNetwork` does not have this limitation.
+//!
+//! ### [`ipnet`](https://crates.io/crates/ipnet)
+//!
+//! Requires the `ipnet` Cargo feature flag.
+//!
+//! | Rust type                             | Postgres type(s)                                     |
+//! |---------------------------------------|------------------------------------------------------|
+//! | `ipnet::IpNet`                        | INET, CIDR                                           |
+//! | `std::net::IpAddr`                    | INET, CIDR                                           |
+//!
+//! The same `IpAddr` limitation for smaller network prefixes applies as with `ipnet`.
 //!
 //! ### [`mac_address`](https://crates.io/crates/mac_address)
 //!
@@ -171,23 +195,38 @@
 //! enum Mood { Sad = 0, Ok = 1, Happy = 2 }
 //! ```
 //!
+//! Rust enumerations may also be defined to be represented as a string using `type_name = "text"`.
+//! The following type expects a SQL type of `TEXT` and will convert to/from the Rust enumeration.
+//!
+//! ```rust,ignore
+//! #[derive(sqlx::Type)]
+//! #[sqlx(type_name = "text")]
+//! enum Mood { Sad, Ok, Happy }
+//! ```
+//!
+//! Note that an error can occur if you attempt to decode a value not contained within the enum
+//! definition.
+//!
 
 use crate::type_info::PgTypeKind;
 use crate::{PgTypeInfo, Postgres};
 
-pub(crate) use sqlx_core::types::{Json, Type};
+#[cfg(feature = "json")]
+pub(crate) use sqlx_core::types::Json;
+pub(crate) use sqlx_core::types::Type;
 
 mod array;
 mod bool;
 mod bytes;
 mod citext;
 mod float;
+mod hstore;
 mod int;
 mod interval;
+#[cfg(feature = "json")]
+mod json;
 mod lquery;
 mod ltree;
-// Not behind a Cargo feature because we require JSON in the driver implementation.
-mod json;
 mod money;
 mod oid;
 mod range;
@@ -202,6 +241,10 @@ mod time_tz;
 
 #[cfg(feature = "bigdecimal")]
 mod bigdecimal;
+
+mod cube;
+
+mod geometry;
 
 #[cfg(any(feature = "bigdecimal", feature = "rust_decimal"))]
 mod numeric;
@@ -218,11 +261,11 @@ mod time;
 #[cfg(feature = "uuid")]
 mod uuid;
 
-#[cfg(feature = "ipnetwork")]
-mod ipnetwork;
+#[cfg(feature = "ipnet")]
+mod ipnet;
 
 #[cfg(feature = "ipnetwork")]
-mod ipaddr;
+mod ipnetwork;
 
 #[cfg(feature = "mac_address")]
 mod mac_address;
@@ -232,6 +275,15 @@ mod bit_vec;
 
 pub use array::PgHasArrayType;
 pub use citext::PgCiText;
+pub use cube::PgCube;
+pub use geometry::circle::PgCircle;
+pub use geometry::line::PgLine;
+pub use geometry::line_segment::PgLSeg;
+pub use geometry::path::PgPath;
+pub use geometry::point::PgPoint;
+pub use geometry::polygon::PgPolygon;
+pub use geometry::r#box::PgBox;
+pub use hstore::PgHstore;
 pub use interval::PgInterval;
 pub use lquery::PgLQuery;
 pub use lquery::PgLQueryLevel;
@@ -257,7 +309,7 @@ fn array_compatible<E: Type<Postgres> + ?Sized>(ty: &PgTypeInfo) -> bool {
     // we require the declared type to be an _array_ with an
     // element type that is acceptable
     if let PgTypeKind::Array(element) = &ty.kind() {
-        return E::compatible(&element);
+        return E::compatible(element);
     }
 
     false

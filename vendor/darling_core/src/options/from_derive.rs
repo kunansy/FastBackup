@@ -4,7 +4,9 @@ use syn::Ident;
 
 use crate::codegen::FromDeriveInputImpl;
 use crate::options::{DeriveInputShapeSet, OuterFrom, ParseAttribute, ParseData};
-use crate::{FromMeta, Result};
+use crate::{FromField, FromMeta, Result};
+
+use super::forwarded_field::ForwardedField;
 
 #[derive(Debug)]
 pub struct FdiOptions {
@@ -14,9 +16,10 @@ pub struct FdiOptions {
     pub vis: Option<Ident>,
 
     /// The field on the target struct which should receive the type generics, if any.
-    pub generics: Option<Ident>,
+    pub generics: Option<ForwardedField>,
 
-    pub data: Option<Ident>,
+    /// The field on the target struct which should receive the derive input body, if any.
+    pub data: Option<ForwardedField>,
 
     pub supports: Option<DeriveInputShapeSet>,
 }
@@ -54,19 +57,23 @@ impl ParseData for FdiOptions {
     fn parse_field(&mut self, field: &syn::Field) -> Result<()> {
         match field.ident.as_ref().map(|v| v.to_string()).as_deref() {
             Some("vis") => {
-                self.vis = field.ident.clone();
+                self.vis.clone_from(&field.ident);
                 Ok(())
             }
             Some("data") => {
-                self.data = field.ident.clone();
+                self.data = ForwardedField::from_field(field).map(Some)?;
                 Ok(())
             }
             Some("generics") => {
-                self.generics = field.ident.clone();
+                self.generics = ForwardedField::from_field(field).map(Some)?;
                 Ok(())
             }
             _ => self.base.parse_field(field),
         }
+    }
+
+    fn validate_body(&self, errors: &mut crate::error::Accumulator) {
+        self.base.validate_body(errors);
     }
 }
 
@@ -80,8 +87,7 @@ impl<'a> From<&'a FdiOptions> for FromDeriveInputImpl<'a> {
             vis: v.vis.as_ref(),
             data: v.data.as_ref(),
             generics: v.generics.as_ref(),
-            attrs: v.base.attrs.as_ref(),
-            forward_attrs: v.base.forward_attrs.as_ref(),
+            forward_attrs: v.base.as_forward_attrs(),
             supports: v.supports.as_ref(),
         }
     }

@@ -1,98 +1,47 @@
-//! `tonic-build` compiles `proto` files via `prost` and generates service stubs
-//! and proto definitiones for use with `tonic`.
-//!
-//! # Feature flags
-//!
-//! - `cleanup-markdown`: Enables cleaning up documentation from the generated code. Useful
-//! when documentation of the generated code fails `cargo test --doc` for example.
-//! - `prost`: Enables usage of prost generator (enabled by default).
-//! - `transport`: Enables generation of `connect` method using `tonic::transport::Channel`
-//! (enabled by default).
-//!
-//! # Required dependencies
-//!
-//! ```toml
-//! [dependencies]
-//! tonic = <tonic-version>
-//! prost = <prost-version>
-//!
-//! [build-dependencies]
-//! tonic-build = <tonic-version>
-//! ```
-//!
-//! # Examples
-//! Simple
-//!
-//! ```rust,no_run
-//! fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     tonic_build::compile_protos("proto/service.proto")?;
-//!     Ok(())
-//! }
-//! ```
-//!
-//! Configuration
-//!
-//! ```rust,no_run
-//! fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!    tonic_build::configure()
-//!         .build_server(false)
-//!         .compile(
-//!             &["proto/helloworld/helloworld.proto"],
-//!             &["proto/helloworld"],
-//!         )?;
-//!    Ok(())
-//! }
-//!```
-//!
-//! ## NixOS related hints
-//!
-//! On NixOS, it is better to specify the location of `PROTOC` and `PROTOC_INCLUDE` explicitly.
-//!
-//! ```bash
-//! $ export PROTOBUF_LOCATION=$(nix-env -q protobuf --out-path --no-name)
-//! $ export PROTOC=$PROTOBUF_LOCATION/bin/protoc
-//! $ export PROTOC_INCLUDE=$PROTOBUF_LOCATION/include
-//! $ cargo build
-//! ```
-//!
-//! The reason being that if `prost_build::compile_protos` fails to generate the resultant package,
-//! the failure is not obvious until the `include!(concat!(env!("OUT_DIR"), "/resultant.rs"));`
-//! fails with `No such file or directory` error.
+/*
+ *
+ * Copyright 2025 gRPC authors.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to
+ * deal in the Software without restriction, including without limitation the
+ * rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+ * sell copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+ * IN THE SOFTWARE.
+ *
+ */
 
+#![doc = include_str!("../README.md")]
 #![recursion_limit = "256"]
-#![warn(
-    missing_debug_implementations,
-    missing_docs,
-    rust_2018_idioms,
-    unreachable_pub
-)]
 #![doc(
     html_logo_url = "https://raw.githubusercontent.com/tokio-rs/website/master/public/img/icons/tonic.svg"
 )]
-#![deny(rustdoc::broken_intra_doc_links)]
-#![doc(html_root_url = "https://docs.rs/tonic-build/0.10.2")]
-#![doc(issue_tracker_base_url = "https://github.com/hyperium/tonic/issues/")]
+#![doc(issue_tracker_base_url = "https://github.com/grpc/grpc-rust/issues/")]
 #![doc(test(no_crate_inject, attr(deny(rust_2018_idioms))))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 use proc_macro2::{Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream};
 use quote::TokenStreamExt;
 
-/// Prost generator
-#[cfg(feature = "prost")]
-#[cfg_attr(docsrs, doc(cfg(feature = "prost")))]
-mod prost;
-
-#[cfg(feature = "prost")]
-#[cfg_attr(docsrs, doc(cfg(feature = "prost")))]
-pub use prost::{compile_protos, configure, Builder};
+// Prost functionality has been moved to tonic-prost-build
 
 pub mod manual;
 
 /// Service code generation for client
-pub mod client;
+mod client;
 /// Service code generation for Server
-pub mod server;
+mod server;
 
 mod code_gen;
 pub use code_gen::CodeGenBuilder;
@@ -144,6 +93,10 @@ pub trait Method {
     fn server_streaming(&self) -> bool;
     /// Get comments about this item.
     fn comment(&self) -> &[Self::Comment];
+    /// Method is deprecated.
+    fn deprecated(&self) -> bool {
+        false
+    }
     /// Type name of request and response.
     fn request_response_name(
         &self,
@@ -159,6 +112,8 @@ pub struct Attributes {
     module: Vec<(String, String)>,
     /// `struct` attributes.
     structure: Vec<(String, String)>,
+    /// `trait` attributes.
+    trait_attributes: Vec<(String, String)>,
 }
 
 impl Attributes {
@@ -168,6 +123,10 @@ impl Attributes {
 
     fn for_struct(&self, name: &str) -> Vec<syn::Attribute> {
         generate_attributes(name, &self.structure)
+    }
+
+    fn for_trait(&self, name: &str) -> Vec<syn::Attribute> {
+        generate_attributes(name, &self.trait_attributes)
     }
 
     /// Add an attribute that will be added to `mod` items matching the given pattern.
@@ -194,6 +153,19 @@ impl Attributes {
     /// ```
     pub fn push_struct(&mut self, pattern: impl Into<String>, attr: impl Into<String>) {
         self.structure.push((pattern.into(), attr.into()));
+    }
+
+    /// Add an attribute that will be added to `trait` items matching the given pattern.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use tonic_build::*;
+    /// let mut attributes = Attributes::default();
+    /// attributes.push_trait("Server", "#[mockall::automock]");
+    /// ```
+    pub fn push_trait(&mut self, pattern: impl Into<String>, attr: impl Into<String>) {
+        self.trait_attributes.push((pattern.into(), attr.into()));
     }
 }
 
@@ -233,11 +205,24 @@ fn generate_attributes<'a>(
         .filter(|(matcher, _)| match_name(matcher, name))
         .flat_map(|(_, attr)| {
             // attributes cannot be parsed directly, so we pretend they're on a struct
-            syn::parse_str::<syn::DeriveInput>(&format!("{}\nstruct fake;", attr))
+            syn::parse_str::<syn::DeriveInput>(&format!("{attr}\nstruct fake;"))
                 .unwrap()
                 .attrs
         })
         .collect::<Vec<_>>()
+}
+
+fn generate_deprecated() -> TokenStream {
+    let mut deprecated_stream = TokenStream::new();
+    deprecated_stream.append(Ident::new("deprecated", Span::call_site()));
+
+    let group = Group::new(Delimiter::Bracket, deprecated_stream);
+
+    let mut stream = TokenStream::new();
+    stream.append(Punct::new('#', Spacing::Alone));
+    stream.append(group);
+
+    stream
 }
 
 // Generate a singular line of a doc comment
@@ -245,7 +230,7 @@ fn generate_doc_comment<S: AsRef<str>>(comment: S) -> TokenStream {
     let comment = comment.as_ref();
 
     let comment = if !comment.starts_with(' ') {
-        format!(" {}", comment)
+        format!(" {comment}")
     } else {
         comment.to_string()
     };
@@ -307,10 +292,10 @@ fn naive_snake_case(name: &str) -> String {
 
     while let Some(x) = it.next() {
         s.push(x.to_ascii_lowercase());
-        if let Some(y) = it.peek() {
-            if y.is_uppercase() {
-                s.push('_');
-            }
+        if let Some(y) = it.peek()
+            && y.is_uppercase()
+        {
+            s.push('_');
         }
     }
 

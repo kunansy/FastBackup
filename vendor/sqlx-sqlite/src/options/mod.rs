@@ -18,7 +18,7 @@ pub use synchronous::SqliteSynchronous;
 
 use crate::common::DebugFn;
 use crate::connection::collation::Collation;
-use sqlx_core::IndexMap;
+use sqlx_core::{config, IndexMap};
 
 /// Options and flags which can be used to configure a SQLite connection.
 ///
@@ -41,13 +41,19 @@ use sqlx_core::IndexMap;
 /// ```rust,no_run
 /// # async fn example() -> sqlx::Result<()> {
 /// use sqlx::ConnectOptions;
-/// use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
+/// use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool};
 /// use std::str::FromStr;
 ///
-/// let conn = SqliteConnectOptions::from_str("sqlite://data.db")?
+/// let opts = SqliteConnectOptions::from_str("sqlite://data.db")?
 ///     .journal_mode(SqliteJournalMode::Wal)
-///     .read_only(true)
-///     .connect().await?;
+///     .read_only(true);
+///
+/// // use in a pool
+/// let pool = SqlitePool::connect_with(opts).await?;
+///
+/// // or connect directly
+/// # let opts = SqliteConnectOptions::from_str("sqlite://data.db")?;
+/// let conn = opts.connect().await?;
 /// #
 /// # Ok(())
 /// # }
@@ -66,10 +72,12 @@ pub struct SqliteConnectOptions {
     pub(crate) vfs: Option<Cow<'static, str>>,
 
     pub(crate) pragmas: IndexMap<Cow<'static, str>, Option<Cow<'static, str>>>,
-    /// Extensions are specified as a pair of <Extension Name : Optional Entry Point>, the majority
+
+    /// Extensions are specified as a pair of \<Extension Name : Optional Entry Point>, the majority
     /// of SQLite extensions will use the default entry points specified in the docs, these should
     /// be added to the map with a `None` value.
     /// <https://www.sqlite.org/loadext.html#loading_an_extension>
+    #[cfg(feature = "load-extension")]
     pub(crate) extensions: IndexMap<Cow<'static, str>, Option<Cow<'static, str>>>,
 
     pub(crate) command_channel_size: usize,
@@ -162,6 +170,12 @@ impl SqliteConnectOptions {
         // https://www.sqlite.org/wal.html#use_of_wal_without_shared_memory
         pragmas.insert("locking_mode".into(), None);
 
+        // `auto_vacuum` needs to be executed before `journal_mode`, if set.
+        //
+        // Otherwise, a change in the `journal_mode` setting appears to mark even an empty database as dirty,
+        // requiring a `vacuum` command to be executed to actually apply the new `auto_vacuum` setting.
+        pragmas.insert("auto_vacuum".into(), None);
+
         // Don't set `journal_mode` unless the user requested it.
         // WAL mode is a permanent setting for created databases and changing into or out of it
         // requires an exclusive lock that can't be waited on with `sqlite3_busy_timeout()`.
@@ -175,8 +189,6 @@ impl SqliteConnectOptions {
         // The `synchronous` pragma defaults to FULL
         // https://www.sqlite.org/compile.html#default_synchronous.
         pragmas.insert("synchronous".into(), None);
-
-        pragmas.insert("auto_vacuum".into(), None);
 
         // Soft limit on the number of rows that `ANALYZE` touches per index.
         pragmas.insert("analysis_limit".into(), None);
@@ -193,6 +205,7 @@ impl SqliteConnectOptions {
             immutable: false,
             vfs: None,
             pragmas,
+            #[cfg(feature = "load-extension")]
             extensions: Default::default(),
             collations: Default::default(),
             serialized: false,
@@ -206,9 +219,18 @@ impl SqliteConnectOptions {
     }
 
     /// Sets the name of the database file.
+    ///
+    /// This is a low-level API, and SQLx will apply no special treatment for `":memory:"` as an
+    /// in-memory database using this method. Using [`SqliteConnectOptions::from_str()`][SqliteConnectOptions#from_str] may be
+    /// preferred for simple use cases.
     pub fn filename(mut self, filename: impl AsRef<Path>) -> Self {
         self.filename = Cow::Owned(filename.as_ref().to_owned());
         self
+    }
+
+    /// Gets the current name of the database file.
+    pub fn get_filename(&self) -> &Path {
+        &self.filename
     }
 
     /// Set the enforcement of [foreign key constraints](https://www.sqlite.org/pragma.html#pragma_foreign_keys).
@@ -217,6 +239,14 @@ impl SqliteConnectOptions {
     /// compared to other database flavors.
     pub fn foreign_keys(self, on: bool) -> Self {
         self.pragma("foreign_keys", if on { "ON" } else { "OFF" })
+    }
+
+    /// Set the [`SQLITE_OPEN_MEMORY` flag](https://sqlite.org/c3ref/open.html).
+    ///
+    /// By default, this is disabled.
+    pub fn in_memory(mut self, in_memory: bool) -> Self {
+        self.in_memory = in_memory;
+        self
     }
 
     /// Set the [`SQLITE_OPEN_SHAREDCACHE` flag](https://sqlite.org/sharedcache.html).
@@ -438,35 +468,94 @@ impl SqliteConnectOptions {
         self
     }
 
-    /// Load an [extension](https://www.sqlite.org/loadext.html) at run-time when the database connection
-    /// is established, using the default entry point.
+    /// Add a [SQLite extension](https://www.sqlite.org/loadext.html) to be loaded into the database
+    /// connection at startup, using the default entrypoint.
     ///
-    /// Most common SQLite extensions can be loaded using this method, for extensions where you need
-    /// to specify the entry point, use [`extension_with_entrypoint`][`Self::extension_with_entrypoint`] instead.
+    /// Most common SQLite extensions can be loaded using this method.
+    /// For extensions where you need to override the entry point,
+    /// use [`.extension_with_entrypoint()`].
     ///
-    /// Multiple extensions can be loaded by calling the method repeatedly on the options struct, they
-    /// will be loaded in the order they are added.
+    /// Multiple extensions can be loaded by calling this method,
+    /// or [`.extension_with_entrypoint()`] where applicable,
+    /// once for each extension.
+    ///
+    /// Extension loading is only enabled during the initialization of the connection,
+    /// and disabled before `connect()` returns by setting
+    /// [`SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION`] to 0.
+    ///
+    /// This will not enable the SQL `load_extension()` function.
+    ///
+    /// [`SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION`]: https://www.sqlite.org/c3ref/c_dbconfig_defensive.html#sqlitedbconfigenableloadextension
+    /// [`.extension_with_entrypoint()`]: Self::extension_with_entrypoint
+    ///
+    /// # Safety
+    /// This causes arbitrary DLLs on the filesystem to be loaded at runtime,
+    /// which can easily result in undefined behavior, memory corruption,
+    /// or exploitable vulnerabilities if misused.
+    ///
+    /// It is not possible to provide a truly safe version of this API.
+    ///
+    /// Use this method with care, and only load extensions that you trust.
+    ///
+    /// # Example
     /// ```rust,no_run
     /// # use sqlx_core::error::Error;
     /// # use std::str::FromStr;
     /// # use sqlx_sqlite::SqliteConnectOptions;
     /// # fn options() -> Result<SqliteConnectOptions, Error> {
-    /// let options = SqliteConnectOptions::from_str("sqlite://data.db")?
-    ///     .extension("vsv")
-    ///     .extension("mod_spatialite");
+    /// let mut options = SqliteConnectOptions::from_str("sqlite://data.db")?;
+    ///
+    /// // SAFETY: these are trusted extensions.
+    /// unsafe {
+    ///     options = options
+    ///         .extension("vsv")
+    ///         .extension("mod_spatialite");
+    /// }
+    ///
     /// # Ok(options)
     /// # }
     /// ```
-    pub fn extension(mut self, extension_name: impl Into<Cow<'static, str>>) -> Self {
+    #[cfg(feature = "load-extension")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "sqlite-load-extension")))]
+    pub unsafe fn extension(mut self, extension_name: impl Into<Cow<'static, str>>) -> Self {
         self.extensions.insert(extension_name.into(), None);
         self
     }
 
-    /// Load an extension with a specified entry point.
+    /// Add a [SQLite extension](https://www.sqlite.org/loadext.html) to be loaded into the database
+    /// connection at startup, overriding the entrypoint.
     ///
-    /// Useful when using non-standard extensions, or when developing your own, the second argument
-    /// specifies where SQLite should expect to find the extension init routine.
-    pub fn extension_with_entrypoint(
+    /// See also [`.extension()`] for extensions using the standard entrypoint name
+    /// `sqlite3_extension_init` or `sqlite3_<extension name>_init`.
+    ///
+    /// Multiple extensions can be loaded by calling this method,
+    /// or [`.extension()`] where applicable,
+    /// once for each extension.
+    ///
+    /// Extension loading is only enabled during the initialization of the connection,
+    /// and disabled before `connect()` returns by setting
+    /// [`SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION`] to 0.
+    ///
+    /// This will not enable the SQL `load_extension()` function.
+    ///
+    /// [`SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION`]: https://www.sqlite.org/c3ref/c_dbconfig_defensive.html#sqlitedbconfigenableloadextension
+    /// [`.extension_with_entrypoint()`]: Self::extension_with_entrypoint
+    ///
+    /// # Safety
+    /// This causes arbitrary DLLs on the filesystem to be loaded at runtime,
+    /// which can easily result in undefined behavior, memory corruption,
+    /// or exploitable vulnerabilities if misused.
+    ///
+    /// If you specify the wrong entrypoint name, it _may_ simply result in an error,
+    /// or it may end up invoking the wrong routine, leading to undefined behavior.
+    ///
+    /// It is not possible to provide a truly safe version of this API.
+    ///
+    /// Use this method with care, only load extensions that you trust,
+    /// and double-check the entrypoint name with the extension's documentation or source code.
+    #[cfg(feature = "load-extension")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "sqlite-load-extension")))]
+    pub unsafe fn extension_with_entrypoint(
         mut self,
         extension_name: impl Into<Cow<'static, str>>,
         entry_point: impl Into<Cow<'static, str>>,
@@ -547,5 +636,40 @@ impl SqliteConnectOptions {
     pub fn with_regexp(mut self) -> Self {
         self.register_regexp_function = true;
         self
+    }
+
+    #[cfg_attr(not(feature = "load-extension"), expect(unused_mut))]
+    pub(crate) fn apply_driver_config(
+        mut self,
+        config: &config::drivers::SqliteConfig,
+    ) -> crate::Result<Self> {
+        #[cfg(feature = "load-extension")]
+        for extension in &config.unsafe_load_extensions {
+            // SAFETY: the documentation warns the user about loading extensions
+            match extension {
+                config::drivers::SqliteExtension::Path(path) => {
+                    self = unsafe { self.extension(path.clone()) }
+                }
+                config::drivers::SqliteExtension::PathWithEntrypoint { path, entrypoint } => {
+                    self =
+                        unsafe { self.extension_with_entrypoint(path.clone(), entrypoint.clone()) }
+                }
+            }
+        }
+
+        #[cfg(not(feature = "load-extension"))]
+        if !config.unsafe_load_extensions.is_empty() {
+            return Err(sqlx_core::Error::Configuration(
+                format!(
+                    "sqlx.toml specifies `drivers.sqlite.unsafe-load-extensions = {:?}` \
+                 but extension loading is not enabled; \
+                 enable the `sqlite-load-extension` feature of SQLx to use SQLite extensions",
+                    config.unsafe_load_extensions,
+                )
+                .into(),
+            ));
+        }
+
+        Ok(self)
     }
 }

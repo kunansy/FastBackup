@@ -14,11 +14,10 @@ pub(crate) use synced::Synced;
 
 cfg_rt_multi_thread! {
     mod rt_multi_thread;
+    pub(crate) use rt_multi_thread::InjectQueue;
 }
 
-cfg_metrics! {
-    mod metrics;
-}
+mod metrics;
 
 /// Growable, MPMC queue used to inject new tasks into the scheduler and as an
 /// overflow queue when the local, fixed-size, array queue overflows.
@@ -38,7 +37,7 @@ impl<T: 'static> Inject<T> {
     }
 
     // Kind of annoying to have to include the cfg here
-    #[cfg(tokio_taskdump)]
+    #[cfg(any(all(tokio_unstable, feature = "taskdump"), feature = "rt-multi-thread"))]
     pub(crate) fn is_closed(&self) -> bool {
         let synced = self.synced.lock();
         self.shared.is_closed(&synced)

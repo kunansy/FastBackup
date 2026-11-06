@@ -4,6 +4,9 @@ use crate::application_default_credentials::{
 };
 use crate::authenticator_delegate::{DeviceFlowDelegate, InstalledFlowDelegate};
 use crate::authorized_user::{AuthorizedUserFlow, AuthorizedUserSecret};
+#[cfg(any(feature = "hyper-rustls", feature = "hyper-tls"))]
+use crate::client::DefaultHyperClientBuilder;
+use crate::client::{HttpClient, HyperClientBuilder};
 use crate::device::DeviceFlow;
 use crate::error::Error;
 use crate::external_account::{ExternalAccountFlow, ExternalAccountSecret};
@@ -11,7 +14,7 @@ use crate::installed::{InstalledFlow, InstalledFlowReturnMethod};
 use crate::refresh::RefreshFlow;
 use crate::service_account_impersonator::ServiceAccountImpersonationFlow;
 
-#[cfg(feature = "service_account")]
+#[cfg(feature = "service-account")]
 use crate::service_account::{self, ServiceAccountFlow, ServiceAccountFlowOpts, ServiceAccountKey};
 use crate::storage::{self, Storage, TokenStorage};
 use crate::types::{AccessToken, ApplicationSecret, TokenInfo};
@@ -19,20 +22,20 @@ use private::AuthFlow;
 
 use crate::access_token::AccessTokenFlow;
 
-use futures::lock::Mutex;
-use http::Uri;
-use hyper::client::connect::Connection;
+use hyper_util::client::legacy::connect::Connect;
 use std::borrow::Cow;
-use std::error::Error as StdError;
 use std::fmt;
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::io::{AsyncRead, AsyncWrite};
-use tower_service::Service;
+use std::time::Duration;
+use tokio::sync::Mutex;
 
-struct InnerAuthenticator<S> {
-    hyper_client: hyper::Client<S>,
+struct InnerAuthenticator<C>
+where
+    C: Connect + Clone + Send + Sync + 'static,
+{
+    hyper_client: HttpClient<C>,
     storage: Storage,
     auth_flow: AuthFlow,
 }
@@ -40,12 +43,15 @@ struct InnerAuthenticator<S> {
 /// Authenticator is responsible for fetching tokens, handling refreshing tokens,
 /// and optionally persisting tokens to disk.
 #[derive(Clone)]
-pub struct Authenticator<S> {
-    inner: Arc<InnerAuthenticator<S>>,
+pub struct Authenticator<C>
+where
+    C: Connect + Clone + Send + Sync + 'static,
+{
+    inner: Arc<InnerAuthenticator<C>>,
 }
 
 struct DisplayScopes<'a, T>(&'a [T]);
-impl<'a, T> fmt::Display for DisplayScopes<'a, T>
+impl<T> fmt::Display for DisplayScopes<'_, T>
 where
     T: AsRef<str>,
 {
@@ -63,12 +69,9 @@ where
     }
 }
 
-impl<S> Authenticator<S>
+impl<C> Authenticator<C>
 where
-    S: Service<Uri> + Clone + Send + Sync + 'static,
-    S::Response: Connection + AsyncRead + AsyncWrite + Send + Unpin + 'static,
-    S::Future: Send + Unpin + 'static,
-    S::Error: Into<Box<dyn StdError + Send + Sync>>,
+    C: Connect + Clone + Send + Sync + 'static,
 {
     /// Return the current token for the provided scopes.
     pub async fn token<'a, T>(&'a self, scopes: &'a [T]) -> Result<AccessToken, Error>
@@ -200,15 +203,12 @@ pub struct InstalledFlowAuthenticator;
 impl InstalledFlowAuthenticator {
     /// Use the builder pattern to create an Authenticator that uses the installed flow.
     #[cfg(any(feature = "hyper-rustls", feature = "hyper-tls"))]
-    #[cfg_attr(
-        yup_oauth2_docsrs,
-        doc(cfg(any(feature = "hyper-rustls", feature = "hyper-tls")))
-    )]
+    #[cfg_attr(docsrs, doc(cfg(any(feature = "hyper-rustls", feature = "hyper-tls"))))]
     pub fn builder(
         app_secret: ApplicationSecret,
         method: InstalledFlowReturnMethod,
-    ) -> AuthenticatorBuilder<DefaultHyperClient, InstalledFlow> {
-        Self::with_client(app_secret, method, DefaultHyperClient)
+    ) -> AuthenticatorBuilder<DefaultHyperClientBuilder, InstalledFlow> {
+        Self::with_client(app_secret, method, DefaultHyperClientBuilder::default())
     }
 
     /// Construct a new Authenticator that uses the installed flow and the provided http client.
@@ -236,14 +236,11 @@ pub struct DeviceFlowAuthenticator;
 impl DeviceFlowAuthenticator {
     /// Use the builder pattern to create an Authenticator that uses the device flow.
     #[cfg(any(feature = "hyper-rustls", feature = "hyper-tls"))]
-    #[cfg_attr(
-        yup_oauth2_docsrs,
-        doc(cfg(any(feature = "hyper-rustls", feature = "hyper-tls")))
-    )]
+    #[cfg_attr(docsrs, doc(cfg(any(feature = "hyper-rustls", feature = "hyper-tls"))))]
     pub fn builder(
         app_secret: ApplicationSecret,
-    ) -> AuthenticatorBuilder<DefaultHyperClient, DeviceFlow> {
-        Self::with_client(app_secret, DefaultHyperClient)
+    ) -> AuthenticatorBuilder<DefaultHyperClientBuilder, DeviceFlow> {
+        Self::with_client(app_secret, DefaultHyperClientBuilder::default())
     }
 
     /// Construct a new Authenticator that uses the installed flow and the provided http client.
@@ -266,21 +263,18 @@ impl DeviceFlowAuthenticator {
 ///         .expect("failed to create authenticator");
 /// # }
 /// ```
-#[cfg(feature = "service_account")]
+#[cfg(feature = "service-account")]
 pub struct ServiceAccountAuthenticator;
 
-#[cfg(feature = "service_account")]
+#[cfg(feature = "service-account")]
 impl ServiceAccountAuthenticator {
     /// Use the builder pattern to create an Authenticator that uses a service account.
     #[cfg(any(feature = "hyper-rustls", feature = "hyper-tls"))]
-    #[cfg_attr(
-        yup_oauth2_docsrs,
-        doc(cfg(any(feature = "hyper-rustls", feature = "hyper-tls")))
-    )]
+    #[cfg_attr(docsrs, doc(cfg(any(feature = "hyper-rustls", feature = "hyper-tls"))))]
     pub fn builder(
         service_account_key: ServiceAccountKey,
-    ) -> AuthenticatorBuilder<DefaultHyperClient, ServiceAccountFlowOpts> {
-        Self::with_client(service_account_key, DefaultHyperClient)
+    ) -> AuthenticatorBuilder<DefaultHyperClientBuilder, ServiceAccountFlowOpts> {
+        Self::with_client(service_account_key, DefaultHyperClientBuilder::default())
     }
 
     /// Construct a new Authenticator that uses the installed flow and the provided http client.
@@ -290,7 +284,7 @@ impl ServiceAccountAuthenticator {
     ) -> AuthenticatorBuilder<C, ServiceAccountFlowOpts> {
         AuthenticatorBuilder::new(
             ServiceAccountFlowOpts {
-                key: service_account::FlowOptsKey::Key(service_account_key),
+                key: service_account::FlowOptsKey::Key(Box::new(service_account_key)),
                 subject: None,
             },
             client,
@@ -300,7 +294,7 @@ impl ServiceAccountAuthenticator {
 
 /// Create an authenticator that uses a application default credentials.
 /// ```
-/// # #[cfg(all(any(feature = "hyper-rustls", feature = "hyper-tls"), feature = "service_account"))]
+/// # #[cfg(all(any(feature = "hyper-rustls", feature = "hyper-tls"), feature = "service-account"))]
 /// # async fn foo() {
 /// #    use yup_oauth2::ApplicationDefaultCredentialsAuthenticator;
 /// #    use yup_oauth2::ApplicationDefaultCredentialsFlowOpts;
@@ -322,7 +316,7 @@ impl ServiceAccountAuthenticator {
 pub struct ApplicationDefaultCredentialsAuthenticator;
 impl ApplicationDefaultCredentialsAuthenticator {
     /// Try to build ServiceAccountFlowOpts from the environment
-    #[cfg(feature = "service_account")]
+    #[cfg(feature = "service-account")]
     pub async fn from_environment() -> Result<ServiceAccountFlowOpts, std::env::VarError> {
         let key_path = std::env::var("GOOGLE_APPLICATION_CREDENTIALS")?;
 
@@ -334,20 +328,17 @@ impl ApplicationDefaultCredentialsAuthenticator {
 
     /// Use the builder pattern to deduce which model of authenticator should be used:
     /// Service account one or GCE instance metadata kind
-    #[cfg(feature = "service_account")]
+    #[cfg(feature = "service-account")]
     #[cfg(any(feature = "hyper-rustls", feature = "hyper-tls"))]
-    #[cfg_attr(
-        yup_oauth2_docsrs,
-        doc(cfg(any(feature = "hyper-rustls", feature = "hyper-tls")))
-    )]
+    #[cfg_attr(docsrs, doc(cfg(any(feature = "hyper-rustls", feature = "hyper-tls"))))]
     pub async fn builder(
         opts: ApplicationDefaultCredentialsFlowOpts,
-    ) -> ApplicationDefaultCredentialsTypes<DefaultHyperClient> {
-        Self::with_client(opts, DefaultHyperClient).await
+    ) -> ApplicationDefaultCredentialsTypes<DefaultHyperClientBuilder> {
+        Self::with_client(opts, DefaultHyperClientBuilder::default()).await
     }
 
     /// Use the builder pattern to deduce which model of authenticator should be used and allow providing a hyper client
-    #[cfg(feature = "service_account")]
+    #[cfg(feature = "service-account")]
     pub async fn with_client<C>(
         opts: ApplicationDefaultCredentialsFlowOpts,
         client: C,
@@ -373,7 +364,7 @@ where
     C: HyperClientBuilder,
 {
     /// Service account based authenticator signature
-    #[cfg(feature = "service_account")]
+    #[cfg(feature = "service-account")]
     ServiceAccount(AuthenticatorBuilder<C, ServiceAccountFlowOpts>),
     /// GCE Instance Metadata based authenticator signature
     InstanceMetadata(AuthenticatorBuilder<C, ApplicationDefaultCredentialsFlowOpts>),
@@ -395,14 +386,11 @@ pub struct AuthorizedUserAuthenticator;
 impl AuthorizedUserAuthenticator {
     /// Use the builder pattern to create an Authenticator that uses an authorized user.
     #[cfg(any(feature = "hyper-rustls", feature = "hyper-tls"))]
-    #[cfg_attr(
-        yup_oauth2_docsrs,
-        doc(cfg(any(feature = "hyper-rustls", feature = "hyper-tls")))
-    )]
+    #[cfg_attr(docsrs, doc(cfg(any(feature = "hyper-rustls", feature = "hyper-tls"))))]
     pub fn builder(
         authorized_user_secret: AuthorizedUserSecret,
-    ) -> AuthenticatorBuilder<DefaultHyperClient, AuthorizedUserFlow> {
-        Self::with_client(authorized_user_secret, DefaultHyperClient)
+    ) -> AuthenticatorBuilder<DefaultHyperClientBuilder, AuthorizedUserFlow> {
+        Self::with_client(authorized_user_secret, DefaultHyperClientBuilder::default())
     }
 
     /// Construct a new Authenticator that uses the installed flow and the provided http client.
@@ -435,14 +423,14 @@ pub struct ExternalAccountAuthenticator;
 impl ExternalAccountAuthenticator {
     /// Use the builder pattern to create an Authenticator that uses an external account.
     #[cfg(any(feature = "hyper-rustls", feature = "hyper-tls"))]
-    #[cfg_attr(
-        yup_oauth2_docsrs,
-        doc(cfg(any(feature = "hyper-rustls", feature = "hyper-tls")))
-    )]
+    #[cfg_attr(docsrs, doc(cfg(any(feature = "hyper-rustls", feature = "hyper-tls"))))]
     pub fn builder(
         external_account_secret: ExternalAccountSecret,
-    ) -> AuthenticatorBuilder<DefaultHyperClient, ExternalAccountFlow> {
-        Self::with_client(external_account_secret, DefaultHyperClient)
+    ) -> AuthenticatorBuilder<DefaultHyperClientBuilder, ExternalAccountFlow> {
+        Self::with_client(
+            external_account_secret,
+            DefaultHyperClientBuilder::default(),
+        )
     }
 
     /// Construct a new Authenticator that uses the installed flow and the provided http client.
@@ -470,13 +458,16 @@ impl ExternalAccountAuthenticator {
 /// #     .expect("failed to create authenticator");
 /// # }
 /// ```
+#[cfg(any(feature = "hyper-rustls", feature = "hyper-tls"))]
 pub struct AccessTokenAuthenticator;
+
+#[cfg(any(feature = "hyper-rustls", feature = "hyper-tls"))]
 impl AccessTokenAuthenticator {
     /// the builder pattern for the authenticator
     pub fn builder(
         access_token: String,
-    ) -> AuthenticatorBuilder<DefaultHyperClient, AccessTokenFlow> {
-        Self::with_client(access_token, DefaultHyperClient)
+    ) -> AuthenticatorBuilder<DefaultHyperClientBuilder, AccessTokenFlow> {
+        Self::with_client(access_token, DefaultHyperClientBuilder::default())
     }
     /// Construct a new Authenticator that uses the installed flow and the provided http client.
     /// the client itself is not used
@@ -484,12 +475,7 @@ impl AccessTokenAuthenticator {
         access_token: String,
         client: C,
     ) -> AuthenticatorBuilder<C, AccessTokenFlow> {
-        AuthenticatorBuilder::new(
-            AccessTokenFlow {
-                access_token: access_token,
-            },
-            client,
-        )
+        AuthenticatorBuilder::new(AccessTokenFlow { access_token }, client)
     }
 }
 
@@ -512,18 +498,15 @@ pub struct ServiceAccountImpersonationAuthenticator;
 impl ServiceAccountImpersonationAuthenticator {
     /// Use the builder pattern to create an Authenticator that uses the device flow.
     #[cfg(any(feature = "hyper-rustls", feature = "hyper-tls"))]
-    #[cfg_attr(
-        yup_oauth2_docsrs,
-        doc(cfg(any(feature = "hyper-rustls", feature = "hyper-tls")))
-    )]
+    #[cfg_attr(docsrs, doc(cfg(any(feature = "hyper-rustls", feature = "hyper-tls"))))]
     pub fn builder(
         authorized_user_secret: AuthorizedUserSecret,
         service_account_email: &str,
-    ) -> AuthenticatorBuilder<DefaultHyperClient, ServiceAccountImpersonationFlow> {
+    ) -> AuthenticatorBuilder<DefaultHyperClientBuilder, ServiceAccountImpersonationFlow> {
         Self::with_client(
             authorized_user_secret,
             service_account_email,
-            DefaultHyperClient,
+            DefaultHyperClientBuilder::default(),
         )
     }
 
@@ -542,12 +525,10 @@ impl ServiceAccountImpersonationAuthenticator {
 
 /// ## Methods available when building any Authenticator.
 /// ```
-/// # #[cfg(any(feature = "hyper-rustls", feature = "hyper-tls"))]
 /// # async fn foo() {
-/// # let custom_hyper_client = hyper::Client::new();
+/// # let client = hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new()).build_http::<String>();
 /// # let app_secret = yup_oauth2::read_application_secret("/tmp/foo").await.unwrap();
-///     let authenticator = yup_oauth2::DeviceFlowAuthenticator::builder(app_secret)
-///         .hyper_client(custom_hyper_client)
+///     let authenticator = yup_oauth2::DeviceFlowAuthenticator::with_client(app_secret, yup_oauth2::CustomHyperClientBuilder::from(client))
 ///         .persist_tokens_to_disk("/tmp/tokenfile.json")
 ///         .build()
 ///         .await
@@ -563,7 +544,10 @@ impl<C, F> AuthenticatorBuilder<C, F> {
     where
         C: HyperClientBuilder,
     {
-        let hyper_client = hyper_client_builder.build_hyper_client();
+        let hyper_client = hyper_client_builder
+            .build_hyper_client()
+            .map_err(|err| io::Error::other(format!("failed to build hyper client: {}", err)))?;
+
         let storage = match storage_type {
             StorageType::Memory => Storage::Memory {
                 tokens: Mutex::new(storage::JSONTokens::new()),
@@ -597,22 +581,23 @@ impl<C, F> AuthenticatorBuilder<C, F> {
         }
     }
 
-    /// Use the provided hyper client.
-    pub fn hyper_client<NewC>(
-        self,
-        hyper_client: hyper::Client<NewC>,
-    ) -> AuthenticatorBuilder<hyper::Client<NewC>, F> {
-        AuthenticatorBuilder {
-            hyper_client_builder: hyper_client,
-            storage_type: self.storage_type,
-            auth_flow: self.auth_flow,
-        }
-    }
-
     /// Persist tokens to disk in the provided filename.
     pub fn persist_tokens_to_disk<P: Into<PathBuf>>(self, path: P) -> AuthenticatorBuilder<C, F> {
         AuthenticatorBuilder {
             storage_type: StorageType::Disk(path.into()),
+            ..self
+        }
+    }
+}
+
+impl<C, F> AuthenticatorBuilder<C, F>
+where
+    C: HyperClientBuilder,
+{
+    /// Sets the duration after which a HTTP request times out
+    pub fn with_timeout(self, timeout: Duration) -> Self {
+        AuthenticatorBuilder {
+            hyper_client_builder: self.hyper_client_builder.with_timeout(timeout),
             ..self
         }
     }
@@ -748,7 +733,7 @@ impl<C> AuthenticatorBuilder<C, InstalledFlow> {
 ///     .expect("failed to create authenticator");
 /// # }
 /// ```
-#[cfg(feature = "service_account")]
+#[cfg(feature = "service-account")]
 impl<C> AuthenticatorBuilder<C, ServiceAccountFlowOpts> {
     /// Use the provided subject.
     pub fn subject(self, subject: impl Into<String>) -> Self {
@@ -868,21 +853,22 @@ impl<C> AuthenticatorBuilder<C, AccessTokenFlow> {
 mod private {
     use crate::access_token::AccessTokenFlow;
     use crate::application_default_credentials::ApplicationDefaultCredentialsFlow;
-    use crate::authenticator::{AsyncRead, AsyncWrite, Connection, Service, StdError, Uri};
     use crate::authorized_user::AuthorizedUserFlow;
+    use crate::client::SendRequest;
     use crate::device::DeviceFlow;
     use crate::error::Error;
     use crate::external_account::ExternalAccountFlow;
     use crate::installed::InstalledFlow;
-    #[cfg(feature = "service_account")]
+    #[cfg(feature = "service-account")]
     use crate::service_account::ServiceAccountFlow;
     use crate::service_account_impersonator::ServiceAccountImpersonationFlow;
     use crate::types::{ApplicationSecret, TokenInfo};
 
+    #[allow(clippy::enum_variant_names)]
     pub enum AuthFlow {
         DeviceFlow(DeviceFlow),
         InstalledFlow(InstalledFlow),
-        #[cfg(feature = "service_account")]
+        #[cfg(feature = "service-account")]
         ServiceAccountFlow(ServiceAccountFlow),
         ServiceAccountImpersonationFlow(ServiceAccountImpersonationFlow),
         ApplicationDefaultCredentialsFlow(ApplicationDefaultCredentialsFlow),
@@ -896,7 +882,7 @@ mod private {
             match self {
                 AuthFlow::DeviceFlow(device_flow) => Some(&device_flow.app_secret),
                 AuthFlow::InstalledFlow(installed_flow) => Some(&installed_flow.app_secret),
-                #[cfg(feature = "service_account")]
+                #[cfg(feature = "service-account")]
                 AuthFlow::ServiceAccountFlow(_) => None,
                 AuthFlow::ServiceAccountImpersonationFlow(_) => None,
                 AuthFlow::ApplicationDefaultCredentialsFlow(_) => None,
@@ -906,24 +892,20 @@ mod private {
             }
         }
 
-        pub(crate) async fn token<'a, S, T>(
+        pub(crate) async fn token<'a, T>(
             &'a self,
-            hyper_client: &'a hyper::Client<S>,
+            hyper_client: &'a impl SendRequest,
             scopes: &'a [T],
         ) -> Result<TokenInfo, Error>
         where
             T: AsRef<str>,
-            S: Service<Uri> + Clone + Send + Sync + 'static,
-            S::Response: Connection + AsyncRead + AsyncWrite + Send + Unpin + 'static,
-            S::Future: Send + Unpin + 'static,
-            S::Error: Into<Box<dyn StdError + Send + Sync>>,
         {
             match self {
                 AuthFlow::DeviceFlow(device_flow) => device_flow.token(hyper_client, scopes).await,
                 AuthFlow::InstalledFlow(installed_flow) => {
                     installed_flow.token(hyper_client, scopes).await
                 }
-                #[cfg(feature = "service_account")]
+                #[cfg(feature = "service-account")]
                 AuthFlow::ServiceAccountFlow(service_account_flow) => {
                     service_account_flow.token(hyper_client, scopes).await
                 }
@@ -949,106 +931,17 @@ mod private {
     }
 }
 
-/// A trait implemented for any hyper::Client as well as the DefaultHyperClient.
-pub trait HyperClientBuilder {
-    /// The hyper connector that the resulting hyper client will use.
-    type Connector: Service<Uri> + Clone + Send + Sync + 'static;
-
-    /// Create a hyper::Client
-    fn build_hyper_client(self) -> hyper::Client<Self::Connector>;
-
-    /// Create a `hyper::Client` for tests (HTTPS not required)
-    #[doc(hidden)]
-    fn build_test_hyper_client(self) -> hyper::Client<Self::Connector>;
-}
-
 #[cfg(feature = "hyper-rustls")]
-#[cfg_attr(
-    yup_oauth2_docsrs,
-    doc(cfg(any(feature = "hyper-rustls", feature = "hyper-tls")))
-)]
+#[cfg_attr(docsrs, doc(cfg(any(feature = "hyper-rustls", feature = "hyper-tls"))))]
 /// Default authenticator type
 pub type DefaultAuthenticator =
-    Authenticator<hyper_rustls::HttpsConnector<hyper::client::HttpConnector>>;
+    Authenticator<hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>>;
 
 #[cfg(all(not(feature = "hyper-rustls"), feature = "hyper-tls"))]
-#[cfg_attr(
-    yup_oauth2_docsrs,
-    doc(cfg(any(feature = "hyper-rustls", feature = "hyper-tls")))
-)]
+#[cfg_attr(docsrs, doc(cfg(any(feature = "hyper-rustls", feature = "hyper-tls"))))]
 /// Default authenticator type
 pub type DefaultAuthenticator =
-    Authenticator<hyper_tls::HttpsConnector<hyper::client::HttpConnector>>;
-
-/// The builder value used when the default hyper client should be used.
-#[cfg(any(feature = "hyper-rustls", feature = "hyper-tls"))]
-#[cfg_attr(
-    yup_oauth2_docsrs,
-    doc(cfg(any(feature = "hyper-rustls", feature = "hyper-tls")))
-)]
-pub struct DefaultHyperClient;
-
-#[cfg(any(feature = "hyper-rustls", feature = "hyper-tls"))]
-#[cfg_attr(
-    yup_oauth2_docsrs,
-    doc(cfg(any(feature = "hyper-rustls", feature = "hyper-tls")))
-)]
-impl HyperClientBuilder for DefaultHyperClient {
-    #[cfg(feature = "hyper-rustls")]
-    type Connector = hyper_rustls::HttpsConnector<hyper::client::connect::HttpConnector>;
-    #[cfg(all(not(feature = "hyper-rustls"), feature = "hyper-tls"))]
-    type Connector = hyper_tls::HttpsConnector<hyper::client::connect::HttpConnector>;
-
-    fn build_hyper_client(self) -> hyper::Client<Self::Connector> {
-        #[cfg(feature = "hyper-rustls")]
-        let connector = hyper_rustls::HttpsConnectorBuilder::new()
-            .with_native_roots()
-            .https_or_http()
-            .enable_http1()
-            .enable_http2()
-            .build();
-        #[cfg(all(not(feature = "hyper-rustls"), feature = "hyper-tls"))]
-        let connector = hyper_tls::HttpsConnector::new();
-
-        hyper::Client::builder()
-            .pool_max_idle_per_host(0)
-            .build::<_, hyper::Body>(connector)
-    }
-
-    fn build_test_hyper_client(self) -> hyper::Client<Self::Connector> {
-        #[cfg(feature = "hyper-rustls")]
-        let connector = hyper_rustls::HttpsConnectorBuilder::new()
-            .with_native_roots()
-            .https_or_http()
-            .enable_http1()
-            .enable_http2()
-            .build();
-        #[cfg(all(not(feature = "hyper-rustls"), feature = "hyper-tls"))]
-        let connector = hyper_tls::HttpsConnector::new();
-
-        hyper::Client::builder()
-            .pool_max_idle_per_host(0)
-            .build::<_, hyper::Body>(connector)
-    }
-}
-
-impl<S> HyperClientBuilder for hyper::Client<S>
-where
-    S: Service<Uri> + Clone + Send + Sync + 'static,
-    S::Response: Connection + AsyncRead + AsyncWrite + Send + Unpin + 'static,
-    S::Future: Send + Unpin + 'static,
-    S::Error: Into<Box<dyn StdError + Send + Sync>>,
-{
-    type Connector = S;
-
-    fn build_hyper_client(self) -> hyper::Client<S> {
-        self
-    }
-
-    fn build_test_hyper_client(self) -> hyper::Client<Self::Connector> {
-        self
-    }
-}
+    Authenticator<hyper_tls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>>;
 
 /// How should the acquired tokens be stored?
 enum StorageType {
@@ -1067,6 +960,7 @@ mod tests {
     fn ensure_send_sync() {
         use super::*;
         fn is_send_sync<T: Send + Sync>() {}
-        is_send_sync::<Authenticator<<DefaultHyperClient as HyperClientBuilder>::Connector>>()
+        is_send_sync::<Authenticator<<DefaultHyperClientBuilder as HyperClientBuilder>::Connector>>(
+        )
     }
 }

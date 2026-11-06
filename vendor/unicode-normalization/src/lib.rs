@@ -62,12 +62,7 @@ pub use crate::recompose::Recompositions;
 pub use crate::replace::Replacements;
 pub use crate::stream_safe::StreamSafe;
 pub use crate::tables::UNICODE_VERSION;
-use core::{
-    str::Chars,
-    option,
-};
-
-mod no_std_prelude;
+use core::{option, str::Chars};
 
 mod decompose;
 mod lookups;
@@ -77,8 +72,6 @@ mod quick_check;
 mod recompose;
 mod replace;
 mod stream_safe;
-
-#[rustfmt::skip]
 mod tables;
 
 #[doc(hidden)]
@@ -120,8 +113,8 @@ pub trait UnicodeNormalization<I: Iterator<Item = char>> {
     /// (compatibility decomposition followed by canonical composition).
     fn nfkc(self) -> Recompositions<I>;
 
-    /// A transformation which replaces CJK Compatibility Ideograph codepoints
-    /// with normal forms using Standardized Variation Sequences. This is not
+    /// A transformation which replaces [CJK Compatibility Ideograph] codepoints
+    /// with normal forms using [Standardized Variation Sequences]. This is not
     /// part of the canonical or compatibility decomposition algorithms, but
     /// performing it before those algorithms produces normalized output which
     /// better preserves the intent of the original text.
@@ -130,37 +123,42 @@ pub trait UnicodeNormalization<I: Iterator<Item = char>> {
     /// may not immediately help text display as intended, but they at
     /// least preserve the information in a standardized form, giving
     /// implementations the option to recognize them.
+    ///
+    /// [CJK Compatibility Ideograph]: https://www.unicode.org/glossary/#compatibility_ideograph
+    /// [Standardized Variation Sequences]: https://www.unicode.org/glossary/#standardized_variation_sequence
     fn cjk_compat_variants(self) -> Replacements<I>;
 
     /// An Iterator over the string with Conjoining Grapheme Joiner characters
-    /// inserted according to the Stream-Safe Text Process (UAX15-D4)
+    /// inserted according to the Stream-Safe Text Process ([UAX15-D4]).
+    ///
+    /// [UAX15-D4]: https://www.unicode.org/reports/tr15/#UAX15-D4
     fn stream_safe(self) -> StreamSafe<I>;
 }
 
 impl<'a> UnicodeNormalization<Chars<'a>> for &'a str {
     #[inline]
     fn nfd(self) -> Decompositions<Chars<'a>> {
-        decompose::new_canonical(self.chars())
+        Decompositions::new_canonical(self.chars())
     }
 
     #[inline]
     fn nfkd(self) -> Decompositions<Chars<'a>> {
-        decompose::new_compatible(self.chars())
+        Decompositions::new_compatible(self.chars())
     }
 
     #[inline]
     fn nfc(self) -> Recompositions<Chars<'a>> {
-        recompose::new_canonical(self.chars())
+        Recompositions::new_canonical(self.chars())
     }
 
     #[inline]
     fn nfkc(self) -> Recompositions<Chars<'a>> {
-        recompose::new_compatible(self.chars())
+        Recompositions::new_compatible(self.chars())
     }
 
     #[inline]
     fn cjk_compat_variants(self) -> Replacements<Chars<'a>> {
-        replace::new_cjk_compat_variants(self.chars())
+        Replacements::new_cjk_compat_variants(self.chars())
     }
 
     #[inline]
@@ -169,31 +167,30 @@ impl<'a> UnicodeNormalization<Chars<'a>> for &'a str {
     }
 }
 
-
 impl UnicodeNormalization<option::IntoIter<char>> for char {
     #[inline]
     fn nfd(self) -> Decompositions<option::IntoIter<char>> {
-        decompose::new_canonical(Some(self).into_iter())
+        Decompositions::new_canonical(Some(self).into_iter())
     }
 
     #[inline]
     fn nfkd(self) -> Decompositions<option::IntoIter<char>> {
-        decompose::new_compatible(Some(self).into_iter())
+        Decompositions::new_compatible(Some(self).into_iter())
     }
 
     #[inline]
     fn nfc(self) -> Recompositions<option::IntoIter<char>> {
-        recompose::new_canonical(Some(self).into_iter())
+        Recompositions::new_canonical(Some(self).into_iter())
     }
 
     #[inline]
     fn nfkc(self) -> Recompositions<option::IntoIter<char>> {
-        recompose::new_compatible(Some(self).into_iter())
+        Recompositions::new_compatible(Some(self).into_iter())
     }
 
     #[inline]
     fn cjk_compat_variants(self) -> Replacements<option::IntoIter<char>> {
-        replace::new_cjk_compat_variants(Some(self).into_iter())
+        Replacements::new_cjk_compat_variants(Some(self).into_iter())
     }
 
     #[inline]
@@ -205,27 +202,27 @@ impl UnicodeNormalization<option::IntoIter<char>> for char {
 impl<I: Iterator<Item = char>> UnicodeNormalization<I> for I {
     #[inline]
     fn nfd(self) -> Decompositions<I> {
-        decompose::new_canonical(self)
+        Decompositions::new_canonical(self)
     }
 
     #[inline]
     fn nfkd(self) -> Decompositions<I> {
-        decompose::new_compatible(self)
+        Decompositions::new_compatible(self)
     }
 
     #[inline]
     fn nfc(self) -> Recompositions<I> {
-        recompose::new_canonical(self)
+        Recompositions::new_canonical(self)
     }
 
     #[inline]
     fn nfkc(self) -> Recompositions<I> {
-        recompose::new_compatible(self)
+        Recompositions::new_compatible(self)
     }
 
     #[inline]
     fn cjk_compat_variants(self) -> Replacements<I> {
-        replace::new_cjk_compat_variants(self)
+        Replacements::new_cjk_compat_variants(self)
     }
 
     #[inline]

@@ -1,16 +1,20 @@
 //! Futures and other types that allow asynchronous interaction with channels.
 
-use std::{
-    future::Future,
-    pin::Pin,
-    task::{Context, Poll, Waker},
-    any::Any,
-    ops::Deref,
-};
 use crate::*;
-use futures_core::{stream::{Stream, FusedStream}, future::FusedFuture};
+use futures_core::{
+    future::FusedFuture,
+    stream::{FusedStream, Stream},
+};
 use futures_sink::Sink;
 use spin1::Mutex as Spinlock;
+use std::fmt::{Debug, Formatter};
+use std::{
+    any::Any,
+    future::Future,
+    ops::Deref,
+    pin::Pin,
+    task::{Context, Poll, Waker},
+};
 
 struct AsyncSignal {
     waker: Spinlock<Waker>,
@@ -35,8 +39,12 @@ impl Signal for AsyncSignal {
         self.stream
     }
 
-    fn as_any(&self) -> &(dyn Any + 'static) { self }
-    fn as_ptr(&self) -> *const () { self as *const _ as *const () }
+    fn as_any(&self) -> &(dyn Any + 'static) {
+        self
+    }
+    fn as_ptr(&self) -> *const () {
+        self as *const _ as *const ()
+    }
 }
 
 impl<T> Hook<T, AsyncSignal> {
@@ -69,7 +77,7 @@ impl<'a, T> Deref for OwnedOrRef<'a, T> {
 
     fn deref(&self) -> &T {
         match self {
-            OwnedOrRef::Owned(arc) => &arc,
+            OwnedOrRef::Owned(arc) => arc,
             OwnedOrRef::Ref(r) => r,
         }
     }
@@ -82,9 +90,9 @@ impl<T> Sender<T> {
     ///
     /// In the current implementation, the returned future will not yield to the async runtime if the
     /// channel is unbounded. This may change in later versions.
-    pub fn send_async(&self, item: T) -> SendFut<T> {
+    pub fn send_async(&self, item: T) -> SendFut<'_, T> {
         SendFut {
-            sender: OwnedOrRef::Ref(&self),
+            sender: OwnedOrRef::Ref(self),
             hook: Some(SendState::NotYetSent(item)),
         }
     }
@@ -109,7 +117,7 @@ impl<T> Sender<T> {
     /// channel is unbounded. This may change in later versions.
     pub fn sink(&self) -> SendSink<'_, T> {
         SendSink(SendFut {
-            sender: OwnedOrRef::Ref(&self),
+            sender: OwnedOrRef::Ref(self),
             hook: None,
         })
     }
@@ -141,6 +149,12 @@ pub struct SendFut<'a, T> {
     hook: Option<SendState<T>>,
 }
 
+impl<'a, T> Debug for SendFut<'a, T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SendFut").finish()
+    }
+}
+
 impl<T> std::marker::Unpin for SendFut<'_, T> {}
 
 impl<'a, T> SendFut<'a, T> {
@@ -149,9 +163,11 @@ impl<'a, T> SendFut<'a, T> {
     fn reset_hook(&mut self) {
         if let Some(SendState::QueuedItem(hook)) = self.hook.take() {
             let hook: Arc<Hook<T, dyn Signal>> = hook;
-            wait_lock(&self.sender.shared.chan).sending
+            wait_lock(&self.sender.shared.chan)
+                .sending
                 .as_mut()
-                .unwrap().1
+                .unwrap()
+                .1
                 .retain(|s| s.signal().as_ptr() != hook.signal().as_ptr());
         }
     }
@@ -188,7 +204,6 @@ impl<'a, T> Drop for SendFut<'a, T> {
     }
 }
 
-
 impl<'a, T> Future for SendFut<'a, T> {
     type Output = Result<(), SendError<T>>;
 
@@ -211,24 +226,28 @@ impl<'a, T> Future for SendFut<'a, T> {
             let this = self.get_mut();
             let (shared, this_hook) = (&this.sender.shared, &mut this.hook);
 
-            shared.send(
-                // item
-                item,
-                // should_block
-                true,
-                // make_signal
-                |msg| Hook::slot(Some(msg), AsyncSignal::new(cx, false)),
-                // do_block
-                |hook| {
-                    *this_hook = Some(SendState::QueuedItem(hook));
-                    Poll::Pending
-                },
-            )
-                .map(|r| r.map_err(|err| match err {
-                    TrySendTimeoutError::Disconnected(msg) => SendError(msg),
-                    _ => unreachable!(),
-                }))
-        } else { // Nothing to do
+            shared
+                .send(
+                    // item
+                    item,
+                    // should_block
+                    true,
+                    // make_signal
+                    |msg| Hook::slot(Some(msg), AsyncSignal::new(cx, false)),
+                    // do_block
+                    |hook| {
+                        *this_hook = Some(SendState::QueuedItem(hook));
+                        Poll::Pending
+                    },
+                )
+                .map(|r| {
+                    r.map_err(|err| match err {
+                        TrySendTimeoutError::Disconnected(msg) => SendError(msg),
+                        _ => unreachable!(),
+                    })
+                })
+        } else {
+            // Nothing to do
             Poll::Ready(Ok(()))
         }
     }
@@ -279,6 +298,12 @@ impl<'a, T> SendSink<'a, T> {
     /// Returns whether the SendSinks are belong to the same channel.
     pub fn same_channel(&self, other: &Self) -> bool {
         self.sender().same_channel(other.sender())
+    }
+}
+
+impl<'a, T> Debug for SendSink<'a, T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SendSink").finish()
     }
 }
 
@@ -365,8 +390,16 @@ impl<'a, T> RecvFut<'a, T> {
             let hook: Arc<Hook<T, dyn Signal>> = hook;
             let mut chan = wait_lock(&self.receiver.shared.chan);
             // We'd like to use `Arc::ptr_eq` here but it doesn't seem to work consistently with wide pointers?
-            chan.waiting.retain(|s| s.signal().as_ptr() != hook.signal().as_ptr());
-            if hook.signal().as_any().downcast_ref::<AsyncSignal>().unwrap().woken.load(Ordering::SeqCst) {
+            chan.waiting
+                .retain(|s| s.signal().as_ptr() != hook.signal().as_ptr());
+            if hook
+                .signal()
+                .as_any()
+                .downcast_ref::<AsyncSignal>()
+                .unwrap()
+                .woken
+                .load(Ordering::SeqCst)
+            {
                 // If this signal has been fired, but we're being dropped (and so not listening to it),
                 // pass the signal on to another receiver
                 chan.try_wake_receiver_if_pending();
@@ -415,21 +448,24 @@ impl<'a, T> RecvFut<'a, T> {
             let mut_self = self.get_mut();
             let (shared, this_hook) = (&mut_self.receiver.shared, &mut mut_self.hook);
 
-            shared.recv(
-                // should_block
-                true,
-                // make_signal
-                || Hook::trigger(AsyncSignal::new(cx, stream)),
-                // do_block
-                |hook| {
-                    *this_hook = Some(hook);
-                    Poll::Pending
-                },
-            )
-                .map(|r| r.map_err(|err| match err {
-                    TryRecvTimeoutError::Disconnected => RecvError::Disconnected,
-                    _ => unreachable!(),
-                }))
+            shared
+                .recv(
+                    // should_block
+                    true,
+                    // make_signal
+                    || Hook::trigger(AsyncSignal::new(cx, stream)),
+                    // do_block
+                    |hook| {
+                        *this_hook = Some(hook);
+                        Poll::Pending
+                    },
+                )
+                .map(|r| {
+                    r.map_err(|err| match err {
+                        TryRecvTimeoutError::Disconnected => RecvError::Disconnected,
+                        _ => unreachable!(),
+                    })
+                })
         }
     }
 
@@ -456,6 +492,12 @@ impl<'a, T> RecvFut<'a, T> {
     /// See [`Receiver::capacity`].
     pub fn capacity(&self) -> Option<usize> {
         self.receiver.capacity()
+    }
+}
+
+impl<'a, T> Debug for RecvFut<'a, T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RecvFut").finish()
     }
 }
 
@@ -516,6 +558,12 @@ impl<'a, T> RecvStream<'a, T> {
     }
 }
 
+impl<'a, T> Debug for RecvStream<'a, T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RecvStream").finish()
+    }
+}
+
 impl<'a, T> Clone for RecvStream<'a, T> {
     fn clone(&self) -> RecvStream<'a, T> {
         RecvStream(RecvFut::new(self.0.receiver.clone()))
@@ -526,7 +574,8 @@ impl<'a, T> Stream for RecvStream<'a, T> {
     type Item = T;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        match Pin::new(&mut self.0).poll_inner(cx, true) { // stream = true
+        match Pin::new(&mut self.0).poll_inner(cx, true) {
+            // stream = true
             Poll::Pending => Poll::Pending,
             Poll::Ready(item) => {
                 self.0.reset_hook();

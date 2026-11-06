@@ -1,11 +1,11 @@
-use std::cmp::Ordering;
-
 use super::parser::Cursor;
 use super::timezone::{LocalTimeType, SECONDS_PER_WEEK};
 use super::{
-    Error, CUMUL_DAY_IN_MONTHS_NORMAL_YEAR, DAYS_PER_WEEK, DAY_IN_MONTHS_NORMAL_YEAR,
+    CUMUL_DAY_IN_MONTHS_NORMAL_YEAR, DAY_IN_MONTHS_NORMAL_YEAR, DAYS_PER_WEEK, Error,
     SECONDS_PER_DAY,
 };
+use crate::{Datelike, NaiveDateTime};
+use std::cmp::Ordering;
 
 /// Transition rule
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -20,7 +20,6 @@ impl TransitionRule {
     /// Parse a POSIX TZ string containing a time zone description, as described in [the POSIX documentation of the `TZ` environment variable](https://pubs.opengroup.org/onlinepubs/9699919799/basedefs/V1_chap08.html).
     ///
     /// TZ string extensions from [RFC 8536](https://datatracker.ietf.org/doc/html/rfc8536#section-3.3.1) may be used.
-    ///
     pub(super) fn from_tz_string(
         tz_string: &[u8],
         use_string_extensions: bool,
@@ -40,7 +39,7 @@ impl TransitionRule {
             Some(&b',') => std_offset - 3600,
             Some(_) => parse_offset(&mut cursor)?,
             None => {
-                return Err(Error::UnsupportedTzString("DST start and end rules must be provided"))
+                return Err(Error::UnsupportedTzString("DST start and end rules must be provided"));
             }
         };
 
@@ -82,15 +81,14 @@ impl TransitionRule {
     /// Find the local time type associated to the transition rule at the specified Unix time in seconds
     pub(super) fn find_local_time_type_from_local(
         &self,
-        local_time: i64,
-        year: i32,
-    ) -> Result<crate::LocalResult<LocalTimeType>, Error> {
+        local_time: NaiveDateTime,
+    ) -> Result<crate::MappedLocalTime<LocalTimeType>, Error> {
         match self {
             TransitionRule::Fixed(local_time_type) => {
-                Ok(crate::LocalResult::Single(*local_time_type))
+                Ok(crate::MappedLocalTime::Single(*local_time_type))
             }
             TransitionRule::Alternate(alternate_time) => {
-                alternate_time.find_local_time_type_from_local(local_time, year)
+                alternate_time.find_local_time_type_from_local(local_time)
             }
         }
     }
@@ -157,7 +155,7 @@ impl AlternateTime {
         };
 
         // Check if the current year is valid for the following computations
-        if !(i32::min_value() + 2 <= current_year && current_year <= i32::max_value() - 2) {
+        if !(i32::MIN + 2..=i32::MAX - 2).contains(&current_year) {
             return Err(Error::OutOfRange("out of range date time"));
         }
 
@@ -221,22 +219,16 @@ impl AlternateTime {
                 }
             };
 
-        if is_dst {
-            Ok(&self.dst)
-        } else {
-            Ok(&self.std)
-        }
+        if is_dst { Ok(&self.dst) } else { Ok(&self.std) }
     }
 
     fn find_local_time_type_from_local(
         &self,
-        local_time: i64,
-        current_year: i32,
-    ) -> Result<crate::LocalResult<LocalTimeType>, Error> {
-        // Check if the current year is valid for the following computations
-        if !(i32::min_value() + 2 <= current_year && current_year <= i32::max_value() - 2) {
-            return Err(Error::OutOfRange("out of range date time"));
-        }
+        local_time: NaiveDateTime,
+    ) -> Result<crate::MappedLocalTime<LocalTimeType>, Error> {
+        // Year must be between i32::MIN + 2 and i32::MAX - 2, year in NaiveDate is always smaller.
+        let current_year = local_time.year();
+        let local_time = local_time.and_utc().timestamp();
 
         let dst_start_transition_start =
             self.dst_start.unix_time(current_year, 0) + i64::from(self.dst_start_time);
@@ -253,7 +245,7 @@ impl AlternateTime {
             - i64::from(self.dst.ut_offset);
 
         match self.std.ut_offset.cmp(&self.dst.ut_offset) {
-            Ordering::Equal => Ok(crate::LocalResult::Single(self.std)),
+            Ordering::Equal => Ok(crate::MappedLocalTime::Single(self.std)),
             Ordering::Less => {
                 if self.dst_start.transition_date(current_year).0
                     < self.dst_end.transition_date(current_year).0
@@ -261,41 +253,41 @@ impl AlternateTime {
                     // northern hemisphere
                     // For the DST END transition, the `start` happens at a later timestamp than the `end`.
                     if local_time <= dst_start_transition_start {
-                        Ok(crate::LocalResult::Single(self.std))
+                        Ok(crate::MappedLocalTime::Single(self.std))
                     } else if local_time > dst_start_transition_start
                         && local_time < dst_start_transition_end
                     {
-                        Ok(crate::LocalResult::None)
+                        Ok(crate::MappedLocalTime::None)
                     } else if local_time >= dst_start_transition_end
                         && local_time < dst_end_transition_end
                     {
-                        Ok(crate::LocalResult::Single(self.dst))
+                        Ok(crate::MappedLocalTime::Single(self.dst))
                     } else if local_time >= dst_end_transition_end
                         && local_time <= dst_end_transition_start
                     {
-                        Ok(crate::LocalResult::Ambiguous(self.std, self.dst))
+                        Ok(crate::MappedLocalTime::Ambiguous(self.std, self.dst))
                     } else {
-                        Ok(crate::LocalResult::Single(self.std))
+                        Ok(crate::MappedLocalTime::Single(self.std))
                     }
                 } else {
                     // southern hemisphere regular DST
                     // For the DST END transition, the `start` happens at a later timestamp than the `end`.
                     if local_time < dst_end_transition_end {
-                        Ok(crate::LocalResult::Single(self.dst))
+                        Ok(crate::MappedLocalTime::Single(self.dst))
                     } else if local_time >= dst_end_transition_end
                         && local_time <= dst_end_transition_start
                     {
-                        Ok(crate::LocalResult::Ambiguous(self.std, self.dst))
+                        Ok(crate::MappedLocalTime::Ambiguous(self.std, self.dst))
                     } else if local_time > dst_end_transition_end
                         && local_time < dst_start_transition_start
                     {
-                        Ok(crate::LocalResult::Single(self.std))
+                        Ok(crate::MappedLocalTime::Single(self.std))
                     } else if local_time >= dst_start_transition_start
                         && local_time < dst_start_transition_end
                     {
-                        Ok(crate::LocalResult::None)
+                        Ok(crate::MappedLocalTime::None)
                     } else {
-                        Ok(crate::LocalResult::Single(self.dst))
+                        Ok(crate::MappedLocalTime::Single(self.dst))
                     }
                 }
             }
@@ -306,41 +298,41 @@ impl AlternateTime {
                     // southern hemisphere reverse DST
                     // For the DST END transition, the `start` happens at a later timestamp than the `end`.
                     if local_time < dst_start_transition_end {
-                        Ok(crate::LocalResult::Single(self.std))
+                        Ok(crate::MappedLocalTime::Single(self.std))
                     } else if local_time >= dst_start_transition_end
                         && local_time <= dst_start_transition_start
                     {
-                        Ok(crate::LocalResult::Ambiguous(self.dst, self.std))
+                        Ok(crate::MappedLocalTime::Ambiguous(self.dst, self.std))
                     } else if local_time > dst_start_transition_start
                         && local_time < dst_end_transition_start
                     {
-                        Ok(crate::LocalResult::Single(self.dst))
+                        Ok(crate::MappedLocalTime::Single(self.dst))
                     } else if local_time >= dst_end_transition_start
                         && local_time < dst_end_transition_end
                     {
-                        Ok(crate::LocalResult::None)
+                        Ok(crate::MappedLocalTime::None)
                     } else {
-                        Ok(crate::LocalResult::Single(self.std))
+                        Ok(crate::MappedLocalTime::Single(self.std))
                     }
                 } else {
                     // northern hemisphere reverse DST
                     // For the DST END transition, the `start` happens at a later timestamp than the `end`.
                     if local_time <= dst_end_transition_start {
-                        Ok(crate::LocalResult::Single(self.dst))
+                        Ok(crate::MappedLocalTime::Single(self.dst))
                     } else if local_time > dst_end_transition_start
                         && local_time < dst_end_transition_end
                     {
-                        Ok(crate::LocalResult::None)
+                        Ok(crate::MappedLocalTime::None)
                     } else if local_time >= dst_end_transition_end
                         && local_time < dst_start_transition_end
                     {
-                        Ok(crate::LocalResult::Single(self.std))
+                        Ok(crate::MappedLocalTime::Single(self.std))
                     } else if local_time >= dst_start_transition_end
                         && local_time <= dst_start_transition_start
                     {
-                        Ok(crate::LocalResult::Ambiguous(self.dst, self.std))
+                        Ok(crate::MappedLocalTime::Ambiguous(self.dst, self.std))
                     } else {
-                        Ok(crate::LocalResult::Single(self.dst))
+                        Ok(crate::MappedLocalTime::Single(self.dst))
                     }
                 }
             }
@@ -365,7 +357,8 @@ fn parse_name<'a>(cursor: &mut Cursor<'a>) -> Result<&'a [u8], Error> {
 fn parse_offset(cursor: &mut Cursor) -> Result<i32, Error> {
     let (sign, hour, minute, second) = parse_signed_hhmmss(cursor)?;
 
-    if !(0..=24).contains(&hour) {
+    // The offset must fit in a `FixedOffset`, which is limited to ±23:59:59.
+    if !(0..=23).contains(&hour) {
         return Err(Error::InvalidTzString("invalid offset hour"));
     }
     if !(0..=59).contains(&minute) {
@@ -590,11 +583,11 @@ impl RuleDay {
 
                 let week_day_of_first_month_day =
                     (4 + days_since_unix_epoch(year, month, 1)).rem_euclid(DAYS_PER_WEEK);
-                let first_week_day_occurence_in_month =
+                let first_week_day_occurrence_in_month =
                     1 + (week_day as i64 - week_day_of_first_month_day).rem_euclid(DAYS_PER_WEEK);
 
                 let mut month_day =
-                    first_week_day_occurence_in_month + (week as i64 - 1) * DAYS_PER_WEEK;
+                    first_week_day_occurrence_in_month + (week as i64 - 1) * DAYS_PER_WEEK;
                 if month_day > day_in_month {
                     month_day -= DAYS_PER_WEEK
                 }
@@ -688,7 +681,7 @@ impl UtcDateTime {
         let minute = (remaining_seconds / SECONDS_PER_MINUTE) % MINUTES_PER_HOUR;
         let second = remaining_seconds % SECONDS_PER_MINUTE;
 
-        let year = match year >= i32::min_value() as i64 && year <= i32::max_value() as i64 {
+        let year = match year >= i32::MIN as i64 && year <= i32::MAX as i64 {
             true => year as i32,
             false => return Err(Error::OutOfRange("i64 is out of range for i32")),
         };
@@ -852,6 +845,16 @@ mod tests {
             .into()
         );
         Ok(())
+    }
+
+    #[test]
+    fn test_invalid_offset_hour() {
+        // An offset of 24 hours does not fit in a `FixedOffset` and must be rejected.
+        assert!(TransitionRule::from_tz_string(b"FOO24", false).is_err());
+        assert!(TransitionRule::from_tz_string(b"FOO+24", false).is_err());
+        assert!(TransitionRule::from_tz_string(b"FOO-24", false).is_err());
+        // The maximum valid offset is 23:59:59.
+        assert!(TransitionRule::from_tz_string(b"FOO23:59:59", false).is_ok());
     }
 
     #[test]

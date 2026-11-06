@@ -1,6 +1,6 @@
 # event-listener
 
-[![Build](https://github.com/smol-rs/event-listener/workflows/Build%20and%20test/badge.svg)](
+[![Build](https://github.com/smol-rs/event-listener/workflows/CI/badge.svg)](
 https://github.com/smol-rs/event-listener/actions)
 [![License](https://img.shields.io/badge/license-Apache--2.0_OR_MIT-blue.svg)](
 https://github.com/smol-rs/event-listener)
@@ -17,7 +17,7 @@ You can use this crate to turn non-blocking data structures into async or blocki
 structures. See a [simple mutex] implementation that exposes an async and a blocking interface
 for acquiring locks.
 
-[eventcounts]: http://www.1024cores.net/home/lock-free-algorithms/eventcounts
+[eventcounts]: https://www.1024cores.net/home/lock-free-algorithms/eventcounts
 [simple mutex]: ./examples/mutex.rs
 
 ## Examples
@@ -70,12 +70,32 @@ loop {
 }
 ```
 
+## Features
+
+- The `std` feature (enabled by default) enables the use of the Rust standard library. Disable it
+  for `no_std` support.
+
+- The `critical-section` feature enables usage of the [`critical-section`] crate to enable
+  a more efficient implementation of `event-listener` for `no_std` platforms.
+
+- The `portable-atomic` feature enables the use of the [`portable-atomic`] crate to provide
+   atomic operations on platforms that don't support them.
+
+ In production environments, at least one of `std` or `critical-section` should be
+ enabled. This ensures that the internal locking mechanism has a critical section of some
+ kind to fall back on. Otherwise, it falls back to a spinlock implementation. This
+ implementation is [dangerous] to rely on.
+
+[`critical-section`]: https://crates.io/crates/critical-section
+[`portable-atomic`]: https://crates.io/crates/portable-atomic
+[dangerous]: https://matklad.github.io/2020/01/02/spinlocks-considered-harmful.html
+
 ## License
 
 Licensed under either of
 
- * Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
- * MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
+ * Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or https://www.apache.org/licenses/LICENSE-2.0)
+ * MIT license ([LICENSE-MIT](LICENSE-MIT) or https://opensource.org/licenses/MIT)
 
 at your option.
 

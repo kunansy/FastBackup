@@ -10,20 +10,26 @@
 # See Cargo.toml.orig for the original contents.
 
 [package]
-edition = "2018"
+edition = "2021"
 name = "yup-oauth2"
-version = "8.3.2"
+version = "12.1.2"
 authors = [
     "Sebastian Thiel <byronimo@gmail.com>",
     "Lewin Bormann <lbo@spheniscida.de>",
 ]
+build = false
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
 description = "An oauth2 implementation, providing the 'device', 'service account' and 'installed' authorization flows"
 documentation = "https://docs.rs/yup-oauth2/"
 readme = "README.md"
 keywords = [
     "google",
     "oauth",
-    "v2",
+    "oauth2",
 ]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/dermesser/yup-oauth2"
@@ -32,66 +38,115 @@ repository = "https://github.com/dermesser/yup-oauth2"
 all-features = true
 rustdoc-args = [
     "--cfg",
-    "yup_oauth2_docsrs",
+    "docsrs",
+]
+
+[features]
+__rustls = ["dep:rustls"]
+aws-lc-rs = [
+    "rustls/aws_lc_rs",
+    "hyper-rustls?/aws-lc-rs",
+]
+default = [
+    "hyper-rustls",
+    "service-account",
+    "ring",
+]
+hyper-rustls = [
+    "dep:hyper-rustls",
+    "__rustls",
+]
+hyper-tls = [
+    "dep:hyper-tls",
+    "__rustls",
+]
+ring = [
+    "rustls/ring",
+    "hyper-rustls?/ring",
+]
+service-account = []
+service_account = ["service-account"]
+
+[lib]
+name = "yup_oauth2"
+path = "src/lib.rs"
+
+[[example]]
+name = "custom_client"
+path = "examples/custom_client.rs"
+required-features = [
+    "hyper-rustls",
+    "service-account",
+    "ring",
 ]
 
 [[example]]
 name = "custom_flow"
-required-features = ["hyper-rustls"]
-
-[[example]]
-name = "custom_client"
+path = "examples/custom_flow.rs"
 required-features = [
     "hyper-rustls",
-    "service_account",
+    "ring",
 ]
 
 [[example]]
 name = "custom_storage"
-required-features = ["hyper-rustls"]
+path = "examples/custom_storage.rs"
+required-features = [
+    "hyper-rustls",
+    "ring",
+]
+
+[[example]]
+name = "service_account_impersonation"
+path = "examples/service_account_impersonation.rs"
 
 [[test]]
 name = "tests"
+path = "tests/tests.rs"
 required-features = [
     "hyper-rustls",
-    "service_account",
+    "service-account",
 ]
-
-[dependencies.anyhow]
-version = "1.0.38"
 
 [dependencies.async-trait]
 version = "^0.1"
 
 [dependencies.base64]
-version = "0.21"
-
-[dependencies.futures]
-version = "0.3"
+version = "0.22"
 
 [dependencies.http]
-version = "0.2"
+version = "1"
+
+[dependencies.http-body-util]
+version = "0.1"
 
 [dependencies.hyper]
-version = "0.14"
-features = [
-    "client",
-    "server",
-    "tcp",
-    "http2",
-]
+version = "1"
 
 [dependencies.hyper-rustls]
-version = "0.24"
-features = ["http2"]
+version = "0.27"
+features = [
+    "http1",
+    "http2",
+    "rustls-native-certs",
+    "native-tokio",
+]
 optional = true
+default-features = false
 
 [dependencies.hyper-tls]
-version = "0.5.0"
+version = "0.6.0"
 optional = true
 
-[dependencies.itertools]
-version = "0.12"
+[dependencies.hyper-util]
+version = "0.1.5"
+features = [
+    "client-legacy",
+    "server-auto",
+    "http1",
+    "http2",
+    "server-graceful",
+]
 
 [dependencies.log]
 version = "0.4"
@@ -100,12 +155,10 @@ version = "0.4"
 version = "2"
 
 [dependencies.rustls]
-version = "^0.22.1"
+version = "^0.23"
+features = ["std"]
 optional = true
-
-[dependencies.rustls-pemfile]
-version = "1.0.1"
-optional = true
+default-features = false
 
 [dependencies.seahash]
 version = "4"
@@ -116,6 +169,9 @@ features = ["derive"]
 
 [dependencies.serde_json]
 version = "1.0"
+
+[dependencies.thiserror]
+version = "2.0"
 
 [dependencies.time]
 version = "0.3.7"
@@ -137,9 +193,6 @@ features = [
     "rt",
 ]
 
-[dependencies.tower-service]
-version = "^0.3.1"
-
 [dependencies.url]
 version = "2"
 
@@ -147,24 +200,13 @@ version = "2"
 version = "0.10"
 
 [dev-dependencies.httptest]
-version = "0.15"
+version = "0.16"
 
 [dev-dependencies.hyper-rustls]
-version = "0.24"
+version = "0.27"
 
 [dev-dependencies.tempfile]
 version = "3.1"
 
 [dev-dependencies.webbrowser]
 version = "0.8"
-
-[features]
-default = [
-    "hyper-rustls",
-    "service_account",
-]
-service_account = [
-    "hyper-rustls",
-    "rustls",
-    "rustls-pemfile",
-]

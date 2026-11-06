@@ -1,8 +1,9 @@
 use crate::sync::oneshot;
 
-use futures::future::poll_fn;
 use loom::future::block_on;
 use loom::thread;
+use std::future::poll_fn;
+use std::pin::Pin;
 use std::task::Poll::{Pending, Ready};
 
 #[test]
@@ -87,7 +88,6 @@ fn recv_closed() {
 // TODO: Move this into `oneshot` proper.
 
 use std::future::Future;
-use std::pin::Pin;
 use std::task::{Context, Poll};
 
 struct OnClose<'a> {
@@ -136,5 +136,78 @@ fn changing_tx_task() {
             // Previous task parked, use a new task...
             block_on(OnClose::new(&mut tx));
         }
+    });
+}
+
+#[test]
+fn checking_tx_send_ok_not_drop() {
+    use std::borrow::Borrow;
+    use std::cell::Cell;
+
+    loom::thread_local! {
+        static IS_RX: Cell<bool> = Cell::new(true);
+    }
+
+    struct Msg;
+
+    impl Drop for Msg {
+        fn drop(&mut self) {
+            IS_RX.with(|is_rx: &Cell<_>| {
+                // On `tx.send(msg)` returning `Err(msg)`,
+                // we call `std::mem::forget(msg)`, so that
+                // `drop` is not expected to be called in the
+                // tx thread.
+                assert!(is_rx.get());
+            });
+        }
+    }
+
+    let mut builder = loom::model::Builder::new();
+    builder.preemption_bound = Some(2);
+
+    builder.check(|| {
+        let (tx, rx) = oneshot::channel();
+
+        // tx thread
+        let tx_thread_join_handle = thread::spawn(move || {
+            // Ensure that `Msg::drop` in this thread will see is_rx == false
+            IS_RX.with(|is_rx: &Cell<_>| {
+                is_rx.set(false);
+            });
+            if let Err(msg) = tx.send(Msg) {
+                std::mem::forget(msg);
+            }
+        });
+
+        // main thread is the rx thread
+        drop(rx);
+
+        tx_thread_join_handle.join().unwrap();
+    });
+}
+
+#[test]
+fn drop_rx_after_poll() {
+    // Test that rx_task is properly deallocated when the receiver is dropped
+    // after being polled (which sets rx_task), while the sender is concurrently
+    // trying to send.
+    loom::model(|| {
+        let (tx, mut rx) = oneshot::channel::<i32>();
+
+        // Poll once to set rx_task before entering the parallel part of the
+        // test.
+        let _ = block_on(poll_fn(|cx| {
+            let _ = Pin::new(&mut rx).poll(cx);
+            Ready(())
+        }));
+
+        // Drop the receiver concurrently with the sender trying to send.
+        let rx_thread = thread::spawn(move || {
+            drop(rx);
+        });
+
+        let _ = tx.send(1);
+
+        rx_thread.join().unwrap();
     });
 }

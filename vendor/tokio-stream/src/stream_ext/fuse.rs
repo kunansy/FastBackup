@@ -1,8 +1,9 @@
 use crate::Stream;
 
+use futures_core::FusedStream;
 use pin_project_lite::pin_project;
 use std::pin::Pin;
-use std::task::{Context, Poll};
+use std::task::{ready, Context, Poll};
 
 pin_project! {
     /// Stream returned by [`fuse()`][super::StreamExt::fuse].
@@ -49,5 +50,14 @@ where
             Some(ref stream) => stream.size_hint(),
             None => (0, Some(0)),
         }
+    }
+}
+
+impl<T> FusedStream for Fuse<T>
+where
+    T: Stream,
+{
+    fn is_terminated(&self) -> bool {
+        self.stream.is_none()
     }
 }

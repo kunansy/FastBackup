@@ -9,6 +9,7 @@ https://docs.rs/flume)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](
 https://github.com/zesterer/flume)
 ![actions-badge](https://github.com/zesterer/flume/workflows/Rust/badge.svg?branch=master)
+[![Casual Maintenance Intended](https://casuallymaintained.tech/badge.svg)](https://casuallymaintained.tech/)
 
 ```rust
 use std::thread;
@@ -76,6 +77,15 @@ The following graph is from the `crossbeam-channel` benchmark suite.
 Tests were performed on an AMD Ryzen 7 3700x with 8/16 cores running Linux kernel 5.11.2 with the bfq scheduler.
 
 # <img src="misc/benchmarks.png" alt="Flume benchmarks (crossbeam benchmark suite)" width="100%"/>
+
+## Status
+
+Flume is in [casual maintenance mode](https://casuallymaintained.tech/). This means that the crate will continue to
+receive critical security and bug fixes, but heavy feature development has stopped. If you're looking for a new
+feature, you're welcome to open a PR and I'll try to find the time to review it.
+
+Flume has been great fun to work on, and I'm happy that it's being used successfully by so many people. I consider the
+crate to be largely feature-complete at this point (bar small details here and there).
 
 ## License
 

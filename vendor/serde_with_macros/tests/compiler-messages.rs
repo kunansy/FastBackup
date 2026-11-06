@@ -1,4 +1,5 @@
-#[cfg_attr(tarpaulin, ignore)]
+//! Test Cases
+
 // The error messages are different on beta and nightly, thus breaking the test.
 #[rustversion::attr(beta, ignore)]
 #[rustversion::attr(nightly, ignore)]

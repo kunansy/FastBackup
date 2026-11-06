@@ -1,7 +1,5 @@
-use crate::response::{IntoResponse, Response};
-use axum_core::extract::{FromRequest, FromRequestParts};
+use axum_core::extract::{FromRequest, FromRequestParts, Request};
 use futures_util::future::BoxFuture;
-use http::Request;
 use std::{
     any::type_name,
     convert::Infallible,
@@ -11,18 +9,24 @@ use std::{
     pin::Pin,
     task::{Context, Poll},
 };
-use tower::{util::BoxCloneService, ServiceBuilder};
+use tower::util::BoxCloneSyncService;
 use tower_layer::Layer;
 use tower_service::Service;
+
+use crate::{
+    response::{IntoResponse, Response},
+    util::MapIntoResponse,
+};
 
 /// Create a middleware from an async function.
 ///
 /// `from_fn` requires the function given to
 ///
 /// 1. Be an `async fn`.
-/// 2. Take one or more [extractors] as the first arguments.
-/// 3. Take [`Next<B>`](Next) as the final argument.
-/// 4. Return something that implements [`IntoResponse`].
+/// 2. Take zero or more [`FromRequestParts`] extractors.
+/// 3. Take exactly one [`FromRequest`] extractor as the second to last argument.
+/// 4. Take [`Next`](Next) as the last argument.
+/// 5. Return something that implements [`IntoResponse`].
 ///
 /// Note that this function doesn't support extracting [`State`]. For that, use [`from_fn_with_state`].
 ///
@@ -31,15 +35,16 @@ use tower_service::Service;
 /// ```rust
 /// use axum::{
 ///     Router,
-///     http::{self, Request},
+///     http,
 ///     routing::get,
 ///     response::Response,
 ///     middleware::{self, Next},
+///     extract::Request,
 /// };
 ///
-/// async fn my_middleware<B>(
-///     request: Request<B>,
-///     next: Next<B>,
+/// async fn my_middleware(
+///     request: Request,
+///     next: Next,
 /// ) -> Response {
 ///     // do something with `request`...
 ///
@@ -61,30 +66,36 @@ use tower_service::Service;
 /// ```rust
 /// use axum::{
 ///     Router,
-///     extract::TypedHeader,
-///     http::StatusCode,
-///     headers::authorization::{Authorization, Bearer},
-///     http::Request,
+///     extract::Request,
+///     http::{StatusCode, HeaderMap},
 ///     middleware::{self, Next},
 ///     response::Response,
 ///     routing::get,
 /// };
 ///
-/// async fn auth<B>(
-///     // run the `TypedHeader` extractor
-///     TypedHeader(auth): TypedHeader<Authorization<Bearer>>,
+/// async fn auth(
+///     // run the `HeaderMap` extractor
+///     headers: HeaderMap,
 ///     // you can also add more extractors here but the last
 ///     // extractor must implement `FromRequest` which
 ///     // `Request` does
-///     request: Request<B>,
-///     next: Next<B>,
+///     request: Request,
+///     next: Next,
 /// ) -> Result<Response, StatusCode> {
-///     if token_is_valid(auth.token()) {
-///         let response = next.run(request).await;
-///         Ok(response)
-///     } else {
-///         Err(StatusCode::UNAUTHORIZED)
+///     match get_token(&headers) {
+///         Some(token) if token_is_valid(token) => {
+///             let response = next.run(request).await;
+///             Ok(response)
+///         }
+///         _ => {
+///             Err(StatusCode::UNAUTHORIZED)
+///         }
 ///     }
+/// }
+///
+/// fn get_token(headers: &HeaderMap) -> Option<&str> {
+///     // ...
+///     # None
 /// }
 ///
 /// fn token_is_valid(token: &str) -> bool {
@@ -106,6 +117,8 @@ pub fn from_fn<F, T>(f: F) -> FromFnLayer<F, (), T> {
 
 /// Create a middleware from an async function with the given state.
 ///
+/// For the requirements for the function supplied see [`from_fn`].
+///
 /// See [`State`](crate::extract::State) for more details about accessing state.
 ///
 /// # Example
@@ -113,23 +126,23 @@ pub fn from_fn<F, T>(f: F) -> FromFnLayer<F, (), T> {
 /// ```rust
 /// use axum::{
 ///     Router,
-///     http::{Request, StatusCode},
+///     http::StatusCode,
 ///     routing::get,
 ///     response::{IntoResponse, Response},
 ///     middleware::{self, Next},
-///     extract::State,
+///     extract::{Request, State},
 /// };
 ///
 /// #[derive(Clone)]
 /// struct AppState { /* ... */ }
 ///
-/// async fn my_middleware<B>(
+/// async fn my_middleware(
 ///     State(state): State<AppState>,
 ///     // you can add more extractors here but the last
 ///     // extractor must implement `FromRequest` which
 ///     // `Request` does
-///     request: Request<B>,
-///     next: Next<B>,
+///     request: Request,
+///     next: Next,
 /// ) -> Response {
 ///     // do something with `request`...
 ///
@@ -160,7 +173,7 @@ pub fn from_fn_with_state<F, S, T>(state: S, f: F) -> FromFnLayer<F, S, T> {
 ///
 /// [`tower::Layer`] is used to apply middleware to [`Router`](crate::Router)'s.
 ///
-/// Created with [`from_fn`]. See that function for more details.
+/// Created with [`from_fn`] or [`from_fn_with_state`]. See those functions for more details.
 #[must_use]
 pub struct FromFnLayer<F, S, T> {
     f: F,
@@ -214,7 +227,7 @@ where
 
 /// A middleware created from an async function.
 ///
-/// Created with [`from_fn`]. See that function for more details.
+/// Created with [`from_fn`] or [`from_fn_with_state`]. See those functions for more details.
 pub struct FromFn<F, S, I, T> {
     f: F,
     inner: I,
@@ -243,20 +256,20 @@ macro_rules! impl_service {
         [$($ty:ident),*], $last:ident
     ) => {
         #[allow(non_snake_case, unused_mut)]
-        impl<F, Fut, Out, S, I, B, $($ty,)* $last> Service<Request<B>> for FromFn<F, S, I, ($($ty,)* $last,)>
+        impl<F, Fut, Out, S, I, $($ty,)* $last> Service<Request> for FromFn<F, S, I, ($($ty,)* $last,)>
         where
-            F: FnMut($($ty,)* $last, Next<B>) -> Fut + Clone + Send + 'static,
+            F: FnMut($($ty,)* $last, Next) -> Fut + Clone + Send + 'static,
             $( $ty: FromRequestParts<S> + Send, )*
-            $last: FromRequest<S, B> + Send,
+            $last: FromRequest<S> + Send,
             Fut: Future<Output = Out> + Send + 'static,
             Out: IntoResponse + 'static,
-            I: Service<Request<B>, Error = Infallible>
+            I: Service<Request, Error = Infallible>
                 + Clone
                 + Send
+                + Sync
                 + 'static,
             I::Response: IntoResponse,
             I::Future: Send + 'static,
-            B: Send + 'static,
             S: Clone + Send + Sync + 'static,
         {
             type Response = Response;
@@ -267,16 +280,15 @@ macro_rules! impl_service {
                 self.inner.poll_ready(cx)
             }
 
-            fn call(&mut self, req: Request<B>) -> Self::Future {
+            fn call(&mut self, req: Request) -> Self::Future {
                 let not_ready_inner = self.inner.clone();
                 let ready_inner = std::mem::replace(&mut self.inner, not_ready_inner);
 
                 let mut f = self.f.clone();
                 let state = self.state.clone();
+                let (mut parts, body) = req.into_parts();
 
                 let future = Box::pin(async move {
-                    let (mut parts, body) = req.into_parts();
-
                     $(
                         let $ty = match $ty::from_request_parts(&mut parts, &state).await {
                             Ok(value) => value,
@@ -291,10 +303,7 @@ macro_rules! impl_service {
                         Err(rejection) => return rejection.into_response(),
                     };
 
-                    let inner = ServiceBuilder::new()
-                        .boxed_clone()
-                        .map_response(IntoResponse::into_response)
-                        .service(ready_inner);
+                    let inner = BoxCloneSyncService::new(MapIntoResponse::new(ready_inner));
                     let next = Next { inner };
 
                     f($($ty,)* $last, next).await.into_response()
@@ -325,13 +334,14 @@ where
 }
 
 /// The remainder of a middleware stack, including the handler.
-pub struct Next<B> {
-    inner: BoxCloneService<Request<B>, Response, Infallible>,
+#[derive(Debug, Clone)]
+pub struct Next {
+    inner: BoxCloneSyncService<Request, Response, Infallible>,
 }
 
-impl<B> Next<B> {
+impl Next {
     /// Execute the remaining middleware stack.
-    pub async fn run(mut self, req: Request<B>) -> Response {
+    pub async fn run(mut self, req: Request) -> Response {
         match self.inner.call(req).await {
             Ok(res) => res,
             Err(err) => match err {},
@@ -339,23 +349,7 @@ impl<B> Next<B> {
     }
 }
 
-impl<B> fmt::Debug for Next<B> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FromFnLayer")
-            .field("inner", &self.inner)
-            .finish()
-    }
-}
-
-impl<B> Clone for Next<B> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-        }
-    }
-}
-
-impl<B> Service<Request<B>> for Next<B> {
+impl Service<Request> for Next {
     type Response = Response;
     type Error = Infallible;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
@@ -364,7 +358,7 @@ impl<B> Service<Request<B>> for Next<B> {
         self.inner.poll_ready(cx)
     }
 
-    fn call(&mut self, req: Request<B>) -> Self::Future {
+    fn call(&mut self, req: Request) -> Self::Future {
         self.inner.call(req)
     }
 }
@@ -393,11 +387,12 @@ mod tests {
     use super::*;
     use crate::{body::Body, routing::get, Router};
     use http::{HeaderMap, StatusCode};
+    use http_body_util::BodyExt;
     use tower::ServiceExt;
 
     #[crate::test]
     async fn basic() {
-        async fn insert_header<B>(mut req: Request<B>, next: Next<B>) -> impl IntoResponse {
+        async fn insert_header(mut req: Request, next: Next) -> impl IntoResponse {
             req.headers_mut()
                 .insert("x-axum-test", "ok".parse().unwrap());
 
@@ -417,7 +412,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
-        let body = hyper::body::to_bytes(res).await.unwrap();
+        let body = res.collect().await.unwrap().to_bytes();
         assert_eq!(&body[..], b"ok");
     }
 }

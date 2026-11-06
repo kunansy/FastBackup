@@ -1,12 +1,38 @@
-use bencher::{benchmark_group, benchmark_main, Bencher};
+/*
+ *
+ * Copyright 2025 gRPC authors.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to
+ * deal in the Software without restriction, including without limitation the
+ * rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+ * sell copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+ * IN THE SOFTWARE.
+ *
+ */
+
+#![allow(missing_docs)]
+
+use bencher::{Bencher, benchmark_group, benchmark_main};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
-use http_body::Body;
+use http_body::{Body, Frame, SizeHint};
 use std::{
     fmt::{Error, Formatter},
     pin::Pin,
     task::{Context, Poll},
 };
-use tonic::{codec::DecodeBuf, codec::Decoder, Status, Streaming};
+use tonic::{Status, Streaming, codec::DecodeBuf, codec::Decoder};
 
 macro_rules! bench {
     ($name:ident, $message_size:expr, $chunk_size:expr, $message_count:expr) => {
@@ -45,11 +71,11 @@ struct MockBody {
 }
 
 impl MockBody {
-    pub fn new(data: Bytes, chunk_size: usize) -> Self {
+    fn new(data: Bytes, chunk_size: usize) -> Self {
         MockBody { data, chunk_size }
     }
 
-    pub fn len(&self) -> usize {
+    fn len(&self) -> usize {
         self.data.len()
     }
 }
@@ -58,23 +84,24 @@ impl Body for MockBody {
     type Data = Bytes;
     type Error = Status;
 
-    fn poll_data(
+    fn poll_frame(
         mut self: Pin<&mut Self>,
-        _: &mut Context<'_>,
-    ) -> Poll<Option<Result<Self::Data, Self::Error>>> {
+        _cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         if self.data.has_remaining() {
             let split = std::cmp::min(self.chunk_size, self.data.remaining());
-            Poll::Ready(Some(Ok(self.data.split_to(split))))
+            Poll::Ready(Some(Ok(Frame::data(self.data.split_to(split)))))
         } else {
             Poll::Ready(None)
         }
     }
 
-    fn poll_trailers(
-        self: Pin<&mut Self>,
-        _: &mut Context<'_>,
-    ) -> Poll<Result<Option<http::HeaderMap>, Self::Error>> {
-        Poll::Ready(Ok(None))
+    fn is_end_stream(&self) -> bool {
+        self.data.is_empty()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        SizeHint::with_exact(self.data.len() as u64)
     }
 }
 

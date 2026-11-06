@@ -1,23 +1,38 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![doc = include_str!("lib.md")]
 
+#[cfg(all(
+    feature = "sqlite-preupdate-hook",
+    not(any(feature = "sqlite", feature = "sqlite-unbundled"))
+))]
+compile_error!(
+    "sqlite-preupdate-hook requires either 'sqlite' or 'sqlite-unbundled' to be enabled"
+);
+
 pub use sqlx_core::acquire::Acquire;
 pub use sqlx_core::arguments::{Arguments, IntoArguments};
 pub use sqlx_core::column::Column;
 pub use sqlx_core::column::ColumnIndex;
+pub use sqlx_core::column::ColumnOrigin;
 pub use sqlx_core::connection::{ConnectOptions, Connection};
 pub use sqlx_core::database::{self, Database};
 pub use sqlx_core::describe::Describe;
 pub use sqlx_core::executor::{Execute, Executor};
 pub use sqlx_core::from_row::FromRow;
 pub use sqlx_core::pool::{self, Pool};
+#[doc(hidden)]
+pub use sqlx_core::query::query_with_result as __query_with_result;
 pub use sqlx_core::query::{query, query_with};
 pub use sqlx_core::query_as::{query_as, query_as_with};
 pub use sqlx_core::query_builder::{self, QueryBuilder};
+#[doc(hidden)]
+pub use sqlx_core::query_scalar::query_scalar_with_result as __query_scalar_with_result;
 pub use sqlx_core::query_scalar::{query_scalar, query_scalar_with};
+pub use sqlx_core::raw_sql::{raw_sql, RawSql};
 pub use sqlx_core::row::Row;
+pub use sqlx_core::sql_str::{AssertSqlSafe, SqlSafeStr, SqlStr};
 pub use sqlx_core::statement::Statement;
-pub use sqlx_core::transaction::{Transaction, TransactionManager};
+pub use sqlx_core::transaction::Transaction;
 pub use sqlx_core::type_info::TypeInfo;
 pub use sqlx_core::types::Type;
 pub use sqlx_core::value::{Value, ValueRef};
@@ -32,28 +47,34 @@ pub use sqlx_core::migrate;
 #[cfg(feature = "mysql")]
 #[cfg_attr(docsrs, doc(cfg(feature = "mysql")))]
 #[doc(inline)]
-pub use sqlx_mysql::{self as mysql, MySql, MySqlConnection, MySqlExecutor, MySqlPool};
+pub use sqlx_mysql::{
+    self as mysql, MySql, MySqlConnection, MySqlExecutor, MySqlPool, MySqlTransaction,
+};
 
 #[cfg(feature = "postgres")]
 #[cfg_attr(docsrs, doc(cfg(feature = "postgres")))]
 #[doc(inline)]
-pub use sqlx_postgres::{self as postgres, PgConnection, PgExecutor, PgPool, Postgres};
+pub use sqlx_postgres::{
+    self as postgres, PgConnection, PgExecutor, PgPool, PgTransaction, Postgres,
+};
 
-#[cfg(feature = "sqlite")]
-#[cfg_attr(docsrs, doc(cfg(feature = "sqlite")))]
+#[cfg(feature = "_sqlite")]
+#[cfg_attr(docsrs, doc(cfg(feature = "_sqlite")))]
 #[doc(inline)]
-pub use sqlx_sqlite::{self as sqlite, Sqlite, SqliteConnection, SqliteExecutor, SqlitePool};
+pub use sqlx_sqlite::{
+    self as sqlite, Sqlite, SqliteConnection, SqliteExecutor, SqlitePool, SqliteTransaction,
+};
 
 #[cfg(feature = "any")]
 #[cfg_attr(docsrs, doc(cfg(feature = "any")))]
 pub use crate::any::{reexports::*, Any, AnyExecutor};
 
-#[cfg(feature = "macros")]
+#[cfg(any(feature = "derive", feature = "macros"))]
 #[doc(hidden)]
 pub extern crate sqlx_macros;
 
 // derives
-#[cfg(feature = "macros")]
+#[cfg(feature = "derive")]
 #[doc(hidden)]
 pub use sqlx_macros::{FromRow, Type};
 
@@ -81,6 +102,10 @@ mod macros;
 #[doc(hidden)]
 pub mod ty_match;
 
+#[cfg(any(feature = "derive", feature = "macros"))]
+#[doc(hidden)]
+pub mod spec_error;
+
 #[doc(hidden)]
 pub use sqlx_core::rt as __rt;
 
@@ -92,7 +117,6 @@ pub use sqlx_core::rt as __rt;
 ///  * Postgres: [postgres::types]
 ///  * MySQL: [mysql::types]
 ///  * SQLite: [sqlite::types]
-///  * MSSQL: [mssql::types]
 ///
 /// Any external types that have had [`Type`] implemented for, are re-exported in this module
 /// for convenience as downstream users need to use a compatible version of the external crate
@@ -102,27 +126,27 @@ pub use sqlx_core::rt as __rt;
 pub mod types {
     pub use sqlx_core::types::*;
 
-    #[cfg(feature = "macros")]
+    #[cfg(feature = "derive")]
     #[doc(hidden)]
     pub use sqlx_macros::Type;
 }
 
-/// Provides [`Encode`](encode::Encode) for encoding values for the database.
+/// Provides [`Encode`] for encoding values for the database.
 pub mod encode {
     pub use sqlx_core::encode::{Encode, IsNull};
 
-    #[cfg(feature = "macros")]
+    #[cfg(feature = "derive")]
     #[doc(hidden)]
     pub use sqlx_macros::Encode;
 }
 
 pub use self::encode::Encode;
 
-/// Provides [`Decode`](decode::Decode) for decoding values from the database.
+/// Provides [`Decode`] for decoding values from the database.
 pub mod decode {
     pub use sqlx_core::decode::Decode;
 
-    #[cfg(feature = "macros")]
+    #[cfg(feature = "derive")]
     #[doc(hidden)]
     pub use sqlx_macros::Decode;
 }
@@ -150,3 +174,36 @@ pub mod prelude {
     pub use super::Statement;
     pub use super::Type;
 }
+
+#[cfg(feature = "_unstable-docs")]
+pub use sqlx_core::config as _config;
+
+// NOTE: APIs exported in this module are SemVer-exempt.
+#[doc(hidden)]
+pub mod _unstable {
+    pub use sqlx_core::config;
+}
+
+#[doc(hidden)]
+#[cfg_attr(
+    all(feature = "chrono", feature = "time"),
+    deprecated = "SQLx has both `chrono` and `time` features enabled, \
+        which presents an ambiguity when the `query!()` macros are mapping date/time types. \
+        The `query!()` macros prefer types from `time` by default, \
+        but this behavior should not be relied upon; \
+        to resolve the ambiguity, we recommend specifying the preferred crate in a `sqlx.toml` file: \
+        https://docs.rs/sqlx/latest/sqlx/config/macros/PreferredCrates.html#field.date_time"
+)]
+pub fn warn_on_ambiguous_inferred_date_time_crate() {}
+
+#[doc(hidden)]
+#[cfg_attr(
+    all(feature = "bigdecimal", feature = "rust_decimal"),
+    deprecated = "SQLx has both `bigdecimal` and `rust_decimal` features enabled, \
+        which presents an ambiguity when the `query!()` macros are mapping `NUMERIC`. \
+        The `query!()` macros prefer `bigdecimal::BigDecimal` by default, \
+        but this behavior should not be relied upon; \
+        to resolve the ambiguity, we recommend specifying the preferred crate in a `sqlx.toml` file: \
+        https://docs.rs/sqlx/latest/sqlx/config/macros/PreferredCrates.html#field.numeric"
+)]
+pub fn warn_on_ambiguous_inferred_numeric_crate() {}

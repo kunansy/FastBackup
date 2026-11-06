@@ -1,6 +1,6 @@
+use crate::runtime::metrics::ScheduleLatencyContext;
 use crate::runtime::{Config, MetricsBatch, WorkerMetrics};
 
-use std::cmp;
 use std::time::{Duration, Instant};
 
 /// Per-worker statistics. This is used for both tuning the scheduler and
@@ -62,15 +62,9 @@ impl Stats {
         // As of Rust 1.45, casts from f64 -> u32 are saturating, which is fine here.
         let tasks_per_interval = (TARGET_GLOBAL_QUEUE_INTERVAL / self.task_poll_time_ewma) as u32;
 
-        cmp::max(
-            // We don't want to return less than 2 as that would result in the
-            // global queue always getting checked first.
-            2,
-            cmp::min(
-                MAX_TASKS_POLLED_PER_GLOBAL_QUEUE_INTERVAL,
-                tasks_per_interval,
-            ),
-        )
+        // If we are using self-tuning, we don't want to return less than 2 as that would result in the
+        // global queue always getting checked first.
+        tasks_per_interval.clamp(2, MAX_TASKS_POLLED_PER_GLOBAL_QUEUE_INTERVAL)
     }
 
     pub(crate) fn submit(&mut self, to: &WorkerMetrics) {
@@ -79,6 +73,10 @@ impl Stats {
 
     pub(crate) fn about_to_park(&mut self) {
         self.batch.about_to_park();
+    }
+
+    pub(crate) fn unparked(&mut self) {
+        self.batch.unparked();
     }
 
     pub(crate) fn inc_local_schedule_count(&mut self) {
@@ -116,10 +114,21 @@ impl Stats {
         }
     }
 
-    pub(crate) fn start_poll(&mut self) {
-        self.batch.start_poll();
+    pub(crate) fn start_poll(
+        &mut self,
+        schedule_latency_context: Option<ScheduleLatencyContext>,
+    ) -> Option<Duration> {
+        let task_schedule_latency = self.batch.start_poll(schedule_latency_context);
 
         self.tasks_polled_in_batch += 1;
+        task_schedule_latency
+    }
+
+    pub(crate) fn record_schedule_latency(
+        &mut self,
+        schedule_latency_context: Option<ScheduleLatencyContext>,
+    ) -> Option<Duration> {
+        self.batch.record_schedule_latency(schedule_latency_context)
     }
 
     pub(crate) fn end_poll(&mut self) {

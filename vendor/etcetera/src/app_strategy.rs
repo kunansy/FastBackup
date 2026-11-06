@@ -4,6 +4,8 @@ use std::ffi::OsStr;
 use std::path::Path;
 use std::path::PathBuf;
 
+use crate::HomeDirError;
+
 /// The arguments to the creator method of an [`AppStrategy`](trait.AppStrategy.html).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct AppStrategyArgs {
@@ -27,15 +29,18 @@ impl AppStrategyArgs {
     ///     app_name: "Frobnicator Plus".to_string(),
     /// };
     ///
-    /// assert_eq!(strategy_args.bundle_id().replace(' ', ""), "org.acmecorp.FrobnicatorPlus".to_string());
+    /// assert_eq!(strategy_args.bundle_id(), "org.acme-corp.Frobnicator-Plus".to_string());
     /// ```
     pub fn bundle_id(&self) -> String {
-        format!(
-            "{}.{}.{}",
-            self.top_level_domain,
-            self.author.to_lowercase(),
-            self.app_name
-        )
+        let author = self.author.to_lowercase().replace(' ', "-");
+        let app_name = self.app_name.replace(' ', "-");
+        let mut parts = vec![
+            self.top_level_domain.as_str(),
+            author.as_str(),
+            app_name.as_str(),
+        ];
+        parts.retain(|part| !part.is_empty());
+        parts.join(".")
     }
 
     /// Returns a ‘unixy’ version of the application’s name, akin to what would usually be used as a binary name.
@@ -70,13 +75,7 @@ macro_rules! in_dir_method {
 }
 
 /// Allows applications to retrieve the paths of configuration, data, and cache directories specifically for them.
-pub trait AppStrategy: Sized {
-    /// The error type returned by `new`.
-    type CreationError: std::error::Error;
-
-    /// The constructor requires access to some basic information about your application.
-    fn new(args: AppStrategyArgs) -> Result<Self, Self::CreationError>;
-
+pub trait AppStrategy {
     /// Gets the home directory of the current user.
     fn home_dir(&self) -> &Path;
 
@@ -90,11 +89,19 @@ pub trait AppStrategy: Sized {
     fn cache_dir(&self) -> PathBuf;
 
     /// Gets the state directory for your application.
-    /// State directory may not to exist for all conventions.
+    /// Currently, only the [`Xdg`](struct.Xdg.html) & [`Unix`](struct.Unix.html) strategies support
+    /// this.
     fn state_dir(&self) -> Option<PathBuf>;
 
     /// Gets the runtime directory for your application.
-    /// Runtime directory may not to exist for all conventions.
+    /// Currently, only the [`Xdg`](struct.Xdg.html) & [`Unix`](struct.Unix.html) strategies support
+    /// this.
+    ///
+    /// Note: The [XDG Base Directory Specification](spec) places additional requirements on this
+    /// directory related to ownership, permissions, and persistence. This library does not check
+    /// these requirements.
+    ///
+    /// [spec]: https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html
     fn runtime_dir(&self) -> Option<PathBuf>;
 
     /// Constructs a path inside your application’s configuration directory to which a path of your choice has been appended.
@@ -113,11 +120,17 @@ pub trait AppStrategy: Sized {
     }
 
     /// Constructs a path inside your application’s state directory to which a path of your choice has been appended.
+    ///
+    /// Currently, this is only implemented for the [`Xdg`](struct.Xdg.html) strategy.
     fn in_state_dir<P: AsRef<OsStr>>(&self, path: P) -> Option<PathBuf> {
         in_dir_method!(opt: self, path, state_dir)
     }
 
     /// Constructs a path inside your application’s runtime directory to which a path of your choice has been appended.
+    /// Currently, only the [`Xdg`](struct.Xdg.html) & [`Unix`](struct.Unix.html) strategies support
+    /// this.
+    ///
+    /// See the note in [`runtime_dir`](#method.runtime_dir) for more information.
     fn in_runtime_dir<P: AsRef<OsStr>>(&self, path: P) -> Option<PathBuf> {
         in_dir_method!(opt: self, path, runtime_dir)
     }
@@ -128,18 +141,14 @@ macro_rules! create_strategies {
         /// Returns the current OS’s native [`AppStrategy`](trait.AppStrategy.html).
         /// This uses the [`Windows`](struct.Windows.html) strategy on Windows, [`Apple`](struct.Apple.html) on macOS & iOS, and [`Xdg`](struct.Xdg.html) everywhere else.
         /// This is the convention used by most GUI applications.
-        pub fn choose_native_strategy(
-            args: AppStrategyArgs,
-        ) -> Result<$native, <$native as AppStrategy>::CreationError> {
+        pub fn choose_native_strategy(args: AppStrategyArgs) -> Result<$native, HomeDirError> {
             <$native>::new(args)
         }
 
         /// Returns the current OS’s default [`AppStrategy`](trait.AppStrategy.html).
         /// This uses the [`Windows`](struct.Windows.html) strategy on Windows, and [`Xdg`](struct.Xdg.html) everywhere else.
         /// This is the convention used by most CLI applications.
-        pub fn choose_app_strategy(
-            args: AppStrategyArgs,
-        ) -> Result<$app, <$app as AppStrategy>::CreationError> {
+        pub fn choose_app_strategy(args: AppStrategyArgs) -> Result<$app, HomeDirError> {
             <$app>::new(args)
         }
     };

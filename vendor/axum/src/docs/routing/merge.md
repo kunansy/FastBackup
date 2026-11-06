@@ -1,4 +1,4 @@
-Merge two routers into one.
+Merge the paths and fallbacks of two routers into a single [`Router`].
 
 This is useful for breaking apps into smaller pieces and combining them
 into one.
@@ -16,7 +16,7 @@ use axum::{
 // define some routes separately
 let user_routes = Router::new()
     .route("/users", get(users_list))
-    .route("/users/:id", get(users_show));
+    .route("/users/{id}", get(users_show));
 
 let team_routes = Router::new()
     .route("/teams", get(teams_list));
@@ -30,11 +30,9 @@ let app = Router::new()
 
 // Our app now accepts
 // - GET /users
-// - GET /users/:id
+// - GET /users/{id}
 // - GET /teams
-# async {
-# hyper::Server::bind(&"".parse().unwrap()).serve(app.into_make_service()).await.unwrap();
-# };
+# let _: Router = app;
 ```
 
 # Merging routers with state
@@ -70,6 +68,11 @@ let app = Router::new()
     .with_state(OuterState {});
 # let _: axum::Router = app;
 ```
+
+# Merging routers with fallbacks
+
+When combining [`Router`]s with this method, the [fallback](Router::fallback) is also merged.
+However only one of the routers can have a fallback.
 
 # Panics
 

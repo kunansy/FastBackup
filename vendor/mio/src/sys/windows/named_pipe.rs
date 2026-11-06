@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::{fmt, mem, slice};
 
 use windows_sys::Win32::Foundation::{
-    ERROR_BROKEN_PIPE, ERROR_IO_INCOMPLETE, ERROR_IO_PENDING, ERROR_NO_DATA, ERROR_PIPE_CONNECTED,
+    ERROR_BROKEN_PIPE, ERROR_IO_PENDING, ERROR_MORE_DATA, ERROR_NO_DATA, ERROR_PIPE_CONNECTED,
     ERROR_PIPE_LISTENING, HANDLE, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Storage::FileSystem::{
@@ -84,12 +84,21 @@ struct Inner {
     connect: Overlapped,
     read: Overlapped,
     write: Overlapped,
+    event: Overlapped,
     // END NOTE.
     handle: Handle,
     connecting: AtomicBool,
     io: Mutex<Io>,
     pool: Mutex<BufferPool>,
 }
+
+// SAFETY: `Handles`s are, in general, not thread-safe. However, we only used `Handle`s for
+// resources that are thread-safe in `Inner`.
+unsafe impl Send for Inner {}
+
+// SAFETY: `Handles`s are, in general, not thread-safe. However, we only used `Handle`s for
+// resources that are thread-safe in `Inner`.
+unsafe impl Sync for Inner {}
 
 impl Inner {
     /// Converts a pointer to `Inner.connect` to a pointer to `Inner`.
@@ -110,8 +119,14 @@ impl Inner {
 
     /// Same as [`ptr_from_conn_overlapped`] but for `Inner.write`.
     unsafe fn ptr_from_write_overlapped(ptr: *mut OVERLAPPED) -> *const Inner {
-        // `read` is after `connect: Overlapped` and `read: Overlapped`.
+        // `write` is after `connect: Overlapped` and `read: Overlapped`.
         (ptr as *mut Overlapped).wrapping_sub(2) as *const Inner
+    }
+
+    /// Same as [`ptr_from_conn_overlapped`] but for `Inner.event`.
+    unsafe fn ptr_from_event_overlapped(ptr: *mut OVERLAPPED) -> *const Inner {
+        // `event` is after `connect: Overlapped`, `read: Overlapped`, and `write: Overlapped`.
+        (ptr as *mut Overlapped).wrapping_sub(3) as *const Inner
     }
 
     /// Issue a connection request with the specified overlapped operation.
@@ -166,8 +181,8 @@ impl Inner {
     ///
     /// If the operation succeeds immediately, `Ok(Some(n))` is returned where
     /// `n` is the number of bytes read. If an asynchronous operation is
-    /// enqueued, then `Ok(None)` is returned. Otherwise if an error occurred
-    /// it is returned.
+    /// enqueued, then `Ok(None)` is returned. `Err` means the operation was not
+    /// submitted and no completion packet will be queued.
     ///
     /// When this operation completes (or if it completes immediately), another
     /// mechanism must be used to learn how many bytes were transferred (such as
@@ -198,20 +213,21 @@ impl Inner {
         );
         if res == 0 {
             let err = io::Error::last_os_error();
-            if err.raw_os_error() != Some(ERROR_IO_PENDING as i32) {
+            // `ERROR_MORE_DATA` is only a warning (the message didn't fit), the
+            // read still completes through its packet.
+            if err.raw_os_error() != Some(ERROR_IO_PENDING as i32)
+                && err.raw_os_error() != Some(ERROR_MORE_DATA as i32)
+            {
                 return Err(err);
             }
+            // Submitted: a completion packet will be queued, so this must not return Err.
+            return Ok(None);
         }
 
+        // Completed, but the completion still delivers the outcome, so this must not return Err.
         let mut bytes = 0;
-        let res = GetOverlappedResult(self.handle.raw(), overlapped, &mut bytes, 0);
-        if res == 0 {
-            let err = io::Error::last_os_error();
-            if err.raw_os_error() == Some(ERROR_IO_INCOMPLETE as i32) {
-                Ok(None)
-            } else {
-                Err(err)
-            }
+        if GetOverlappedResult(self.handle.raw(), overlapped, &mut bytes, 0) == 0 {
+            Ok(None)
         } else {
             Ok(Some(bytes as usize))
         }
@@ -226,8 +242,8 @@ impl Inner {
     ///
     /// If the operation succeeds immediately, `Ok(Some(n))` is returned where
     /// `n` is the number of bytes written. If an asynchronous operation is
-    /// enqueued, then `Ok(None)` is returned. Otherwise if an error occurred
-    /// it is returned.
+    /// enqueued, then `Ok(None)` is returned. `Err` means the operation was not
+    /// submitted and no completion packet will be queued.
     ///
     /// When this operation completes (or if it completes immediately), another
     /// mechanism must be used to learn how many bytes were transferred (such as
@@ -261,17 +277,14 @@ impl Inner {
             if err.raw_os_error() != Some(ERROR_IO_PENDING as i32) {
                 return Err(err);
             }
+            // Submitted: a completion packet will be queued, so this must not return Err.
+            return Ok(None);
         }
 
+        // Completed, but the completion still delivers the outcome, so this must not return Err.
         let mut bytes = 0;
-        let res = GetOverlappedResult(self.handle.raw(), overlapped, &mut bytes, 0);
-        if res == 0 {
-            let err = io::Error::last_os_error();
-            if err.raw_os_error() == Some(ERROR_IO_INCOMPLETE as i32) {
-                Ok(None)
-            } else {
-                Err(err)
-            }
+        if GetOverlappedResult(self.handle.raw(), overlapped, &mut bytes, 0) == 0 {
+            Ok(None)
         } else {
             Ok(Some(bytes as usize))
         }
@@ -408,6 +421,12 @@ impl NamedPipe {
             return Err(would_block());
         }
 
+        // If `connect_overlapped` does not complete immediately then we need
+        // to pass a reference to `self.inner` to the completion handler.
+        // We need to increase the reference count here because `connect_done`
+        // could be called as soon as we call `connect_overlapped`.
+        let inner_for_completion = self.inner.clone();
+
         // Now that we've flagged ourselves in the connecting state, issue the
         // connection attempt. Afterwards interpret the return value and set
         // internal state accordingly.
@@ -433,7 +452,7 @@ impl NamedPipe {
             // `connect_done` function will "reify" this forgotten pointer to
             // drop the refcount on the other side.
             Ok(false) => {
-                mem::forget(self.inner.clone());
+                mem::forget(inner_for_completion);
                 Err(would_block())
             }
 
@@ -478,6 +497,7 @@ impl FromRawHandle for NamedPipe {
                 connecting: AtomicBool::new(false),
                 read: Overlapped::new(read_done),
                 write: Overlapped::new(write_done),
+                event: Overlapped::new(event_done),
                 io: Mutex::new(Io {
                     cp: None,
                     token: None,
@@ -586,7 +606,7 @@ impl<'a> Write for &'a NamedPipe {
         match Inner::maybe_schedule_write(&self.inner, owned_buf, 0, &mut io)? {
             // Some bytes are written immediately
             Some(n) => Ok(n),
-            // Write operation is anqueued for whole buffer
+            // Write operation is enqueued for whole buffer
             None => Ok(buf.len()),
         }
     }
@@ -689,10 +709,12 @@ impl Inner {
     /// Schedules a read to happen in the background, executing an overlapped
     /// operation.
     ///
-    /// This function returns `true` if a normal error happens or if the read
-    /// is scheduled in the background. If the pipe is no longer connected
-    /// (ERROR_PIPE_LISTENING) then `false` is returned and no read is
-    /// scheduled.
+    /// This function returns `true` if either of the following conditions are met:
+    /// * A normal error happens
+    /// * The read is scheduled in the background
+    ///
+    /// If the pipe is no longer connected (ERROR_PIPE_LISTENING) then `false` is
+    /// returned and no read is scheduled.
     fn schedule_read(me: &Arc<Inner>, io: &mut Io, events: Option<&mut Vec<Event>>) -> bool {
         // Check to see if a read is already scheduled/completed
         match io.read {
@@ -724,7 +746,7 @@ impl Inner {
             // out the error.
             Err(e) => {
                 io.read = State::Err(e);
-                io.notify_readable(events);
+                io.notify_readable(me, events);
                 true
             }
         }
@@ -787,7 +809,7 @@ impl Inner {
             Ok(None) => (),
             Err(e) => {
                 io.write = State::Err(e);
-                io.notify_writable(events);
+                io.notify_writable(me, events);
             }
         }
     }
@@ -797,7 +819,7 @@ impl Inner {
         #[allow(clippy::needless_option_as_deref)]
         if Inner::schedule_read(me, &mut io, events.as_deref_mut()) {
             if let State::None = io.write {
-                io.notify_writable(events);
+                io.notify_writable(me, events);
             }
         }
     }
@@ -856,16 +878,36 @@ fn read_done(status: &OVERLAPPED_ENTRY, events: Option<&mut Vec<Event>>) {
     // `schedule_read` above.
     let me = unsafe { Arc::from_raw(Inner::ptr_from_read_overlapped(status.overlapped())) };
 
-    // Move from the `Pending` to `Ok` state.
     let mut io = me.io.lock().unwrap();
     let mut buf = match mem::replace(&mut io.read, State::None) {
+        State::Ok(buf, pos) => {
+            io.read = State::Ok(buf, pos);
+
+            // Flag readiness that we have undelivered data to be read.
+            io.notify_readable(&me, events);
+            return;
+        }
         State::Pending(buf, _) => buf,
-        _ => unreachable!(),
+        State::Err(e) => {
+            io.read = State::Err(e);
+
+            // Flag readiness that the error needs to be delivered.
+            io.notify_readable(&me, events);
+            return;
+        }
+        State::None => unreachable!(),
     };
     unsafe {
         match me.result(status.overlapped()) {
             Ok(n) => {
                 debug_assert_eq!(status.bytes_transferred() as usize, n);
+                buf.set_len(status.bytes_transferred() as usize);
+                io.read = State::Ok(buf, 0);
+            }
+            // This is non-fatal. The buffer was simply too small for the entire message.
+            // Deliver the bytes we got, and if the caller wants to read the rest of the
+            // message, they can initiate another read.
+            Err(e) if e.raw_os_error() == Some(ERROR_MORE_DATA as i32) => {
                 buf.set_len(status.bytes_transferred() as usize);
                 io.read = State::Ok(buf, 0);
             }
@@ -877,7 +919,7 @@ fn read_done(status: &OVERLAPPED_ENTRY, events: Option<&mut Vec<Event>>) {
     }
 
     // Flag our readiness that we've got data.
-    io.notify_readable(events);
+    io.notify_readable(&me, events);
 }
 
 fn write_done(status: &OVERLAPPED_ENTRY, events: Option<&mut Vec<Event>>) {
@@ -893,13 +935,21 @@ fn write_done(status: &OVERLAPPED_ENTRY, events: Option<&mut Vec<Event>>) {
     let mut io = me.io.lock().unwrap();
     let (buf, pos) = match mem::replace(&mut io.write, State::None) {
         // `Ok` here means, that the operation was completed immediately
-        // `bytes_transferred` is already reported to a client
+        // `bytes_transferred` is already reported to a client.
+        // Hence, we don't reset the state to `Ok` but leave it in `None`.
         State::Ok(..) => {
-            io.notify_writable(events);
+            io.notify_writable(&me, events);
             return;
         }
         State::Pending(buf, pos) => (buf, pos),
-        _ => unreachable!(),
+        State::Err(e) => {
+            io.write = State::Err(e);
+
+            // Flag readiness that the error needs to be delivered.
+            io.notify_writable(&me, events);
+            return;
+        }
+        State::None => unreachable!(),
     };
 
     unsafe {
@@ -909,7 +959,7 @@ fn write_done(status: &OVERLAPPED_ENTRY, events: Option<&mut Vec<Event>>) {
                 let new_pos = pos + (status.bytes_transferred() as usize);
                 if new_pos == buf.len() {
                     me.put_buffer(buf);
-                    io.notify_writable(events);
+                    io.notify_writable(&me, events);
                 } else {
                     Inner::schedule_write(&me, buf, new_pos, &mut io, events);
                 }
@@ -917,8 +967,34 @@ fn write_done(status: &OVERLAPPED_ENTRY, events: Option<&mut Vec<Event>>) {
             Err(e) => {
                 debug_assert_eq!(status.bytes_transferred(), 0);
                 io.write = State::Err(e);
-                io.notify_writable(events);
+                io.notify_writable(&me, events);
             }
+        }
+    }
+}
+
+fn event_done(status: &OVERLAPPED_ENTRY, events: Option<&mut Vec<Event>>) {
+    let status = CompletionStatus::from_entry(status);
+
+    // Acquire the `Arc<Inner>`. Note that we should be guaranteed that
+    // the refcount is available to us due to the `mem::forget` in
+    // `schedule_write` above.
+    let me = unsafe { Arc::from_raw(Inner::ptr_from_event_overlapped(status.overlapped())) };
+
+    let io = me.io.lock().unwrap();
+
+    // Make sure the I/O handle is still registered with the selector
+    if io.token.is_some() {
+        // This method is also called during `Selector::drop` to perform
+        // cleanup. In this case, `events` is `None` and we don't need to track
+        // the event.
+        if let Some(events) = events {
+            let mut ev = Event::from_completion_status(&status);
+            // Reverse the `.data` alteration done in `schedule_event`. This
+            // alteration was done so the selector recognized the event as one from
+            // a named pipe.
+            ev.data >>= 1;
+            events.push(ev);
         }
     }
 }
@@ -938,7 +1014,7 @@ impl Io {
         }
     }
 
-    fn notify_readable(&self, events: Option<&mut Vec<Event>>) {
+    fn notify_readable(&self, me: &Arc<Inner>, events: Option<&mut Vec<Event>>) {
         if let Some(token) = self.token {
             let mut ev = Event::new(token);
             ev.set_readable();
@@ -946,12 +1022,12 @@ impl Io {
             if let Some(events) = events {
                 events.push(ev);
             } else {
-                let _ = self.cp.as_ref().unwrap().post(ev.to_completion_status());
+                self.schedule_event(me, ev);
             }
         }
     }
 
-    fn notify_writable(&self, events: Option<&mut Vec<Event>>) {
+    fn notify_writable(&self, me: &Arc<Inner>, events: Option<&mut Vec<Event>>) {
         if let Some(token) = self.token {
             let mut ev = Event::new(token);
             ev.set_writable();
@@ -959,7 +1035,32 @@ impl Io {
             if let Some(events) = events {
                 events.push(ev);
             } else {
-                let _ = self.cp.as_ref().unwrap().post(ev.to_completion_status());
+                self.schedule_event(me, ev);
+            }
+        }
+    }
+
+    fn schedule_event(&self, me: &Arc<Inner>, mut event: Event) {
+        // Alter the token so that the selector will identify the IOCP event as
+        // one for a named pipe. This will be reversed in `event_done`
+        //
+        // `data` for named pipes is an auto-incrementing counter. Because
+        // `data` is `u64` we do not risk losing the most-significant bit
+        // (unless a user creates 2^62 named pipes during the lifetime of the
+        // process).
+        event.data <<= 1;
+        event.data += 1;
+
+        let completion_status =
+            event.to_completion_status_with_overlapped(me.event.as_ptr() as *mut _);
+
+        match self.cp.as_ref().unwrap().post(completion_status) {
+            Ok(_) => {
+                // Increase the ref count of `Inner` for the completion event.
+                mem::forget(me.clone());
+            }
+            Err(_) => {
+                // Nothing to do here
             }
         }
     }

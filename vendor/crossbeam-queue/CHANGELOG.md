@@ -1,3 +1,16 @@
+# Version 0.3.14
+
+- Use 64-bit index on 32-bit platforms if 64-bit atomic is available. (#1321)
+- Update MSRV policy to support 1 year instead of 6 months to meet rayon's MSRV policy. (#1284)
+
+# Version 0.3.13
+
+- Add `push_mut` and `pop_mut` to `ArrayQueue` and `SegQueue`. (#1191)
+
+# Version 0.3.12
+
+- Fix stack overflow when pushing large value to `SegQueue`. (#1146, #1147, #1159)
+
 # Version 0.3.11
 
 - Remove dependency on `cfg-if`. (#1072)

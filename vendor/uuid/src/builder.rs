@@ -54,7 +54,7 @@ impl Uuid {
     ///
     /// # References
     ///
-    /// * [Nil UUID in RFC4122](https://tools.ietf.org/html/rfc4122.html#section-4.1.7)
+    /// * [Nil UUID in RFC 9562](https://www.ietf.org/rfc/rfc9562.html#section-5.9)
     ///
     /// # Examples
     ///
@@ -80,7 +80,7 @@ impl Uuid {
     ///
     /// # References
     ///
-    /// * [Max UUID in Draft RFC: New UUID Formats, Version 4](https://datatracker.ietf.org/doc/html/draft-peabody-dispatch-new-uuid-format-04#section-5.4)
+    /// * [Max UUID in RFC 9562](https://www.ietf.org/rfc/rfc9562.html#section-5.10)
     ///
     /// # Examples
     ///
@@ -204,24 +204,7 @@ impl Uuid {
     /// );
     /// ```
     pub const fn from_u128(v: u128) -> Self {
-        Uuid::from_bytes([
-            (v >> 120) as u8,
-            (v >> 112) as u8,
-            (v >> 104) as u8,
-            (v >> 96) as u8,
-            (v >> 88) as u8,
-            (v >> 80) as u8,
-            (v >> 72) as u8,
-            (v >> 64) as u8,
-            (v >> 56) as u8,
-            (v >> 48) as u8,
-            (v >> 40) as u8,
-            (v >> 32) as u8,
-            (v >> 24) as u8,
-            (v >> 16) as u8,
-            (v >> 8) as u8,
-            v as u8,
-        ])
+        Uuid::from_bytes(v.to_be_bytes())
     }
 
     /// Creates a UUID from a 128bit value in little-endian order.
@@ -247,24 +230,7 @@ impl Uuid {
     /// );
     /// ```
     pub const fn from_u128_le(v: u128) -> Self {
-        Uuid::from_bytes([
-            v as u8,
-            (v >> 8) as u8,
-            (v >> 16) as u8,
-            (v >> 24) as u8,
-            (v >> 32) as u8,
-            (v >> 40) as u8,
-            (v >> 48) as u8,
-            (v >> 56) as u8,
-            (v >> 64) as u8,
-            (v >> 72) as u8,
-            (v >> 80) as u8,
-            (v >> 88) as u8,
-            (v >> 96) as u8,
-            (v >> 104) as u8,
-            (v >> 112) as u8,
-            (v >> 120) as u8,
-        ])
+        Uuid::from_bytes(v.to_le_bytes())
     }
 
     /// Creates a UUID from two 64bit values.
@@ -286,24 +252,7 @@ impl Uuid {
     /// );
     /// ```
     pub const fn from_u64_pair(high_bits: u64, low_bits: u64) -> Self {
-        Uuid::from_bytes([
-            (high_bits >> 56) as u8,
-            (high_bits >> 48) as u8,
-            (high_bits >> 40) as u8,
-            (high_bits >> 32) as u8,
-            (high_bits >> 24) as u8,
-            (high_bits >> 16) as u8,
-            (high_bits >> 8) as u8,
-            high_bits as u8,
-            (low_bits >> 56) as u8,
-            (low_bits >> 48) as u8,
-            (low_bits >> 40) as u8,
-            (low_bits >> 32) as u8,
-            (low_bits >> 24) as u8,
-            (low_bits >> 16) as u8,
-            (low_bits >> 8) as u8,
-            low_bits as u8,
-        ])
+        Uuid::from_u128(((high_bits as u128) << 64) | low_bits as u128)
     }
 
     /// Creates a UUID using the supplied bytes.
@@ -337,7 +286,7 @@ impl Uuid {
     /// ```
     pub fn from_slice(b: &[u8]) -> Result<Uuid, Error> {
         if b.len() != 16 {
-            return Err(Error(ErrorKind::ByteLength { len: b.len() }));
+            return Err(Error(ErrorKind::ParseByteLength { len: b.len() }));
         }
 
         let mut bytes: Bytes = [0; 16];
@@ -378,7 +327,7 @@ impl Uuid {
     /// ```
     pub fn from_slice_le(b: &[u8]) -> Result<Uuid, Error> {
         if b.len() != 16 {
-            return Err(Error(ErrorKind::ByteLength { len: b.len() }));
+            return Err(Error(ErrorKind::ParseByteLength { len: b.len() }));
         }
 
         let mut bytes: Bytes = [0; 16];
@@ -418,7 +367,8 @@ impl Uuid {
 
     /// Creates a UUID using the supplied bytes in little endian order.
     ///
-    /// The individual fields encoded in the buffer will be flipped.
+    /// Note that ordering is applied to each _field_, rather than to the bytes as a whole.
+    /// This ordering is compatible with Microsoft's mixed endian GUID format.
     ///
     /// # Examples
     ///
@@ -482,8 +432,7 @@ impl Uuid {
     /// ```
     #[inline]
     pub fn from_bytes_ref(bytes: &Bytes) -> &Uuid {
-        // SAFETY: `Bytes` and `Uuid` have the same ABI
-        unsafe { &*(bytes as *const Bytes as *const Uuid) }
+        unsafe_transmute_ref!(bytes)
     }
 
     // NOTE: There is no `from_u128_ref` because in little-endian
@@ -549,9 +498,11 @@ impl Builder {
         Builder(Uuid::from_bytes_le(b))
     }
 
-    /// Creates a `Builder` for a version 1 UUID using the supplied timestamp and node ID.
-    pub const fn from_rfc4122_timestamp(ticks: u64, counter: u16, node_id: &[u8; 6]) -> Self {
-        Builder(timestamp::encode_rfc4122_timestamp(ticks, counter, node_id))
+    /// Creates a `Builder` for a version 1 UUID using the supplied timestamp, counter, and node ID.
+    pub const fn from_gregorian_timestamp(ticks: u64, counter: u16, node_id: &[u8; 6]) -> Self {
+        Builder(timestamp::encode_gregorian_timestamp(
+            ticks, counter, node_id,
+        ))
     }
 
     /// Creates a `Builder` for a version 3 UUID using the supplied MD5 hashed bytes.
@@ -596,29 +547,30 @@ impl Builder {
             .with_version(Version::Sha1)
     }
 
-    /// Creates a `Builder` for a version 6 UUID using the supplied timestamp and node ID.
+    /// Creates a `Builder` for a version 6 UUID using the supplied timestamp, counter, and node ID.
     ///
     /// This method will encode the ticks, counter, and node ID in a sortable UUID.
-    pub const fn from_sorted_rfc4122_timestamp(
+    pub const fn from_sorted_gregorian_timestamp(
         ticks: u64,
         counter: u16,
         node_id: &[u8; 6],
     ) -> Self {
-        Builder(timestamp::encode_sorted_rfc4122_timestamp(
+        Builder(timestamp::encode_sorted_gregorian_timestamp(
             ticks, counter, node_id,
         ))
     }
 
-    /// Creates a `Builder` for a version 7 UUID using the supplied Unix timestamp and random bytes.
+    /// Creates a `Builder` for a version 7 UUID using the supplied Unix timestamp and counter bytes.
     ///
-    /// This method assumes the bytes are already sufficiently random.
+    /// This method will set the variant field within the counter bytes without attempting to shift
+    /// the data around it. Callers using the counter as a monotonic value should be careful not to
+    /// store significant data in the 2 least significant bits of the 3rd byte.
     ///
     /// # Examples
     ///
     /// Creating a UUID using the current system timestamp:
     ///
     /// ```
-    /// # use std::convert::TryInto;
     /// use std::time::{Duration, SystemTime};
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// # use uuid::{Builder, Uuid, Variant, Version, Timestamp, NoContext};
@@ -636,10 +588,10 @@ impl Builder {
     /// # Ok(())
     /// # }
     /// ```
-    pub const fn from_unix_timestamp_millis(millis: u64, random_bytes: &[u8; 10]) -> Self {
+    pub const fn from_unix_timestamp_millis(millis: u64, counter_random_bytes: &[u8; 10]) -> Self {
         Builder(timestamp::encode_unix_timestamp_millis(
             millis,
-            random_bytes,
+            counter_random_bytes,
         ))
     }
 
@@ -899,5 +851,28 @@ impl Builder {
     /// ```
     pub const fn into_uuid(self) -> Uuid {
         self.0
+    }
+}
+
+#[doc(hidden)]
+impl Builder {
+    #[deprecated(
+        since = "1.10.0",
+        note = "use `Builder::from_gregorian_timestamp(ticks, counter, node_id)`"
+    )]
+    pub const fn from_rfc4122_timestamp(ticks: u64, counter: u16, node_id: &[u8; 6]) -> Self {
+        Builder::from_gregorian_timestamp(ticks, counter, node_id)
+    }
+
+    #[deprecated(
+        since = "1.10.0",
+        note = "use `Builder::from_sorted_gregorian_timestamp(ticks, counter, node_id)`"
+    )]
+    pub const fn from_sorted_rfc4122_timestamp(
+        ticks: u64,
+        counter: u16,
+        node_id: &[u8; 6],
+    ) -> Self {
+        Builder::from_sorted_gregorian_timestamp(ticks, counter, node_id)
     }
 }
