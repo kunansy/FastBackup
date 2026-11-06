@@ -843,8 +843,9 @@ pub mod compression {
 }
 
 pub mod google_drive {
-    use std::{io, time};
+    use std::{future::Future, io, time};
     use std::io::{Cursor, Read, Seek};
+    use std::time::Duration;
     use bytes::Bytes;
 
     use google_drive3::{DriveHub, hyper::client::HttpConnector, hyper_rustls};
@@ -856,6 +857,34 @@ pub mod google_drive {
     use crate::{errors::Errors, Res, Storage, compression::decompress};
 
     type Hub = DriveHub<HttpsConnector<HttpConnector>>;
+
+    // Split by hyper across all resolved addresses, so an unreachable IP is skipped.
+    const DRIVE_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+    const DRIVE_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+
+    fn build_connector() -> HttpsConnector<HttpConnector> {
+        let mut http = HttpConnector::new();
+        http.enforce_http(false);
+        http.set_connect_timeout(Some(DRIVE_CONNECT_TIMEOUT));
+
+        hyper_rustls::HttpsConnectorBuilder::new()
+            .with_native_roots()
+            .https_or_http()
+            .enable_http1()
+            .enable_http2()
+            .wrap_connector(http)
+    }
+
+    async fn with_timeout<F, T>(operation: &str, limit: Duration, fut: F) -> Res<T>
+        where F: Future<Output = Res<T>>
+    {
+        tokio::time::timeout(limit, fut)
+            .await
+            .map_err(|_| {
+                let msg = format!("{} timed out after {:?}", operation, limit);
+                Errors::StorageError(msg)
+            })?
+    }
 
     pub struct DriveAuth {
         secret: Option<ServiceAccountKey>,
@@ -875,7 +904,10 @@ pub mod google_drive {
                 None => panic!("Could not build auth from None")
             };
 
-            let auth = ServiceAuth::builder(secret).build().await?;
+            let auth = ServiceAuth::builder(secret)
+                .hyper_client(hyper::Client::builder().build(build_connector()))
+                .build()
+                .await?;
             self.auth = Some(auth);
             Ok(())
         }
@@ -886,15 +918,8 @@ pub mod google_drive {
                 None => panic!("Could not build hub from None")
             };
 
-            let connector = hyper_rustls::HttpsConnectorBuilder::new()
-                .with_native_roots()
-                .https_or_http()
-                .enable_http1()
-                .enable_http2()
-                .build();
-
             let hub = DriveHub::new(
-                hyper::Client::builder().build(connector),
+                hyper::Client::builder().build(build_connector()),
                 auth
             );
             GoogleDrive { hub }
@@ -910,14 +935,16 @@ pub mod google_drive {
 
             let q = format!("name = '{}'", file_name);
 
-            let (resp, files) = self.hub.files().list()
-                .param("fields", "files(id)")
-                .q(&q)
-                .doit().await
-                .map_err(|e| {
-                    let msg = format!("Error requesting to Google Drive: {}", e.to_string());
-                    Errors::StorageError(msg)
-                })?;
+            let (resp, files) = with_timeout("Getting file id", DRIVE_REQUEST_TIMEOUT, async {
+                self.hub.files().list()
+                    .param("fields", "files(id)")
+                    .q(&q)
+                    .doit().await
+                    .map_err(|e| {
+                        let msg = format!("Error requesting to Google Drive: {}", e.to_string());
+                        Errors::StorageError(msg)
+                    })
+            }).await?;
 
             if !resp.status().is_success() {
                 let msg = format!("Request error: {:?}, {:?}", resp.status(), resp.body());
@@ -965,32 +992,36 @@ pub mod google_drive {
         pub async fn upload_buf<T>(&self, req: File, buf: T) -> Res<(Response<Body>, File)>
             where T: Read + Seek + Send
         {
-            self.hub.files()
-                .create(req)
-                .upload(buf, "application/octet-stream".parse().unwrap())
-                .await
-                .map_err(|e| {
-                    let msg = format!("Sending failed: {:?}", e);
-                    Errors::StorageError(msg)
-                })
+            with_timeout("Uploading file", DRIVE_REQUEST_TIMEOUT, async {
+                self.hub.files()
+                    .create(req)
+                    .upload(buf, "application/octet-stream".parse().unwrap())
+                    .await
+                    .map_err(|e| {
+                        let msg = format!("Sending failed: {:?}", e);
+                        Errors::StorageError(msg)
+                    })
+            }).await
         }
 
         async fn download_file(&self, file_id: &str) -> Res<Bytes> {
             log::info!("Downloading file id '{file_id}'");
             let start = time::Instant::now();
 
-            let (resp, _) = self.hub
-                .files()
-                .get(file_id)
-                .add_scope("https://www.googleapis.com/auth/drive")
-                .param("alt", "media")
-                .acknowledge_abuse(true)
-                .doit()
-                .await
-                .map_err(|e| {
-                    let msg = format!("Downloading failed: {:?}", e);
-                    Errors::StorageError(msg)
-                })?;
+            let (resp, _) = with_timeout("Downloading file", DRIVE_REQUEST_TIMEOUT, async {
+                self.hub
+                    .files()
+                    .get(file_id)
+                    .add_scope("https://www.googleapis.com/auth/drive")
+                    .param("alt", "media")
+                    .acknowledge_abuse(true)
+                    .doit()
+                    .await
+                    .map_err(|e| {
+                        let msg = format!("Downloading failed: {:?}", e);
+                        Errors::StorageError(msg)
+                    })
+            }).await?;
 
             if !resp.status().is_success() {
                 let msg = format!("Downloading failed: {}, {:?}", resp.status(), resp.body());
@@ -1013,16 +1044,18 @@ pub mod google_drive {
             let start = time::Instant::now();
 
             let q = format!("'{}' in parents", folder_id);
-            let (resp, files) = self.hub
-                .files()
-                .list()
-                .param("fields", "files(id,name,createdTime)")
-                .q(&q)
-                .doit().await
-                .map_err(|e| {
-                    let msg = format!("Error requesting to Google Drive: {}", e.to_string());
-                    Errors::StorageError(msg)
-                })?;
+            let (resp, files) = with_timeout("Getting last dump id", DRIVE_REQUEST_TIMEOUT, async {
+                self.hub
+                    .files()
+                    .list()
+                    .param("fields", "files(id,name,createdTime)")
+                    .q(&q)
+                    .doit().await
+                    .map_err(|e| {
+                        let msg = format!("Error requesting to Google Drive: {}", e.to_string());
+                        Errors::StorageError(msg)
+                    })
+            }).await?;
 
             if !resp.status().is_success() {
                 let msg = format!("Request error: {:?}, {:?}", resp.status(), resp.body());
@@ -1113,6 +1146,32 @@ pub mod google_drive {
             Ok((file_content, file_name))
         }
     }
+
+    #[cfg(test)]
+    mod test_google_drive {
+        use std::time::Duration;
+
+        use crate::errors::Errors;
+        use super::with_timeout;
+
+        #[tokio::test]
+        async fn test_with_timeout_returns_storage_error_when_future_hangs() {
+            let res: crate::Res<()> = with_timeout(
+                "Hanging op", Duration::from_millis(10), std::future::pending()).await;
+
+            match res {
+                Err(Errors::StorageError(msg)) => assert!(msg.starts_with("Hanging op timed out"), "{msg}"),
+                other => panic!("expected StorageError, {other:?} found"),
+            }
+        }
+
+        #[tokio::test]
+        async fn test_with_timeout_passes_result_through() {
+            let res = with_timeout("Fast op", Duration::from_secs(1), async { Ok(42) }).await;
+
+            assert_eq!(res.unwrap(), 42);
+        }
+    }
 }
 
 pub mod errors {
@@ -1120,9 +1179,9 @@ pub mod errors {
     pub enum Errors {
         #[error("Could not init with env: {0}")]
         EnvError(String),
-        #[error("Could not dump the database")]
+        #[error("Could not dump the database: {0}")]
         DumpError(String),
-        #[error("Error with the storage")]
+        #[error("Error with the storage: {0}")]
         StorageError(String)
     }
 
