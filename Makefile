@@ -1,6 +1,9 @@
 patch:
 	@bumpversion --commit --tag patch
 
+minor:
+	@bumpversion --commit --tag minor
+
 build-status:
 	@curl -L --silent \
 		-H "Accept: application/vnd.github+json" \
@@ -15,4 +18,4 @@ deploy:
 	@echo "${LAST_TAG} -> ${CURRENT_TAG}"
 	@ssh tracker "cd tracker; sed -i -E 's#(image: kunansy/fast-backup:)[0-9.]+#\1${CURRENT_TAG}#' docker-compose.yml; docker compose up -d --force-recreate tracker-backup; sleep 2; docker ps --filter name=tracker-backup --format json | jq '.Image,.State,.Status'"
 
-.PHONY: patch build-status deploy
+.PHONY: patch minor build-status deploy
