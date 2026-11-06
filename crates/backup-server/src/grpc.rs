@@ -95,6 +95,19 @@ impl Backup for GrpcBackup {
         }))
     }
 
+    async fn get_backup(
+        &self,
+        request: Request<BackupRef>,
+    ) -> Result<Response<BackupInfo>, Status> {
+        let target = backup_target(Some(request.into_inner()))?;
+        let info = self
+            .service
+            .resolve(&target)
+            .await
+            .map_err(|e| to_status("Getting backup failed", e))?;
+        Ok(Response::new(backup_info(&info)))
+    }
+
     async fn download_backup(
         &self,
         request: Request<BackupRef>,
@@ -192,6 +205,36 @@ mod tests {
         }
         assert_eq!(got, content);
         assert_eq!(sizes, [CHUNK_SIZE, CHUNK_SIZE, 10]);
+    }
+
+    #[tokio::test]
+    async fn test_get_backup_latest_skips_pre_restore() {
+        let h = harness();
+        h.storage.put(
+            info(
+                "legacy",
+                1,
+                BackupFormat::LegacyJsonZstd,
+                BackupKind::Regular,
+            ),
+            b"x",
+        );
+        h.storage.put(
+            info("safety", 2, BackupFormat::PgCustom, BackupKind::PreRestore),
+            b"x",
+        );
+        let grpc = GrpcBackup::new(h.service.clone());
+
+        let got = grpc
+            .get_backup(Request::new(BackupRef {
+                target: Some(Target::Latest(true)),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert_eq!(got.id, "legacy");
+        assert_eq!(got.format(), backup_proto::BackupFormat::LegacyJsonZstd);
     }
 
     #[tokio::test]

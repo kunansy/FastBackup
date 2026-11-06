@@ -10,6 +10,8 @@ service Backup {
     rpc CreateBackup (CreateBackupRequest) returns (BackupInfo);
     // Newest first.
     rpc ListBackups (ListBackupsRequest) returns (ListBackupsReply);
+    // Metadata of one backup, e.g. to choose how to restore it.
+    rpc GetBackup (BackupRef) returns (BackupInfo);
     // The first message carries `info`, the rest carry `data`.
     // Legacy backups are streamed as decompressed JSON.
     rpc DownloadBackup (BackupRef) returns (stream DownloadChunk);

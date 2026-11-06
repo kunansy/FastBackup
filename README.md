@@ -22,6 +22,7 @@ See [`crates/backup-proto/proto/backup.proto`](crates/backup-proto/proto/backup.
 |-----|---------|
 | `CreateBackup` | Dump the database and upload it; apply retention. |
 | `ListBackups` | Newest first, paginated. |
+| `GetBackup` | Metadata of a backup by id or the latest one. |
 | `DownloadBackup` | Stream a backup by id or the latest one. |
 | `Restore` | Overwrite the database; requires `confirm_db_name`. |
 | `Healthcheck` | Whether the database accepts connections. |
