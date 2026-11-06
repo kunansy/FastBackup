@@ -1,0 +1,17 @@
+[package]
+name = "backup-gdrive"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+backup-core.workspace = true
+bytes.workspace = true
+google-drive3.workspace = true
+http-body-util.workspace = true
+hyper-rustls.workspace = true
+log.workspace = true
+tokio.workspace = true

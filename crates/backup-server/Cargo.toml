@@ -1,0 +1,22 @@
+[package]
+name = "backup-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "backup-server"
+path = "src/main.rs"
+
+[dependencies]
+backup-core.workspace = true
+backup-gdrive.workspace = true
+backup-pg.workspace = true
+backup-proto.workspace = true
+chrono.workspace = true
+env_logger.workspace = true
+log.workspace = true
+tokio.workspace = true
+tonic.workspace = true

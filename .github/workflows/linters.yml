@@ -10,11 +10,11 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     - name: Set up Rust
       run: |
-        rustup toolchain install 1.75 --profile minimal
-        rustup default 1.75
+        rustup toolchain install 1.99.1 --profile minimal --component clippy,rustfmt
+        rustup default 1.99.1
 
     - name: Install packages
       run: |
@@ -25,10 +25,14 @@ jobs:
         cargo --version --verbose
         rustc --version
 
-    - name: Cargo check
-      run: |
-        cargo check --jobs $(nproc) --release 
+    - name: Format
+      run: cargo fmt --all --check
+
+    - name: Clippy
+      run: cargo clippy --workspace --all-targets --offline -- -D warnings
+
+    - name: Test
+      run: cargo test --workspace --offline
 
     - name: Build
-      run: |
-        cargo build --bins --release --offline --jobs $(nproc)
+      run: cargo build --workspace --release --offline --jobs $(nproc)
