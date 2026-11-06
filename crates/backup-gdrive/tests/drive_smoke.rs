@@ -6,7 +6,7 @@ use backup_gdrive::{DriveOptions, GoogleDriveStorage};
 
 #[tokio::test]
 #[ignore = "requires Google Drive service account and a test folder"]
-async fn test_upload_find_download_delete() {
+async fn drive_smoke_upload_find_download_delete() {
     let creds = std::env::var("DRIVE_TEST_CREDS").expect("DRIVE_TEST_CREDS");
     let folder = std::env::var("DRIVE_TEST_FOLDER_ID").expect("DRIVE_TEST_FOLDER_ID");
     let drive = GoogleDriveStorage::connect(&creds, folder, DriveOptions::default())

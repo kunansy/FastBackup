@@ -13,6 +13,10 @@ pub fn to_status(context: &str, err: Error) -> Status {
             log::info!("{msg}");
             Status::failed_precondition(msg)
         }
+        Error::Busy(_) => {
+            log::info!("{msg}");
+            Status::aborted(msg)
+        }
         Error::Storage(_) | Error::Timeout { .. } => {
             log::error!("{msg}");
             Status::unavailable(msg)
@@ -41,6 +45,7 @@ mod tests {
                 Error::FailedPrecondition("x".into()),
                 Code::FailedPrecondition,
             ),
+            (Error::Busy("x".into()), Code::Aborted),
             (Error::Storage("x".into()), Code::Unavailable),
             (
                 Error::Timeout {

@@ -12,6 +12,12 @@ pub trait Restorer: Send + Sync {
     async fn restore(&self, src: &Path) -> Result<()>;
 }
 
+#[async_trait::async_trait]
+pub trait DbHealth: Send + Sync {
+    /// Ok when the database accepts connections and queries.
+    async fn ping(&self) -> Result<()>;
+}
+
 /// Backup files in one storage location.
 #[async_trait::async_trait]
 pub trait Storage: Send + Sync {

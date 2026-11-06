@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
-use backup_core::{DbTarget, Dumper, Error, Restorer, Result};
+use backup_core::{DbHealth, DbTarget, Dumper, Error, Restorer, Result};
 
 use crate::args::{dump_command, query_command, restore_command};
 use crate::{CommandRunner, PgCommand, ZstdLevel};
@@ -34,16 +34,6 @@ impl PgTools {
         self.execute(&query_command(&self.target, sql)).await
     }
 
-    pub async fn ping(&self) -> Result<()> {
-        let out = self.query("SELECT 1").await?;
-        match out.trim() {
-            "1" => Ok(()),
-            other => Err(Error::FailedPrecondition(format!(
-                "unexpected healthcheck result: '{other}'"
-            ))),
-        }
-    }
-
     async fn execute(&self, cmd: &PgCommand) -> Result<String> {
         let out = self.runner.run(cmd).await?;
         if !out.success {
@@ -61,6 +51,19 @@ impl PgTools {
             );
         }
         Ok(out.stdout)
+    }
+}
+
+#[async_trait::async_trait]
+impl DbHealth for PgTools {
+    async fn ping(&self) -> Result<()> {
+        let out = self.query("SELECT 1").await?;
+        match out.trim() {
+            "1" => Ok(()),
+            other => Err(Error::FailedPrecondition(format!(
+                "unexpected healthcheck result: '{other}'"
+            ))),
+        }
     }
 }
 
@@ -114,7 +117,7 @@ mod tests {
     use std::path::Path;
     use std::sync::{Arc, Mutex};
 
-    use backup_core::{DbTarget, Dumper, Error, Restorer, Result, Secret};
+    use backup_core::{DbHealth, DbTarget, Dumper, Error, Restorer, Result, Secret};
 
     use super::{PgTools, tail};
     use crate::{CommandOutput, CommandRunner, PgCommand, ZstdLevel};

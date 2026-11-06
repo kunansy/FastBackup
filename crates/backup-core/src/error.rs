@@ -10,6 +10,8 @@ pub enum Error {
     NotFound(String),
     #[error("precondition failed: {0}")]
     FailedPrecondition(String),
+    #[error("busy: {0}")]
+    Busy(String),
     #[error("{operation} timed out after {limit:?}")]
     Timeout { operation: String, limit: Duration },
     #[error("storage error: {0}")]

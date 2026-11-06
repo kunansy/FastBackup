@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use backup_core::{DbTarget, Dumper, Restorer, Secret};
+use backup_core::{DbHealth, DbTarget, Dumper, Restorer, Secret};
 use backup_pg::{PgTools, TokioCommandRunner, ZstdLevel};
 
 fn env_or(key: &str, default: &str) -> String {

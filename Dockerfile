@@ -4,7 +4,7 @@ ARG TARGET=x86_64-unknown-linux-gnu
 
 RUN apt-get update  \
     && apt-get upgrade -y  \
-    && apt-get install protobuf-compiler ca-certificates build-essential -y  \
+    && apt-get install protobuf-compiler libprotobuf-dev ca-certificates build-essential -y  \
     && rustup target add ${TARGET}
 
 # Production host is an Intel Ice Lake VM: AVX-512 is exposed, SHA-NI is not.

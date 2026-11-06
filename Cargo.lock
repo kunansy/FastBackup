@@ -148,6 +148,7 @@ version = "0.5.7"
 dependencies = [
  "async-trait",
  "chrono",
+ "tempfile",
  "thiserror",
  "zstd",
 ]
@@ -187,6 +188,7 @@ name = "backup-proto"
 version = "0.5.7"
 dependencies = [
  "prost",
+ "prost-types",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
@@ -196,6 +198,7 @@ dependencies = [
 name = "backup-server"
 version = "0.5.7"
 dependencies = [
+ "async-trait",
  "backup-core",
  "backup-gdrive",
  "backup-pg",
@@ -203,9 +206,12 @@ dependencies = [
  "chrono",
  "env_logger",
  "log",
+ "prost-types",
  "tempfile",
  "tokio",
+ "tokio-stream",
  "tonic",
+ "zstd",
 ]
 
 [[package]]

@@ -10,5 +10,5 @@ pub use backup::{BackupInfo, BackupKind, Page, UploadRequest, retention_candidat
 pub use clock::{Clock, SystemClock};
 pub use error::{Error, Result};
 pub use format::{BackupFormat, backup_file_name, detect_format};
-pub use ports::{Dumper, Restorer, Storage};
+pub use ports::{DbHealth, Dumper, Restorer, Storage};
 pub use target::{DbTarget, Secret};

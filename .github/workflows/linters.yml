@@ -33,7 +33,7 @@ jobs:
 
     - name: Install packages
       run: |
-        sudo apt-get install -y protobuf-compiler postgresql-common
+        sudo apt-get install -y protobuf-compiler libprotobuf-dev postgresql-common
         sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
         sudo apt-get install -y postgresql-client-18
 
@@ -56,7 +56,8 @@ jobs:
         PG_TEST_PASSWORD: postgres
       run: |
         export PATH=/usr/lib/postgresql/18/bin:$PATH
-        cargo test --workspace --offline -- --include-ignored
+        # drive_smoke tests need real Google Drive credentials.
+        cargo test --workspace --offline -- --include-ignored --skip drive_smoke
 
     - name: Build
       run: cargo build --workspace --release --offline --jobs $(nproc)
