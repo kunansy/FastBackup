@@ -25,6 +25,8 @@ pub struct DriveOptions {
     pub upload_timeout: Duration,
     /// Download fails when no bytes arrive for this long.
     pub read_idle_timeout: Duration,
+    /// Files up to this size go in one multipart request instead of a resumable session.
+    pub multipart_max_bytes: u64,
     pub retry: RetryPolicy,
 }
 
@@ -34,6 +36,8 @@ impl Default for DriveOptions {
             request_timeout: Duration::from_secs(60),
             upload_timeout: Duration::from_secs(30 * 60),
             read_idle_timeout: Duration::from_secs(60),
+            // Google's limit for multipart uploads is 5 MB.
+            multipart_max_bytes: 5_000_000,
             retry: RetryPolicy::default(),
         }
     }
@@ -169,27 +173,53 @@ impl Storage for GoogleDriveStorage {
 
         let file = std::fs::File::open(req.path())
             .map_err(|e| Error::io(format!("Could not open {:?}", req.path()), e))?;
+        let size = file
+            .metadata()
+            .map_err(|e| Error::io(format!("Could not stat {:?}", req.path()), e))?
+            .len();
         let call = self
             .hub
             .files()
             .create(upload_metadata(&req, &self.folder_id))
             .add_scope(Scope::Full)
-            .param("fields", FILE_FIELDS)
-            .upload_resumable(file, mime::APPLICATION_OCTET_STREAM);
+            .param("fields", FILE_FIELDS);
+        let multipart = size <= self.opts.multipart_max_bytes;
 
         // Not retried: a repeated create would leave a duplicate file.
-        let (_, created) = timed("Uploading backup", self.opts.upload_timeout, call)
-            .await
-            .map_err(CallError::into_error)?;
+        let created = if multipart {
+            let upload = call.upload(file, mime::APPLICATION_OCTET_STREAM);
+            timed("Uploading backup", self.opts.upload_timeout, upload).await
+        } else {
+            let upload = call.upload_resumable(file, mime::APPLICATION_OCTET_STREAM);
+            timed("Uploading backup", self.opts.upload_timeout, upload).await
+        };
+        let (_, created) = created.map_err(CallError::into_error)?;
         let info = to_backup_info(created)?;
 
         log::info!(
-            "Uploaded '{}' as '{}' for {:?}",
+            "Uploaded '{}' as '{}', {size} bytes via {} for {:?}",
             info.name,
             info.id,
+            if multipart { "multipart" } else { "resumable" },
             start.elapsed()
         );
         Ok(info)
+    }
+
+    async fn warm_up(&self) -> Result<()> {
+        let start = Instant::now();
+        let call = self
+            .hub
+            .files()
+            .get(&self.folder_id)
+            .add_scope(Scope::Full)
+            .param("fields", "id")
+            .doit();
+        timed("Warming up storage", self.opts.request_timeout, call)
+            .await
+            .map_err(CallError::into_error)?;
+        log::debug!("Warmed up drive connection for {:?}", start.elapsed());
+        Ok(())
     }
 
     async fn list(&self, page_size: u32, page_token: Option<&str>) -> Result<Page<BackupInfo>> {
@@ -304,6 +334,7 @@ mod tests {
             request_timeout: Duration::from_secs(5),
             upload_timeout: Duration::from_secs(5),
             read_idle_timeout: Duration::from_secs(5),
+            multipart_max_bytes: 1024,
             retry: RetryPolicy {
                 attempts,
                 base_delay: Duration::from_millis(1),
@@ -569,10 +600,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_upload_resumable() {
+    async fn test_upload_small_file_is_multipart() {
         let dir = tempfile::tempdir().unwrap();
         let src = dir.path().join("x.pgdump");
         std::fs::write(&src, b"dump!").unwrap();
+        let fake = FakeDrive::start(vec![Reply::json(
+            200,
+            file_json("new1", FOLDER, &md5_hex(b"dump!")),
+        )])
+        .await;
+
+        let info = storage(&fake, 1)
+            .upload(UploadRequest::pg_dump(
+                &src,
+                "tracker",
+                BackupKind::Regular,
+                chrono::Utc::now(),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(info.id, "new1");
+        let requests = fake.requests();
+        assert_eq!(requests.len(), 1, "{requests:?}");
+        assert!(
+            requests[0].starts_with("POST /upload/drive/v3/files"),
+            "{requests:?}"
+        );
+        assert!(requests[0].contains("uploadType=multipart"), "{requests:?}");
+        assert!(requests[0].contains("md5Checksum"), "{requests:?}");
+    }
+
+    #[tokio::test]
+    async fn test_upload_large_file_is_resumable() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("x.pgdump");
+        std::fs::write(&src, [7u8; 2048]).unwrap();
         let fake_session = |base: &str| format!("{base}/upload/session-1");
 
         let fake = FakeDrive::start_with(|base| {
@@ -582,7 +645,7 @@ mod tests {
                     headers: vec![("Location", fake_session(base))],
                     body: Vec::new(),
                 },
-                Reply::json(200, file_json("new1", FOLDER, &md5_hex(b"dump!"))),
+                Reply::json(200, file_json("new1", FOLDER, &md5_hex(&[7u8; 2048]))),
             ]
         })
         .await;
@@ -627,6 +690,20 @@ mod tests {
 
         assert!(matches!(err, Error::Unavailable(_)), "{err:?}");
         assert_eq!(fake.requests().len(), 1, "{:?}", fake.requests());
+    }
+
+    #[tokio::test]
+    async fn test_warm_up_fetches_folder() {
+        let fake = FakeDrive::start(vec![Reply::json(200, json!({"id": FOLDER}))]).await;
+
+        storage(&fake, 1).warm_up().await.unwrap();
+
+        let requests = fake.requests();
+        assert_eq!(requests.len(), 1, "{requests:?}");
+        assert!(
+            requests[0].starts_with(&format!("GET /drive/v3/files/{FOLDER}")),
+            "{requests:?}"
+        );
     }
 
     #[tokio::test]

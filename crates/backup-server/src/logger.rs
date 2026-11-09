@@ -17,5 +17,7 @@ pub fn init() {
             )
         })
         .parse_default_env()
+        // Its debug output contains access tokens.
+        .filter_module("yup_oauth2", log::LevelFilter::Info)
         .init();
 }

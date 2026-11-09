@@ -25,6 +25,11 @@ pub trait DbHealth: Send + Sync {
 /// Backup files in one storage location.
 #[async_trait::async_trait]
 pub trait Storage: Send + Sync {
+    /// Opens the connection and refreshes credentials ahead of an upload. Best effort.
+    async fn warm_up(&self) -> Result<()> {
+        Ok(())
+    }
+
     async fn upload(&self, req: UploadRequest<'_>) -> Result<BackupInfo>;
 
     /// Newest first.
