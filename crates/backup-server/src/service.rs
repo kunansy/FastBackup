@@ -78,7 +78,15 @@ impl BackupService {
 
     async fn dump_and_upload(&self, kind: BackupKind) -> Result<BackupInfo> {
         let file = self.temp_file(".pgdump")?;
-        self.deps.dumper.dump(file.path()).await?;
+        // The TLS handshake and token refresh overlap the dump instead of delaying the upload.
+        let (dumped, warmed) = tokio::join!(
+            self.deps.dumper.dump(file.path()),
+            self.deps.storage.warm_up()
+        );
+        dumped?;
+        if let Err(e) = warmed {
+            log::warn!("Could not warm up storage: {e}");
+        }
 
         let req = UploadRequest::pg_dump(
             file.path(),
@@ -247,6 +255,8 @@ pub(crate) mod tests {
         pub deleted: Mutex<Vec<String>>,
         pub delete_calls: AtomicUsize,
         pub events: Arc<Mutex<Vec<String>>>,
+        pub warm_up_calls: AtomicUsize,
+        pub fail_warm_up: AtomicBool,
         pub fail_upload: AtomicBool,
         pub fail_download: AtomicBool,
         pub fail_list: AtomicBool,
@@ -280,6 +290,11 @@ pub(crate) mod tests {
 
     #[async_trait::async_trait]
     impl Storage for FakeStorage {
+        async fn warm_up(&self) -> Result<()> {
+            self.warm_up_calls.fetch_add(1, Ordering::SeqCst);
+            Self::check(&self.fail_warm_up, "warm up")
+        }
+
         async fn upload(&self, req: UploadRequest<'_>) -> Result<BackupInfo> {
             Self::check(&self.fail_upload, "upload")?;
             let content = std::fs::read(req.path()).unwrap();
@@ -514,6 +529,17 @@ pub(crate) mod tests {
         assert_eq!(created.format, BackupFormat::PgCustom);
         assert_eq!(h.storage.files.lock().unwrap()[0].1, b"current-db");
         assert_eq!(temp_files_left(&h), 0);
+    }
+
+    #[tokio::test]
+    async fn test_create_backup_survives_failed_warm_up() {
+        let h = harness();
+        h.storage.fail_warm_up.store(true, Ordering::SeqCst);
+
+        h.service.create_backup().await.unwrap();
+
+        assert_eq!(h.storage.warm_up_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(h.storage.files.lock().unwrap()[0].1, b"current-db");
     }
 
     #[tokio::test]
